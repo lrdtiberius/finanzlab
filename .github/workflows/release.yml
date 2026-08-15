@@ -2,6 +2,10 @@ name: Test and release
 
 on:
   push:
+    branches:
+      - main
+    paths:
+      - ".release-version"
     tags:
       - "v*"
 
@@ -15,6 +19,24 @@ jobs:
       - name: Quellstand auschecken
         uses: actions/checkout@v4
 
+      - name: Release-Version bestimmen und Tag bereitstellen
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          else
+            RELEASE_TAG="$(tr -d '[:space:]' < .release-version)"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            if ! git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+              git tag -a "${RELEASE_TAG}" -m "Haushaltsplaner ${RELEASE_TAG}"
+              git push origin "${RELEASE_TAG}"
+            fi
+          fi
+          echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+
       - name: Python einrichten
         uses: actions/setup-python@v5
         with:
@@ -27,7 +49,7 @@ jobs:
 
       - name: Release-Paket erstellen
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           mkdir -p dist
           git archive --format=tar --prefix="finanzlab-${RELEASE_TAG}/" HEAD | gzip -9 > "dist/finanzlab-${RELEASE_TAG}.tar.gz"
@@ -36,7 +58,7 @@ jobs:
       - name: GitHub-Release veröffentlichen
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" \
