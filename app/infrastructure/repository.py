@@ -830,6 +830,89 @@ class Repository:
             "overdraft_warnings":[{"account_id":account["id"],"name":account["name"],"overage_cents":account["monthly_overdraft_overage_cents"]}
                 for account in selected if account.get("overdraft_exceeded_during_month")]}
 
+    def excel_export_payload(self,hid,from_month,through_month):
+        """Collect a complete, occurrence-based forecast export for up to 24 months."""
+        try:
+            first=date.fromisoformat(f"{str(from_month)[:7]}-01")
+            last=date.fromisoformat(f"{str(through_month)[:7]}-01")
+        except (TypeError,ValueError):
+            raise ValueError("Start- und Endmonat müssen gültige Monate sein.")
+        if first>last:
+            raise ValueError("Der Startmonat darf nicht nach dem Endmonat liegen.")
+        month_count=(last.year-first.year)*12+last.month-first.month+1
+        if month_count>24:
+            raise ValueError("Ein Excel-Export darf höchstens 24 Monate umfassen.")
+
+        after_last=(last.replace(day=28)+timedelta(days=4)).replace(day=1)
+        through_date=(after_last-timedelta(days=1)).isoformat()
+        detail=self.household_detail(hid,through_date)
+        if not detail:
+            raise ValueError("Haushalt nicht gefunden.")
+        account_ids=[account["id"] for account in detail["accounts"]]
+        account_names={account["id"]:account["name"] for account in detail["accounts"]}
+        people={person["id"]:person["display_name"] for person in detail["persons"]}
+
+        months=[]; account_months=[]; days=[]; movements=[]
+        cursor=first
+        while cursor<=last:
+            month_value=cursor.strftime("%Y-%m")
+            preview=self.monthly_preview(hid,month_value,account_ids)
+            months.append({
+                "month":month_value,"from":preview["from"],"through":preview["through"],
+                **preview["totals"],"warning_count":len(preview["overdraft_warnings"]),
+            })
+            for account in preview["accounts"]:
+                account_months.append({
+                    "month":month_value,"account_id":account["id"],"account_name":account["name"],
+                    "opening_balance_cents":account.get("opening_balance_cents"),
+                    "month_delta_cents":account.get("month_delta_cents"),
+                    "closing_balance_cents":account.get("closing_balance_cents"),
+                    "minimum_balance_cents":account.get("minimum_balance_cents"),
+                    "overdraft_limit_cents":int(account.get("overdraft_limit_cents") or 0),
+                    "overdraft_exceeded":bool(account.get("overdraft_exceeded_during_month")),
+                    "overdraft_overage_cents":int(account.get("monthly_overdraft_overage_cents") or 0),
+                })
+            for day in preview["days"]:
+                for account in day["balances"]:
+                    days.append({
+                        "date":day["date"],"account_id":account["id"],"account_name":account["name"],
+                        "projected_balance_cents":account.get("projected_balance_cents"),
+                        "overdraft_limit_cents":int(account.get("overdraft_limit_cents") or 0),
+                        "overdraft_exceeded":bool(account.get("overdraft_exceeded")),
+                        "overdraft_overage_cents":int(account.get("overdraft_overage_cents") or 0),
+                        "day_delta_cents":int(day.get("delta_cents") or 0),
+                        "movement_count":int(day.get("movement_count") or 0),
+                    })
+            for event in preview["movements"]:
+                movements.append({
+                    **event,"account_name":account_names.get(event.get("account_id"),"Nicht zugeordnet"),
+                })
+            cursor=(cursor.replace(day=28)+timedelta(days=4)).replace(day=1)
+
+        histories=[]
+        for account in detail["accounts"]:
+            for entry in self.list_balance_history(hid,account["id"]):
+                histories.append({**entry,"account_id":account["id"],"account_name":account["name"]})
+        histories.sort(key=lambda item:(item["account_name"].casefold(),item["anchor_date"],item.get("created_at") or ""),reverse=False)
+
+        incomes=self.list_cash_flows(hid,"income",through_date)
+        expenses=self.list_cash_flows(hid,"expense",through_date)
+        transfers=self.list_transfers(hid)
+        for collection in (incomes,expenses):
+            for item in collection:
+                item["account_name"]=account_names.get(item.get("account_id"),"Nicht zugeordnet")
+                item["owner_name"]="Gemeinsam" if item.get("owner_scope")=="joint" else people.get(item.get("owner_person_id"),"Nicht zugeordnet")
+
+        return {
+            "generated_at":timestamp(),"from_month":first.strftime("%Y-%m"),
+            "through_month":last.strftime("%Y-%m"),"from_date":first.isoformat(),
+            "through_date":through_date,"month_count":month_count,
+            "household":detail,"months":months,"account_months":account_months,
+            "days":days,"movements":movements,"accounts":detail["accounts"],
+            "incomes":incomes,"expenses":expenses,"transfers":transfers,
+            "balance_history":histories,
+        }
+
     def planned_occurrences_for_matching(self,con,hid,account_id,period_from,period_to):
         scan_from=(date.fromisoformat(period_from)-timedelta(days=3))
         scan_to=(date.fromisoformat(period_to)+timedelta(days=3))

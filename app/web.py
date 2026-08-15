@@ -1,10 +1,12 @@
 import json
 import mimetypes
+import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from app.application.excel_export import build_forecast_workbook
 from app.infrastructure.repository import Repository
 
 ROOT = Path(__file__).resolve().parent
@@ -12,7 +14,7 @@ REPOSITORY = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Haushaltsplaner/0.11.4"
+    server_version = "Haushaltsplaner/0.11.5"
 
     def json_response(self, data, status=HTTPStatus.OK):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -29,12 +31,21 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Anfrage ist zu groß.")
         return json.loads(self.rfile.read(size) or b"{}")
 
+    def file_response(self, data, content_type, filename):
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "0.11.4"})
+                return self.json_response({"status": "ok", "version": "0.11.5"})
             if path == "/api/households":
                 return self.json_response({"items": REPOSITORY.list_households()})
             if path == "/api/dashboard":
@@ -53,6 +64,19 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/transfers":
                 hid = (query.get("household_id") or [""])[0]
                 return self.json_response({"items": REPOSITORY.list_transfers(hid)})
+            if path == "/api/export.xlsx":
+                hid = (query.get("household_id") or [""])[0]
+                from_month = (query.get("from_month") or [""])[0]
+                through_month = (query.get("through_month") or [""])[0]
+                payload = REPOSITORY.excel_export_payload(hid, from_month, through_month)
+                workbook = build_forecast_workbook(payload)
+                safe_household = re.sub(r"[^A-Za-z0-9_-]+", "-", payload["household"]["name"]).strip("-") or "Haushalt"
+                filename = f"Haushaltsplaner-{safe_household}-{payload['from_month']}-bis-{payload['through_month']}.xlsx"
+                return self.file_response(
+                    workbook,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    filename,
+                )
             if path.startswith("/api/accounts/") and path.endswith("/balances"):
                 parts = path.strip("/").split("/")
                 hid = (query.get("household_id") or [""])[0]
