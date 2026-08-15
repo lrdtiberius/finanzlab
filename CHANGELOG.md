@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.6
+
+- Enddatum und Ausführungsanzahl einer Umbuchung müssen dieselbe letzte Ausführung beschreiben
+- klare Fehlermeldung mit dem zur Anzahl passenden Enddatum
+- einmalige Umbuchungen erlauben nur genau eine Ausführung
+- fehlende erste Fälligkeiten werden nicht mehr unbemerkt durch das heutige Datum ersetzt
+- ungültige Kontostandsdaten beim ersten Konto werden vor dem Speichern abgewiesen
+- verbliebene, ungenutzte Zinsberechnung aus der Domänenlogik entfernt
+
 ## 0.11.5
 
 - strukturierter Excel-Export unter Einstellungen
