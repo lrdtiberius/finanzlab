@@ -1,6 +1,6 @@
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **0.11.5**
+Gültig für Version **0.11.6**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Daraus entstehen Tages- und Monatsprognosen für die hinterlegten Konten.
 
@@ -227,7 +227,7 @@ Angaben:
 - optionales Ende
 - optionale Anzahl der Ausführungen
 
-Das Ende ist einschließlich. Wenn Ende und Anzahl gemeinsam gesetzt werden, beendet die zuerst erreichte Grenze die Umbuchungsserie.
+Das Ende ist einschließlich. Wenn Ende und Anzahl gemeinsam gesetzt werden, müssen beide Angaben dieselbe letzte Ausführung beschreiben. Beispiel: Eine monatliche Umbuchung mit erster Fälligkeit am 15.08.2026 und 12 Ausführungen endet am 15.07.2027. Abweichende Kombinationen werden mit dem passenden Enddatum angezeigt und nicht gespeichert.
 
 ## 9. Dashboard
 

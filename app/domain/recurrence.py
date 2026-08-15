@@ -18,6 +18,19 @@ def add_months_anchored(first_due_date,offset):
     return date(year,month,min(first.day,calendar.monthrange(year,month)[1]))
 
 
+def last_occurrence_date(first_due_date,recurrence,occurrence_count):
+    """Return the contractual date of the final numbered occurrence."""
+    first=_as_date(first_due_date)
+    count=int(occurrence_count)
+    if count<1: raise ValueError("occurrence_count must be positive")
+    if recurrence=="once":
+        if count!=1: raise ValueError("a one-time recurrence has exactly one occurrence")
+        return first
+    months=RECURRENCE_MONTHS.get(recurrence)
+    if months is None: raise ValueError(f"Unbekannter Zahlungsrhythmus: {recurrence}")
+    return add_months_anchored(first,(count-1)*months)
+
+
 def recurrence_dates(first_due_date,recurrence,start_exclusive,end_inclusive,
                      active_from=None,active_to_exclusive=None,stream_start=None,stream_end=None,
                      max_occurrences=None):

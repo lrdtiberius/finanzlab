@@ -90,6 +90,25 @@ class PlanningModelV011Tests(unittest.TestCase):
         self.assertEqual(["2026-08-16", "2026-08-15"], [row["anchor_date"] for row in history])
         self.assertEqual([0, 1], [row["bookings_applied"] for row in history])
 
+    def test_first_account_rejects_an_invalid_balance_date_before_saving(self):
+        with self.assertRaisesRegex(ValueError, "Stichtag.*gültiges Datum"):
+            self.repository.create_household(
+                {
+                    "name": "Ungültiger Haushalt",
+                    "mode": "single",
+                    "person_a": "Alex",
+                    "account": {
+                        "name": "Startkonto",
+                        "anchor_date": "31.02.2026",
+                        "balance_cents": 100_000,
+                    },
+                }
+            )
+        self.assertNotIn(
+            "Ungültiger Haushalt",
+            {item["name"] for item in self.repository.list_households()},
+        )
+
     def test_exactly_one_default_account_and_credit_is_an_expense_category(self):
         initial = self.repository.household_detail(self.household_id, "2026-08-15")
         self.assertTrue(initial["accounts"][0]["is_default"])
@@ -188,12 +207,12 @@ class PlanningModelV011Tests(unittest.TestCase):
                 "occurrence_count": 2,
             }
         )
-        earliest_limit = self.repository.create_transfer(
+        matching_limits = self.repository.create_transfer(
             {
                 **common,
-                "name": "Frühere Grenze",
+                "name": "Passende Grenzen",
                 "due_date": "2026-08-25",
-                "end_date": "2026-12-25",
+                "end_date": "2026-09-25",
                 "occurrence_count": 2,
             }
         )
@@ -227,11 +246,11 @@ class PlanningModelV011Tests(unittest.TestCase):
         )
         self.assertEqual(
             2,
-            sum(1 for item in september["movements"] if item["source_id"] == earliest_limit["id"]),
+            sum(1 for item in september["movements"] if item["source_id"] == matching_limits["id"]),
         )
         self.assertEqual(
             0,
-            sum(1 for item in october["movements"] if item["source_id"] == earliest_limit["id"]),
+            sum(1 for item in october["movements"] if item["source_id"] == matching_limits["id"]),
         )
 
     def test_transfer_limits_are_validated(self):
@@ -260,6 +279,67 @@ class PlanningModelV011Tests(unittest.TestCase):
             self.repository.create_transfer({**payload, "end_date": "2026-08-14"})
         with self.assertRaisesRegex(ValueError, "zwischen 1 und 1.200"):
             self.repository.create_transfer({**payload, "occurrence_count": 0})
+        with self.assertRaisesRegex(ValueError, "erste Fälligkeit ist erforderlich"):
+            self.repository.create_transfer({**payload, "due_date": ""})
+        with self.assertRaisesRegex(ValueError, "passen nicht zusammen"):
+            self.repository.create_transfer(
+                {
+                    **payload,
+                    "occurrence_count": 12,
+                    "end_date": "2027-06-15",
+                }
+            )
+        matching = self.repository.create_transfer(
+            {
+                **payload,
+                "name": "Zwölf passende Ausführungen",
+                "occurrence_count": 12,
+                "end_date": "2027-07-15",
+            }
+        )
+        self.assertEqual(12, matching["occurrence_count"])
+        self.assertEqual("2027-07-15", matching["end_date"])
+        with self.assertRaisesRegex(ValueError, "nur eine Ausführung"):
+            self.repository.create_transfer(
+                {**payload, "recurrence": "once", "occurrence_count": 2}
+            )
+
+    def test_inconsistent_transfer_update_is_rejected_without_overwriting_data(self):
+        detail = self.repository.create_account(
+            {
+                "household_id": self.household_id,
+                "name": "Rücklage",
+                "owner": "A",
+                "balance_cents": 0,
+                "anchor_date": "2026-08-15",
+                "bookings_applied": False,
+            }
+        )
+        target_id = next(a["id"] for a in detail["accounts"] if a["name"] == "Rücklage")
+        payload = {
+            "household_id": self.household_id,
+            "name": "Monatliche Rücklage",
+            "source_account_id": self.giro_id,
+            "target_account_id": target_id,
+            "amount_cents": 5_000,
+            "recurrence": "monthly",
+            "due_date": "2026-08-31",
+            "end_date": "2026-09-30",
+            "occurrence_count": 2,
+            "active": True,
+        }
+        transfer = self.repository.create_transfer(payload)
+        with self.assertRaisesRegex(ValueError, "Enddatum.*30.11.2026"):
+            self.repository.update_transfer(
+                transfer["id"], {**payload, "occurrence_count": 4}
+            )
+        unchanged = next(
+            item
+            for item in self.repository.list_transfers(self.household_id)
+            if item["id"] == transfer["id"]
+        )
+        self.assertEqual(2, unchanged["occurrence_count"])
+        self.assertEqual("2026-09-30", unchanged["end_date"])
 
     def test_overdraft_warning_appears_after_limit_is_exceeded(self):
         self.repository.update_account(
@@ -409,6 +489,52 @@ class PlanningModelV011Tests(unittest.TestCase):
                     end_date="2027-09-15",
                 )
             )
+
+    def test_cash_flow_changes_are_persisted_on_the_selected_effective_date(self):
+        original = self.repository.create_cash_flow(
+            self.flow(
+                name="Alte Rate",
+                amount_cents=10_000,
+                due_date="2026-08-15",
+                effective_from="2026-08-01",
+            )
+        )
+        changed_payload = self.flow(
+            name="Neue Rate",
+            amount_cents=12_500,
+            due_date="2026-08-20",
+            effective_from="2026-08-10",
+        )
+        self.repository.update_cash_flow(original["id"], changed_payload)
+        before = next(
+            item
+            for item in self.repository.list_cash_flows(
+                self.household_id, "expense", "2026-08-09"
+            )
+            if item["id"] == original["id"]
+        )
+        after = next(
+            item
+            for item in self.repository.list_cash_flows(
+                self.household_id, "expense", "2026-08-10"
+            )
+            if item["id"] == original["id"]
+        )
+        self.assertEqual(("Alte Rate", 10_000), (before["name"], before["amount_cents"]))
+        self.assertEqual(("Neue Rate", 12_500), (after["name"], after["amount_cents"]))
+
+        self.repository.update_cash_flow(
+            original["id"], {**changed_payload, "amount_cents": 13_000}
+        )
+        updated = next(
+            item
+            for item in self.repository.list_cash_flows(
+                self.household_id, "expense", "2026-08-10"
+            )
+            if item["id"] == original["id"]
+        )
+        self.assertEqual(13_000, updated["amount_cents"])
+        self.assertEqual(2, len(updated["versions"]))
 
     def test_import_entry_points_are_disabled(self):
         with self.assertRaisesRegex(ValueError, "vollständig deaktiviert"):

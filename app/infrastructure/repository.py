@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
-from app.domain.recurrence import add_months_anchored, recurrence_dates
+from app.domain.recurrence import add_months_anchored, last_occurrence_date, recurrence_dates
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -198,6 +198,11 @@ class Repository:
             people.append(("B",str(payload.get("person_b","")).strip()))
             if not people[1][1]: raise ValueError("Person B ist erforderlich.")
         account=payload.get("account") or {}; account_name=str(account.get("name","")).strip()
+        account_anchor_date=None; account_balance_cents=0
+        if account_name:
+            account_anchor_date=as_of_date(account.get("anchor_date"))
+            try: account_balance_cents=int(account.get("balance_cents") or 0)
+            except (TypeError,ValueError): raise ValueError("Der Kontostand muss ein gültiger Geldwert sein.")
         hid=uid(); person_ids={slot:uid() for slot,_ in people}
         with self.lock,self.connect() as con:
             con.execute("INSERT INTO households(id,name,mode) VALUES(?,?,?)",(hid,name,mode))
@@ -211,7 +216,7 @@ class Repository:
                     (account_id,hid,account_name,scope,owner_id,overdraft_limit_cents,overdraft_apr))
                 con.execute("INSERT INTO account_versions VALUES(?,?,?,?,?,?,?,?,?,?)",(uid(),hid,account_id,account_name,scope,owner_id,overdraft_limit_cents,overdraft_apr,created_at,None))
                 con.execute("INSERT INTO balance_anchors(id,household_id,account_id,anchor_date,balance_cents,bookings_applied) VALUES(?,?,?,?,?,?)",
-                    (uid(),hid,account_id,account.get("anchor_date") or date.today().isoformat(),int(account.get("balance_cents") or 0),1 if account.get("bookings_applied") else 0))
+                    (uid(),hid,account_id,account_anchor_date,account_balance_cents,1 if account.get("bookings_applied") else 0))
         return self.household_detail(hid)
     def create_account(self,payload):
         hid=payload.get("household_id"); name=str(payload.get("name","")).strip(); owner=payload.get("owner")
@@ -470,10 +475,14 @@ class Repository:
         if amount<=0: raise ValueError("Der Umbuchungsbetrag muss größer als 0,00 € sein.")
         recurrence=str(payload.get("recurrence") or "once")
         if recurrence not in ("monthly","quarterly","yearly","once"): raise ValueError("Ungültiger Zahlungsrhythmus.")
-        due=as_of_date(payload.get("due_date"))
+        due_raw=payload.get("due_date")
+        if due_raw in (None,""): raise ValueError("Die erste Fälligkeit ist erforderlich.")
+        try: due=date.fromisoformat(str(due_raw)).isoformat()
+        except ValueError: raise ValueError("Die erste Fälligkeit muss ein gültiges Datum sein.")
         end_date=None
         if payload.get("end_date") not in (None,""):
-            end_date=as_of_date(payload.get("end_date"))
+            try: end_date=date.fromisoformat(str(payload.get("end_date"))).isoformat()
+            except ValueError: raise ValueError("Das Enddatum muss ein gültiges Datum sein.")
             if end_date<due: raise ValueError("Das Ende darf nicht vor der ersten Fälligkeit liegen.")
         occurrence_count=None
         count_raw=payload.get("occurrence_count")
@@ -482,6 +491,16 @@ class Repository:
             except (TypeError,ValueError): raise ValueError("Die Anzahl muss eine ganze Zahl sein.")
             if str(count_raw).strip()!=str(occurrence_count) or not 1<=occurrence_count<=1200:
                 raise ValueError("Die Anzahl muss zwischen 1 und 1.200 Ausführungen liegen.")
+            if recurrence=="once" and occurrence_count!=1:
+                raise ValueError("Eine einmalige Umbuchung kann nur eine Ausführung haben.")
+        if end_date and occurrence_count is not None:
+            expected_end=last_occurrence_date(due,recurrence,occurrence_count).isoformat()
+            if end_date!=expected_end:
+                expected_label=date.fromisoformat(expected_end).strftime("%d.%m.%Y")
+                raise ValueError(
+                    f"Enddatum und Anzahl passen nicht zusammen. Bei {occurrence_count} "
+                    f"Ausführungen ist das Enddatum {expected_label}."
+                )
         active=0 if payload.get("active") in (False,0,"0") else 1
         return {"household_id":hid,"name":name,"source_account_id":source,"target_account_id":target,
             "amount_cents":amount,"recurrence":recurrence,"due_date":due,"end_date":end_date,
