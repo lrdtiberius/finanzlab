@@ -1,8 +1,11 @@
 import sqlite3
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
+from app.application.excel_export import build_forecast_workbook
 from app.infrastructure.repository import Repository
 
 
@@ -411,6 +414,59 @@ class PlanningModelV011Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "vollständig deaktiviert"):
             self.repository.save_bank_statement_preview(
                 self.household_id, self.giro_id, {}
+            )
+
+    def test_excel_export_contains_forecasts_and_all_entered_positions(self):
+        income = self.repository.create_cash_flow(
+            self.flow(
+                kind="income",
+                name="Gehalt",
+                category="salary",
+                amount_cents=250_000,
+                recurrence="monthly",
+                due_date="2026-08-28",
+            )
+        )
+        expense = self.repository.create_cash_flow(
+            self.flow(
+                name="Deaktivierte Rate",
+                amount_cents=12_500,
+                recurrence="monthly",
+                due_date="2026-08-20",
+                active=False,
+            )
+        )
+        payload = self.repository.excel_export_payload(
+            self.household_id, "2026-08", "2026-10"
+        )
+        self.assertEqual(3, payload["month_count"])
+        self.assertEqual(
+            {income["id"]}, {item["id"] for item in payload["incomes"]}
+        )
+        self.assertIn(expense["id"], {item["id"] for item in payload["expenses"]})
+        self.assertEqual(
+            750_000, sum(item["income_cents"] for item in payload["months"])
+        )
+        self.assertFalse(
+            any(item["source_id"] == expense["id"] for item in payload["movements"])
+        )
+
+        workbook = build_forecast_workbook(payload)
+        with ZipFile(BytesIO(workbook)) as archive:
+            names = set(archive.namelist())
+            self.assertIn("xl/styles.xml", names)
+            self.assertIn("xl/worksheets/sheet10.xml", names)
+            workbook_xml = archive.read("xl/workbook.xml").decode("utf-8")
+            overview_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+            self.assertIn('name="Tagesprognose"', workbook_xml)
+            self.assertIn('name="Ausgaben"', workbook_xml)
+            self.assertIn("SUM('Monatsprognose'!E5:E7)", overview_xml)
+            self.assertIn("Deaktivierte Rate", archive.read("xl/worksheets/sheet8.xml").decode("utf-8"))
+
+    def test_excel_export_rejects_more_than_twenty_four_months(self):
+        with self.assertRaisesRegex(ValueError, "höchstens 24 Monate"):
+            self.repository.excel_export_payload(
+                self.household_id, "2026-01", "2028-01"
             )
 
 
