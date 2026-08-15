@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Private, tagesgenaue Haushalts- und Liquiditätsplanung.">
+  <title>Haushaltsplaner · by Lrd.Tiberius</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="refinements.css">
+</head>
+<body>
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="brand-row">
+        <a class="brand" href="#dashboard" data-show-view="dashboard" aria-label="Zum Dashboard">
+          <span class="brand-mark">H</span>
+          <span><small>LIQUIDITÄTSPLANUNG</small><b>Haushaltsplaner</b><em>by Lrd.Tiberius</em></span>
+        </a>
+        <span class="household-pill">Haushalt: <b id="current-household-name">–</b></span>
+      </div>
+      <nav class="main-nav" aria-label="Hauptnavigation">
+        <button class="nav-item active" data-view="dashboard">Dashboard</button>
+        <button class="nav-item" data-view="forecast">Prognose</button>
+        <button class="nav-item" data-view="preview">Vorschau</button>
+        <button class="nav-item" data-view="accounts">Konten</button>
+        <button class="nav-item" data-view="income">Einnahmen</button>
+        <button class="nav-item" data-view="expenses">Ausgaben</button>
+        <button class="nav-item" data-view="transfers">Umbuchungen</button>
+        <button class="nav-item" data-view="settings">Einstellungen</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="dashboard-view" class="view">
+        <div class="hero">
+          <div><p class="eyebrow">PROGNOSTIZIERTE KONTEN GESAMT</p><h1 id="dashboard-balance">0,00 €</h1><p id="dashboard-balance-note">Noch kein Kontostand hinterlegt</p></div>
+          <div class="date-control"><span>Stichtag</span><button id="dashboard-prev" type="button">←</button><input id="dashboard-date" type="date"><button id="dashboard-next" type="button">→</button><button id="dashboard-today" class="secondary" type="button">Heute</button></div>
+        </div>
+        <div id="dashboard-warnings"></div>
+        <div class="metric-grid four">
+          <article class="metric"><span>Monatliche Einnahmen</span><strong id="dashboard-income">0,00 €</strong><small>aktive Positionen</small></article>
+          <article class="metric"><span>Monatliche Ausgaben</span><strong id="dashboard-expenses">0,00 €</strong><small>inklusive Ausgabenart Kredit</small></article>
+          <article class="metric accent"><span>Monatlich frei</span><strong id="dashboard-surplus">0,00 €</strong><small>Einnahmen minus Ausgaben</small></article>
+          <article class="metric"><span>Konten</span><strong id="dashboard-account-count">0</strong><small>mit historisierten Ständen</small></article>
+        </div>
+        <div class="dashboard-grid">
+          <section class="panel"><div class="section-heading"><div><p class="eyebrow">AUSWERTUNG</p><h2>Monatliche Aufteilung</h2></div><span id="dashboard-as-of" class="badge"></span></div><div id="dashboard-breakdowns" class="breakdown-grid"></div></section>
+          <aside class="panel"><div class="section-heading"><div><p class="eyebrow">KONTEN</p><h2>Kontostände</h2></div></div><div id="dashboard-account-list" class="account-list"></div></aside>
+        </div>
+      </section>
+
+      <section id="forecast-view" class="view" hidden>
+        <div class="page-heading split-heading"><div><p class="eyebrow">TAGESGENAUE BERECHNUNG</p><h1>Prognose</h1><p>Prüfe für einen Stichtag die berechneten Kontostände und an diesem Tag fälligen Bewegungen.</p></div><div class="date-control"><span>Stichtag</span><button id="forecast-prev" type="button">←</button><input id="forecast-date" type="date"><button id="forecast-next" type="button">→</button><button id="forecast-today" class="secondary" type="button">Heute</button></div></div>
+        <section class="panel"><div class="section-heading"><div><p class="eyebrow">KONTENAUSWAHL</p><h2>Bis zu vier Konten</h2></div></div><div id="forecast-account-selectors" class="choice-grid"></div></section>
+        <div id="forecast-summary" class="summary-grid"></div>
+        <div id="forecast-warnings"></div>
+        <div id="forecast-account-cards" class="card-grid"></div>
+        <section class="panel spaced"><div class="section-heading"><div><p class="eyebrow">AM STICHTAG</p><h2>Zahlungen und Einnahmen</h2></div><span id="forecast-day-badge" class="badge"></span></div><div id="forecast-movements" class="movement-list"></div></section>
+        <section class="panel spaced"><div class="section-heading"><div><p class="eyebrow">RESTLICHER MONAT</p><h2>Noch kommende Geldbewegungen</h2></div><span id="forecast-month-badge" class="badge"></span></div><div id="forecast-month-summary" class="summary-grid compact"></div><div id="forecast-month-movements" class="movement-list"></div></section>
+      </section>
+
+      <section id="preview-view" class="view" hidden>
+        <div class="page-heading split-heading"><div><p class="eyebrow">MONATSSIMULATION</p><h1>Vorschau</h1><p>Alle simulierten Kontostände des Monats auf einen Blick. Öffne einen Tag, um seine Kontobewegungen zu sehen.</p></div><div class="month-control"><button id="preview-minus" type="button" aria-label="Einen Monat zurück">←</button><strong id="preview-month-label" aria-live="polite"></strong><button id="preview-plus" type="button" aria-label="Einen Monat vor">→</button><button id="preview-plus-two" type="button" aria-label="Zwei Monate vor">+2</button><button id="preview-current" class="secondary" type="button">Aktueller Monat</button></div></div>
+        <section class="panel"><div class="section-heading"><div><p class="eyebrow">KONTENAUSWAHL</p><h2>Angezeigte Konten</h2></div></div><div id="preview-account-selectors" class="choice-grid"></div></section>
+        <div id="preview-summary" class="summary-grid"></div>
+        <div id="preview-warnings"></div>
+        <section class="panel spaced"><div class="section-heading"><div><p class="eyebrow">TAG FÜR TAG</p><h2>Simulierte Kontostände</h2></div><span id="preview-range" class="badge"></span></div><div id="preview-day-navigation" class="day-navigation" hidden><button id="preview-day-prev" type="button" aria-label="Einen Tag zurück">←</button><strong id="preview-selected-day-label"></strong><button id="preview-day-next" type="button" aria-label="Einen Tag vor">→</button></div><div id="preview-day-list" class="day-list"></div></section>
+      </section>
+
+      <section id="accounts-view" class="view" hidden>
+        <div class="page-heading"><p class="eyebrow">BANKKONTEN UND HISTORIE</p><h1>Konten</h1><p>Verwalte Konten, Standardkonto, Disporahmen und die historisierten Kontostände.</p></div>
+        <section class="panel"><div class="section-heading"><div><p class="eyebrow">KONTENVERWALTUNG</p><h2>Konten</h2></div><div class="section-actions"><button id="new-account" class="button compact" type="button">+ Konto</button></div></div><div id="manage-account-list" class="account-list"></div></section>
+      </section>
+
+      <section id="income-view" class="view" hidden>
+        <div class="page-heading"><p class="eyebrow">GELDEINGÄNGE</p><h1>Einnahmen</h1><p>Verwalte regelmäßige und einmalige Einnahmen sowie deren Kontozuordnung.</p></div>
+        <section class="panel"><div class="section-heading"><div><p class="eyebrow">REGELMÄSSIG UND EINMALIG</p><h2>Einnahmen</h2></div><button id="new-income" class="button compact" type="button">+ Einnahme</button></div><div id="income-list" class="flow-list"></div></section>
+      </section>
+
+      <section id="expenses-view" class="view" hidden>
+        <div class="page-heading"><p class="eyebrow">AUSGABENPLANUNG</p><h1>Ausgaben</h1><p>Alle regelmäßigen oder einmaligen Ausgaben – einschließlich der Art „Kredit“ – an einer Stelle.</p></div>
+        <section class="panel"><div class="section-heading"><div><p class="eyebrow">ZAHLUNGEN</p><h2>Ausgaben</h2></div><button id="new-expense" class="button compact" type="button">+ Ausgabe</button></div><div id="expense-list" class="flow-list"></div></section>
+      </section>
+
+      <section id="transfers-view" class="view" hidden>
+        <div class="page-heading"><p class="eyebrow">ZWISCHEN EIGENEN KONTEN</p><h1>Umbuchungen</h1><p>Der Betrag geht vom Quellkonto ab und beim Zielkonto ein. Der Haushaltsgesamtstand bleibt unverändert.</p></div>
+        <section class="panel"><div class="section-heading"><div><p class="eyebrow">GEPLANT</p><h2>Umbuchungen</h2></div><button id="new-transfer" class="button compact" type="button">+ Umbuchung</button></div><div id="transfer-list" class="flow-list"></div></section>
+      </section>
+
+      <section id="settings-view" class="view" hidden>
+        <div class="page-heading"><p class="eyebrow">VERWALTUNG UND DATENPRÜFUNG</p><h1>Einstellungen</h1><p>Wechsle den Haushalt und finde Positionen, die wegen fehlerhafter oder fehlender Angaben nicht berücksichtigt werden.</p></div>
+        <div class="settings-grid">
+          <section class="panel"><div class="section-heading"><div><p class="eyebrow">HAUSHALT</p><h2>Aktiver Haushalt</h2></div></div><label class="stacked">Haushalt<select id="household-select"></select></label><div class="section-actions left"><button id="new-household" class="button secondary" type="button">+ Haushalt</button><button id="delete-household" class="button danger" type="button">Haushalt löschen</button></div></section>
+          <section class="panel"><div class="section-heading"><div><p class="eyebrow">PERSONEN</p><h2>Zuordnung</h2></div></div><div id="person-list" class="person-list"></div></section>
+          <section class="panel diagnostics-panel"><div class="section-heading"><div><p class="eyebrow">DATENPRÜFUNG</p><h2>Nicht berücksichtigte Einnahmen und Ausgaben</h2></div><span id="diagnostics-as-of" class="badge"></span></div><div id="diagnostics-summary" class="summary-grid compact"></div><div id="diagnostics-list" class="diagnostics-list"></div></section>
+        </div>
+      </section>
+    </main>
+
+    <footer><span>Haushaltsplaner <b>by Lrd.Tiberius</b> · Version 0.11.4</span><a href="https://www.buymeacoffee.com/" target="_blank" rel="noreferrer">☕ Buy me a coffee</a></footer>
+  </div>
+
+  <dialog id="setup-dialog" class="modal small-modal"><form id="setup-form"><div class="modal-head"><div><p class="eyebrow">HAUSHALT ANLEGEN</p><h2>Willkommen</h2></div><button id="close-setup" class="icon-button" type="button" data-close="setup-dialog">×</button></div><div class="form-grid"><label class="wide">Name des Haushalts<input name="name" required></label><fieldset class="wide"><legend>Haushaltsmodell</legend><label class="choice"><input type="radio" name="mode" value="single" checked> Einzelperson</label><label class="choice"><input type="radio" name="mode" value="couple"> Paar</label></fieldset><label>Name Person A<input name="person_a" required></label><label id="person-b-field" hidden>Name Person B<input name="person_b"></label><label class="wide">Erstes Konto <span class="hint">optional</span><input name="account_name"></label><label>Kontostand<input name="balance" type="number" step="0.01" value="0"></label><label>Stand vom<input name="anchor_date" type="date"></label><label>Disporahmen<input name="overdraft_limit" type="number" step="0.01" min="0" value="0"></label><label class="check wide"><input name="bookings_applied" type="checkbox"> Alle Buchungen des Stichtags sind bereits im Kontostand enthalten</label></div><div id="setup-error" class="notice error" hidden></div><div class="modal-actions"><button class="button" type="submit">Haushalt anlegen</button></div></form></dialog>
+
+  <dialog id="account-dialog" class="modal"><form id="account-form"><div class="modal-head"><div><p id="account-dialog-eyebrow" class="eyebrow">KONTO ANLEGEN</p><h2 id="account-dialog-title">Konto anlegen</h2></div><button class="icon-button" type="button" data-close="account-dialog">×</button></div><div class="form-grid"><label>Kontoname<input name="name" required></label><label>Besitzer<select name="owner" id="account-owner" required></select></label><label>Disporahmen<input name="overdraft_limit" type="number" min="0" step="0.01" value="0"></label><label class="check wide"><input name="is_default" type="checkbox"> Als Standardkonto für neue Einnahmen und Ausgaben verwenden</label></div><div class="balance-entry"><div><p class="eyebrow">KONTOSTAND ERFASSEN</p><h3>Neuer historischer Stand</h3></div><div class="form-grid"><label>Kontostand<input name="balance" type="number" step="0.01" required></label><label>Stand vom<input name="anchor_date" type="date" required></label><label class="check wide"><input name="bookings_applied" type="checkbox"> Alle Buchungen dieses Tages sind bereits enthalten</label></div></div><div id="account-history" class="history" hidden></div><div id="account-error" class="notice error" hidden></div><div class="modal-actions"><button id="account-submit" class="button" type="submit">Konto speichern</button></div></form></dialog>
+
+  <dialog id="cash-flow-dialog" class="modal"><form id="cash-flow-form"><div class="modal-head"><div><p id="cash-flow-dialog-eyebrow" class="eyebrow">NEUE POSITION</p><h2 id="cash-flow-dialog-title">Position anlegen</h2></div><button class="icon-button" type="button" data-close="cash-flow-dialog">×</button></div><div class="form-grid"><label class="wide">Bezeichnung<input name="name" required></label><label>Art<select name="category" id="cash-flow-category"></select></label><label id="cash-flow-owner-field">Zuordnung<select name="owner" id="cash-flow-owner"></select></label><label>Betrag<input name="amount" type="number" min="0" step="0.01" required></label><label>Rhythmus<select name="recurrence"><option value="monthly">Monatlich</option><option value="quarterly">Vierteljährlich</option><option value="yearly">Jährlich</option><option value="once">Einmalig</option></select></label><label>Erste / nächste Fälligkeit<input name="due_date" type="date" required></label><label id="cash-flow-end-date-field">Enddatum <span class="hint">bis einschließlich</span><input name="end_date" type="date"></label><label id="cash-flow-duration-field">Dauer in Monaten <span class="hint">z. B. 12 = ein Jahr</span><input name="duration_months" type="number" min="1" max="1200" step="1"></label><label class="wide">Konto<select name="account_id" id="cash-flow-account"></select></label><label class="check wide"><input name="active" type="checkbox" checked> In Berechnungen berücksichtigen</label></div><div id="cash-flow-error" class="notice error" hidden></div><div class="modal-actions split"><button id="delete-cash-flow" class="button danger" type="button" hidden>Löschen</button><button id="cash-flow-submit" class="button" type="submit">Speichern</button></div></form></dialog>
+
+  <dialog id="transfer-dialog" class="modal"><form id="transfer-form"><div class="modal-head"><div><p class="eyebrow">ZWISCHEN KONTEN</p><h2 id="transfer-dialog-title">Umbuchung anlegen</h2></div><button class="icon-button" type="button" data-close="transfer-dialog">×</button></div><div class="form-grid"><label class="wide">Bezeichnung<input name="name" value="Umbuchung" required></label><label>Von Konto<select name="source_account_id" id="transfer-source" required></select></label><label>An Konto<select name="target_account_id" id="transfer-target" required></select></label><label>Betrag<input name="amount" type="number" min="0.01" step="0.01" required></label><label>Fälligkeit<input name="due_date" type="date" required></label><label>Rhythmus<select name="recurrence"><option value="once">Einmalig</option><option value="monthly">Monatlich</option><option value="quarterly">Vierteljährlich</option><option value="yearly">Jährlich</option></select></label><label>Ende <span class="hint">bis einschließlich</span><input name="end_date" type="date"></label><label>Anzahl <span class="hint">Ausführungen</span><input name="occurrence_count" type="number" min="1" max="1200" step="1"></label><p class="hint wide">Ende und Anzahl sind optional. Wenn beides gesetzt ist, gilt die zuerst erreichte Grenze.</p><label class="check wide"><input name="active" type="checkbox" checked> In Berechnungen berücksichtigen</label></div><div id="transfer-error" class="notice error" hidden></div><div class="modal-actions split"><button id="delete-transfer" class="button danger" type="button" hidden>Löschen</button><button class="button" type="submit">Speichern</button></div></form></dialog>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

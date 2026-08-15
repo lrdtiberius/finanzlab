@@ -1,0 +1,31 @@
+services:
+  haushaltsplaner:
+    build: .
+    image: finanzlab:0.11.4
+    container_name: finanzlab
+    ports:
+      - "8798:8798"
+    environment:
+      DATA_DIR: /data
+      PORT: "8798"
+    volumes:
+      - finanzlab_data:/data
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8798/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    restart: unless-stopped
+
+volumes:
+  finanzlab_data:
+

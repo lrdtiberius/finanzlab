@@ -1,0 +1,26 @@
+.day-entry summary {
+  position: relative;
+  padding-right: 36px;
+}
+
+.day-entry summary::after {
+  position: absolute;
+  right: 13px;
+}
+
+.date-control input,
+.date-control button {
+  color: var(--ink);
+  -webkit-text-fill-color: var(--ink);
+  color-scheme: light;
+}
+
+.date-control button {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.date-control .secondary {
+  font-size: 15px;
+  -webkit-text-fill-color: var(--accent-dark);
+}
