@@ -9,18 +9,20 @@ CATEGORY_LABELS = {
     "salary": "Gehalt", "pension": "Rente", "benefit": "Leistung",
     "family": "Familie", "other_income": "Sonstige Einnahme",
     "housing": "Wohnen", "energy": "Energie", "insurance": "Versicherung",
-    "food": "Lebensmittel", "mobility": "Mobilität", "credit": "Kredit",
+    "food": "Lebensmittel", "mobility": "Mobilität", "consumer_credit": "Konsumkredit",
+    "credit": "Kredit", "borrowed": "Geliehen",
     "leisure": "Freizeit", "other_expense": "Sonstige Ausgabe", "other": "Sonstiges",
 }
 RECURRENCE_LABELS = {
     "monthly": "Monatlich", "quarterly": "Vierteljährlich",
-    "yearly": "Jährlich", "once": "Einmalig",
+    "semiannual": "Halbjährlich", "yearly": "Jährlich", "once": "Einmalig",
 }
 MOVEMENT_LABELS = {
     "income": "Einnahme", "expense": "Ausgabe",
     "transfer_in": "Umbuchung Eingang", "transfer_out": "Umbuchung Ausgang",
 }
 LIFECYCLE_LABELS = {"current": "Aktuell", "upcoming": "Zukünftig", "ended": "Beendet"}
+CREDIT_TYPE_LABELS = {"consumer_credit": "Konsumkredit", "credit": "Kredit", "borrowed": "Geliehen"}
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,7 @@ def build_forecast_workbook(payload):
         "label": item.get("label") or "Ohne Bezeichnung", "account": item["account_name"],
         "amount": euro(item.get("amount_cents")),
         "applied": yes_no(item.get("applied_to_projection", True)),
+        "completed": yes_no(item.get("completed", False)),
         "origin": "Gebucht" if item.get("origin") == "actual" else ("Umbuchung" if item.get("origin") == "transfer" else "Geplant"),
     } for item in payload["movements"]]
 
@@ -138,6 +141,8 @@ def build_forecast_workbook(payload):
             "active": yes_no(item.get("configured_active")),
             "status": LIFECYCLE_LABELS.get(item.get("lifecycle_status"), item.get("lifecycle_status") or ""),
             "version_from": item.get("version_from"),
+            "credit": item.get("credit_name") if expense else None,
+            "credit_reduction": euro(item.get("credit_reduction_cents")) if expense and item.get("credit_id") else None,
         }
 
     incomes = [flow_record(item) for item in payload["incomes"]]
@@ -155,6 +160,25 @@ def build_forecast_workbook(payload):
         "source": "Manuell" if item.get("source") == "manual" else "Historischer Altbestand",
         "created": item.get("created_at"),
     } for item in payload["balance_history"]]
+    credits = [{
+        "name": item["name"], "type": CREDIT_TYPE_LABELS.get(item["credit_type"], item["credit_type"]),
+        "opening": euro(item["opening_balance_cents"]), "paid": euro(item["paid_cents"]),
+        "remaining": euro(item["remaining_balance_cents"]), "future": euro(item["future_payment_cents"]),
+        "note": item.get("note") or "",
+    } for item in payload.get("credits", [])]
+    credit_payments = [{
+        "credit": item["credit_name"], "type": CREDIT_TYPE_LABELS.get(item["credit_type"], item["credit_type"]),
+        "date": item["date"], "amount": euro(item["amount_cents"]),
+        "source": "Verknüpfte Ausgabe" if item["source"] == "expense" else "Manuell",
+        "label": item["label"],
+        "status": StyledValue("Zukünftig – noch nicht saldowirksam", style="warning") if item.get("future") else "Im Saldo berücksichtigt",
+    } for item in payload.get("credit_payments", [])]
+    credit_months = [{
+        "month": month_date(item["month"]), "credit": item["credit_name"],
+        "type": CREDIT_TYPE_LABELS.get(item["credit_type"], item["credit_type"]),
+        "opening": euro(item["opening_balance_cents"]), "reduction": euro(item["reduction_cents"]),
+        "closing": euro(item["closing_balance_cents"]),
+    } for item in payload.get("credit_months", [])]
 
     month_last_row = 4 + len(months)
     count_formula = lambda sheet_name, count: (f"COUNTA('{sheet_name}'!A5:A{4 + count})" if count else "0")
@@ -166,47 +190,50 @@ def build_forecast_workbook(payload):
         {"area": "Bestand", "metric": "Einnahmen", "value": FormulaValue(count_formula("Einnahmen", len(incomes)), len(incomes), "integer"), "note": "Aktiv, inaktiv, zukünftig und beendet"},
         {"area": "Bestand", "metric": "Ausgaben", "value": FormulaValue(count_formula("Ausgaben", len(expenses)), len(expenses), "integer"), "note": "Aktiv, inaktiv, zukünftig und beendet"},
         {"area": "Bestand", "metric": "Umbuchungen", "value": FormulaValue(count_formula("Umbuchungen", len(transfers)), len(transfers), "integer"), "note": "Alle angelegten Umbuchungen"},
-        {"area": "Prognose", "metric": "Monate", "value": StyledValue(payload["month_count"], "integer"), "note": "Tagesgenau simuliert"},
-        {"area": "Prognose", "metric": "Einnahmen gesamt", "value": FormulaValue(f"SUM('Monatsprognose'!E5:E{month_last_row})", sum(item["income"] or 0 for item in months), "currency"), "note": "Fälligkeiten im Exportzeitraum"},
-        {"area": "Prognose", "metric": "Ausgaben gesamt", "value": FormulaValue(f"SUM('Monatsprognose'!F5:F{month_last_row})", sum(item["expense"] or 0 for item in months), "currency"), "note": "Fälligkeiten im Exportzeitraum"},
-        {"area": "Prognose", "metric": "Endstand", "value": FormulaValue(f"'Monatsprognose'!I{month_last_row}", months[-1]["closing"] if months else 0, "currency"), "note": f"Stand zum {payload['through_date']}"},
+        {"area": "Bestand", "metric": "Kredite", "value": FormulaValue(count_formula("Kredite", len(credits)), len(credits), "integer"), "note": "Konsumkredite, Kredite und Geliehen"},
+        {"area": "Bestand", "metric": "Offener Kreditsaldo", "value": FormulaValue(f"SUM('Kredite'!E5:E{4 + len(credits)})" if credits else "0", sum(item["remaining"] or 0 for item in credits), "currency"), "note": "Zukünftige Tilgungen sind noch nicht abgezogen"},
+        {"area": "Vorschau", "metric": "Monate", "value": StyledValue(payload["month_count"], "integer"), "note": "Tagesgenau simuliert"},
+        {"area": "Vorschau", "metric": "Einnahmen gesamt", "value": FormulaValue(f"SUM('Monatsvorschau'!E5:E{month_last_row})", sum(item["income"] or 0 for item in months), "currency"), "note": "Fälligkeiten im Exportzeitraum"},
+        {"area": "Vorschau", "metric": "Ausgaben gesamt", "value": FormulaValue(f"SUM('Monatsvorschau'!F5:F{month_last_row})", sum(item["expense"] or 0 for item in months), "currency"), "note": "Fälligkeiten im Exportzeitraum"},
+        {"area": "Vorschau", "metric": "Endstand", "value": FormulaValue(f"'Monatsvorschau'!I{month_last_row}", months[-1]["closing"] if months else 0, "currency"), "note": f"Stand zum {payload['through_date']}"},
         {"area": "Hinweis", "metric": "Berechnungsbasis", "value": "Historisierte Kontostände", "note": "Nur tatsächlich fällige Positionen; Tagesbuchungs-Checkbox wird beachtet"},
     ]
 
     sheets = [
-        TableSheet("Übersicht", "Haushaltsplaner – Excel-Export", "Strukturierter Überblick über Stammdaten und die tagesgenaue Prognose.", [
+        TableSheet("Übersicht", "Haushaltsplaner – Excel-Export", "Strukturierter Überblick über Stammdaten und die tagesgenaue Vorschau.", [
             Column("area", "Bereich", width=15), Column("metric", "Kennzahl", width=24),
             Column("value", "Wert", width=24), Column("note", "Erläuterung", width=58),
         ], overview),
-        TableSheet("Monatsprognose", "Monatsprognose", "Haushaltsweite Summen aus allen tatsächlichen Fälligkeiten des jeweiligen Monats.", [
+        TableSheet("Monatsvorschau", "Monatsvorschau", "Haushaltsweite Summen aus allen tatsächlichen Fälligkeiten des jeweiligen Monats.", [
             Column("month", "Monat", "month", 17), Column("from", "Von", "date", 13), Column("through", "Bis", "date", 13),
             Column("opening", "Anfangsstand", "currency", 18), Column("income", "Einnahmen", "currency", 17),
             Column("expense", "Ausgaben", "currency", 17), Column("transfers", "Umbuchungsvolumen", "currency", 20),
             Column("delta", "Veränderung", "currency", 17), Column("closing", "Endstand", "currency", 18),
             Column("warnings", "Dispowarnungen", "integer", 16),
         ], months),
-        TableSheet("Kontoprognose", "Monatliche Kontoprognose", "Anfang, Veränderung, Ende und niedrigster Stand je Konto und Monat.", [
+        TableSheet("Kontovorschau", "Monatliche Kontovorschau", "Anfang, Veränderung, Ende und niedrigster Stand je Konto und Monat.", [
             Column("month", "Monat", "month", 17), Column("account", "Konto", width=25),
             Column("opening", "Anfangsstand", "currency", 18), Column("change", "Veränderung", "currency", 17),
             Column("closing", "Endstand", "currency", 18), Column("minimum", "Niedrigster Stand", "currency", 20),
             Column("overdraft", "Disporahmen", "currency", 17), Column("exceeded", "Dispo überschritten", width=19),
             Column("overage", "Überschreitung", "currency", 18),
         ], account_months),
-        TableSheet("Tagesprognose", "Tagesprognose", "Simulierter Kontostand für jeden Tag und jedes Konto im Exportzeitraum.", [
+        TableSheet("Tagesvorschau", "Tagesvorschau", "Simulierter Kontostand für jeden Tag und jedes Konto im Exportzeitraum.", [
             Column("date", "Datum", "date", 13), Column("account", "Konto", width=25),
             Column("balance", "Simulierter Kontostand", "currency", 22), Column("overdraft", "Disporahmen", "currency", 17),
             Column("overage", "Überschreitung", "currency", 18), Column("status", "Status", width=22),
         ], days),
-        TableSheet("Bewegungen", "Prognostizierte Bewegungen", "Alle geplanten und gebuchten Bewegungen im gewählten Zeitraum.", [
+        TableSheet("Bewegungen", "Prognostizierte Bewegungen", "Alle geplanten, erledigten und gebuchten Bewegungen im gewählten Zeitraum.", [
             Column("date", "Datum", "date", 13), Column("kind", "Art", width=21), Column("label", "Bezeichnung", width=34),
             Column("account", "Konto", width=25), Column("amount", "Betrag", "currency", 17),
-            Column("applied", "Eingerechnet", width=15), Column("origin", "Quelle", width=15),
+            Column("applied", "Eingerechnet", width=15), Column("completed", "Vorgang erledigt", width=18),
+            Column("origin", "Quelle", width=15),
         ], movements),
         TableSheet("Konten", "Konten", f"Kontostände und Prognosewerte zum Ende des Exportzeitraums ({payload['through_date']}).", [
             Column("name", "Kontoname", width=25), Column("owner", "Besitzer", width=21), Column("default", "Standardkonto", width=16),
             Column("balance", "Gespeicherter Stand", "currency", 21), Column("anchor_date", "Stand vom", "date", 13),
             Column("bookings", "Tagesbuchungen", width=29), Column("overdraft", "Disporahmen", "currency", 17),
-            Column("forecast", "Prognose Endstand", "currency", 21), Column("status", "Status", width=22),
+            Column("forecast", "Vorschau Endstand", "currency", 21), Column("status", "Status", width=22),
         ], accounts),
         TableSheet("Einnahmen", "Alle Einnahmen", "Alle eingegebenen Einnahmen – unabhängig vom aktuellen Aktivitätsstatus.", [
             Column("name", "Bezeichnung", width=30), Column("category", "Art", width=21), Column("amount", "Betrag", "currency", 17),
@@ -218,9 +245,26 @@ def build_forecast_workbook(payload):
             Column("name", "Bezeichnung", width=30), Column("category", "Art", width=21), Column("amount", "Betrag", "currency", 17),
             Column("recurrence", "Rhythmus", width=17), Column("due_date", "Erste / nächste Fälligkeit", "date", 22),
             Column("end_date", "Enddatum inkl.", "date", 17), Column("duration", "Dauer Monate", "integer", 15),
+            Column("credit", "Verknüpfter Kredit", width=27), Column("credit_reduction", "Davon Tilgung", "currency", 18),
             Column("account", "Konto", width=24), Column("owner", "Zuordnung", width=20), Column("active", "Berücksichtigen", width=16),
             Column("status", "Lebenszyklus", width=16), Column("version_from", "Konfiguration ab", "date", 17),
         ], expenses),
+        TableSheet("Kredite", "Kredite", "Alle Kreditstammdaten mit dem heute wirksamen offenen Saldo.", [
+            Column("name", "Bezeichnung", width=30), Column("type", "Art", width=19),
+            Column("opening", "Anfangssaldo", "currency", 18), Column("paid", "Bisher getilgt", "currency", 18),
+            Column("remaining", "Offener Saldo", "currency", 18), Column("future", "Zukünftige Tilgung", "currency", 20),
+            Column("note", "Notiz", width=42),
+        ], credits),
+        TableSheet("Kreditzahlungen", "Kredit-Historie", "Manuelle und durch Ausgaben geplante Tilgungen. Zukünftige Zahlungen sind noch nicht saldowirksam.", [
+            Column("credit", "Kredit", width=29), Column("type", "Art", width=19), Column("date", "Datum", "date", 13),
+            Column("amount", "Tilgung", "currency", 17), Column("source", "Quelle", width=22),
+            Column("label", "Bezeichnung / Notiz", width=38), Column("status", "Status", width=33),
+        ], credit_payments),
+        TableSheet("Kreditvorschau", "Monatliche Kreditvorschau", "Separat simulierte Kreditstände; sie verändern niemals die Kontensumme.", [
+            Column("month", "Monat", "month", 17), Column("credit", "Kredit", width=29), Column("type", "Art", width=19),
+            Column("opening", "Anfangssaldo", "currency", 18), Column("reduction", "Tilgung im Monat", "currency", 19),
+            Column("closing", "Endsaldo", "currency", 18),
+        ], credit_months),
         TableSheet("Umbuchungen", "Alle Umbuchungen", "Quell- und Zielkonto sowie die optionalen Begrenzungen Ende und Anzahl.", [
             Column("name", "Bezeichnung", width=28), Column("source", "Von Konto", width=24), Column("target", "An Konto", width=24),
             Column("amount", "Betrag", "currency", 17), Column("recurrence", "Rhythmus", width=17),
@@ -350,7 +394,7 @@ def _write_xlsx(sheets, payload):
         for index, sheet in enumerate(sheets, 1):
             archive.writestr(f"xl/worksheets/sheet{index}.xml", _worksheet_xml(sheet))
         titles = "".join(f"<vt:lpstr>{escape(sheet.name)}</vt:lpstr>" for sheet in sheets)
-        archive.writestr("docProps/app.xml", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Haushaltsplaner</Application><DocSecurity>0</DocSecurity><ScaleCrop>false</ScaleCrop><HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Arbeitsblätter</vt:lpstr></vt:variant><vt:variant><vt:i4>{len(sheets)}</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="{len(sheets)}" baseType="lpstr">{titles}</vt:vector></TitlesOfParts><Company>Lrd.Tiberius</Company><AppVersion>0.11.6</AppVersion></Properties>''')
+        archive.writestr("docProps/app.xml", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Haushaltsplaner</Application><DocSecurity>0</DocSecurity><ScaleCrop>false</ScaleCrop><HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Arbeitsblätter</vt:lpstr></vt:variant><vt:variant><vt:i4>{len(sheets)}</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="{len(sheets)}" baseType="lpstr">{titles}</vt:vector></TitlesOfParts><Company>Lrd.Tiberius</Company><AppVersion>0.12.3</AppVersion></Properties>''')
         generated = str(payload.get("generated_at") or datetime.now(timezone.utc).isoformat()).replace("+00:00", "Z")
-        archive.writestr("docProps/core.xml", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>Haushaltsplaner Prognoseexport</dc:title><dc:creator>Lrd.Tiberius</dc:creator><cp:lastModifiedBy>Haushaltsplaner</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">{escape(generated)}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">{escape(generated)}</dcterms:modified></cp:coreProperties>''')
+        archive.writestr("docProps/core.xml", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>Haushaltsplaner Vorschau-Export</dc:title><dc:creator>Lrd.Tiberius</dc:creator><cp:lastModifiedBy>Haushaltsplaner</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">{escape(generated)}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">{escape(generated)}</dcterms:modified></cp:coreProperties>''')
     return output.getvalue()
