@@ -2,23 +2,28 @@
 
 Lokale Webanwendung zur tagesgenauen Liquiditätsplanung für private Haushalte.
 
-Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige und einmalige Einnahmen und Ausgaben sowie Umbuchungen zwischen eigenen Konten. Prognose und Monatsvorschau berechnen die daraus entstehenden Kontobewegungen pro Tag.
+Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige und einmalige Einnahmen und Ausgaben, Kredite mit Zahlungshistorie sowie Umbuchungen zwischen eigenen Konten. Die Monatsvorschau berechnet die daraus entstehenden Kontobewegungen und getrennt davon simulierte Kreditstände pro Tag.
 
 ## Funktionen
 
 - mehrere Haushalte und Konten
+- Konten können mit Bestätigung gelöscht werden; Zahlungspositionen bleiben zur Neuzuordnung erhalten
 - historisierte Kontostände mit Kennzeichnung bereits enthaltener Tagesbuchungen
 - Standardkonto für neue Einnahmen und Ausgaben
-- Einnahmen und Ausgaben mit Rhythmus und optionalem Enddatum
+- Einnahmen und Ausgaben mit monatlichem, vierteljährlichem, halbjährlichem, jährlichem oder einmaligem Rhythmus und optionalem Enddatum
 - Saldo aller angelegten Positionen direkt auf den Einnahmen- und Ausgabenseiten
-- Ausgabeart „Kredit“
+- eigene Kreditverwaltung für Konsumkredit, Kredit und Geliehen
+- vollständige Kredit-Historie aus verknüpften Ausgaben und manuellen Tilgungen
+- getrennter Abbuchungs- und Tilgungsbetrag für Annuitäten
+- zukünftige Tilgungen werden angezeigt, wirken aber erst ab ihrem Datum auf den Kreditsaldo
 - Umbuchungen mit Rhythmus, optionalem Enddatum und optionaler Ausführungsanzahl
-- Tagesprognose und taggenaue Monatsvorschau
-- strukturierter Excel-Export mit Monats-/Tagesprognosen, Bewegungen und sämtlichen Eingaben
+- taggenaue Monatsvorschau für Konten sowie separat auswählbare Kreditsimulation
+- dauerhaft gespeicherter Erledigt-Status je konkreter Bewegung; erledigte Vorgänge bleiben sichtbar und werden nicht erneut simuliert
+- strukturierter Excel-Export mit Monats-/Tagesvorschau, Krediten, Tilgungshistorie, Bewegungen und sämtlichen Eingaben
 - Warnung bei Überschreitung eines hinterlegten Disporahmens
 - Datenprüfung für nicht berücksichtigte oder unvollständige Positionen
 
-Importfunktionen, Kredit-Sondermodule und Zinsberechnungen sind nicht Bestandteil dieser Version.
+Importfunktionen und Zinsberechnungen sind nicht Bestandteil dieser Version.
 
 ## Schnellstart mit Docker
 
@@ -65,7 +70,7 @@ node --check app/static/app.js
 
 ## Handbuch
 
-Das vollständige Benutzerhandbuch mit Installation, Kontostand-Logik, Prognosen, Excel-Export, Datensicherung und Fehlerbehebung steht in [HANDBUCH.md](HANDBUCH.md).
+Das vollständige Benutzerhandbuch mit Installation, Kontostand-Logik, Krediten, Vorschau, Excel-Export, Datensicherung und Fehlerbehebung steht in [HANDBUCH.md](HANDBUCH.md).
 
 ## Datenschutz
 
@@ -77,7 +82,7 @@ Vor einer Veröffentlichung eigener Änderungen sollten insbesondere Datenbanken
 
 Ein Tag im Format `v*` startet den enthaltenen GitHub-Workflow. Er führt die Tests aus, erstellt ein Quellpaket des markierten Stands und veröffentlicht daraus ein GitHub-Release.
 
-Der Excel-Export wird in der Anwendung unter **Einstellungen** gestartet. Der Zeitraum ist auf höchstens 24 Monate begrenzt; alle eingegebenen Einnahmen und Ausgaben werden unabhängig vom Prognosezeitraum vollständig in eigenen Tabellenblättern ausgegeben.
+Der Excel-Export wird in der Anwendung unter **Einstellungen** gestartet. Der Zeitraum ist auf höchstens 24 Monate begrenzt; alle eingegebenen Einnahmen, Ausgaben, Kredite und Tilgungen werden unabhängig vom Vorschauzeitraum vollständig in eigenen Tabellenblättern ausgegeben.
 
 ## Autor und Unterstützung
 

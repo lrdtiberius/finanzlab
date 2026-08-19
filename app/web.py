@@ -14,7 +14,7 @@ REPOSITORY = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Haushaltsplaner/0.11.6"
+    server_version = "Haushaltsplaner/0.12.3"
 
     def json_response(self, data, status=HTTPStatus.OK):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -45,7 +45,7 @@ class Handler(BaseHTTPRequestHandler):
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "0.11.6"})
+                return self.json_response({"status": "ok", "version": "0.12.3"})
             if path == "/api/households":
                 return self.json_response({"items": REPOSITORY.list_households()})
             if path == "/api/dashboard":
@@ -64,6 +64,17 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/transfers":
                 hid = (query.get("household_id") or [""])[0]
                 return self.json_response({"items": REPOSITORY.list_transfers(hid)})
+            if path == "/api/credits":
+                hid = (query.get("household_id") or [""])[0]
+                as_of = (query.get("as_of") or [None])[0]
+                return self.json_response(REPOSITORY.list_credits(hid, as_of))
+            if path.startswith("/api/credits/"):
+                parts = path.strip("/").split("/")
+                hid = (query.get("household_id") or [""])[0]
+                as_of = (query.get("as_of") or [None])[0]
+                if len(parts) != 3:
+                    return self.json_response({"error": "Nicht gefunden."}, 404)
+                return self.json_response(REPOSITORY.credit_detail(hid, parts[2], as_of))
             if path == "/api/export.xlsx":
                 hid = (query.get("household_id") or [""])[0]
                 from_month = (query.get("from_month") or [""])[0]
@@ -112,6 +123,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_response(REPOSITORY.create_cash_flow(self.read_json()), 201)
             if path == "/api/transfers":
                 return self.json_response(REPOSITORY.create_transfer(self.read_json()), 201)
+            if path == "/api/credits":
+                return self.json_response(REPOSITORY.create_credit(self.read_json()), 201)
+            if path.startswith("/api/credits/") and path.endswith("/payments"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 4:
+                    return self.json_response({"error": "Nicht gefunden."}, 404)
+                return self.json_response(REPOSITORY.add_credit_payment(parts[2], self.read_json()), 201)
             if path == "/api/dashboard/simulation":
                 payload = self.read_json()
                 return self.json_response(REPOSITORY.simulation_dashboard(
@@ -120,7 +138,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/preview/monthly":
                 payload = self.read_json()
                 return self.json_response(REPOSITORY.monthly_preview(
-                    payload.get("household_id"), payload.get("month"), payload.get("account_ids") or []))
+                    payload.get("household_id"), payload.get("month"), payload.get("account_ids") or [],
+                    payload.get("credit_ids") or []))
             self.json_response({"error": "Nicht gefunden."}, 404)
         except (ValueError, json.JSONDecodeError) as exc:
             self.json_response({"error": str(exc)}, 400)
@@ -130,6 +149,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         path = urlparse(self.path).path
         try:
+            if path == "/api/movement-completion":
+                return self.json_response(REPOSITORY.set_movement_completion(self.read_json()))
             if path.startswith("/api/accounts/"):
                 account_id = path.removeprefix("/api/accounts/")
                 if not account_id or "/" in account_id:
@@ -145,6 +166,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not transfer_id or "/" in transfer_id:
                     return self.json_response({"error": "Nicht gefunden."}, 404)
                 return self.json_response(REPOSITORY.update_transfer(transfer_id, self.read_json()))
+            if path.startswith("/api/credits/"):
+                credit_id = path.removeprefix("/api/credits/")
+                if not credit_id or "/" in credit_id:
+                    return self.json_response({"error": "Nicht gefunden."}, 404)
+                return self.json_response(REPOSITORY.update_credit(credit_id, self.read_json()))
             self.json_response({"error": "Nicht gefunden."}, 404)
         except (ValueError, json.JSONDecodeError) as exc:
             self.json_response({"error": str(exc)}, 400)
@@ -161,6 +187,11 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts) != 5:
                     return self.json_response({"error": "Nicht gefunden."}, 404)
                 return self.json_response(REPOSITORY.delete_balance_entry(hid, parts[2], parts[4]))
+            if path.startswith("/api/accounts/"):
+                account_id = path.removeprefix("/api/accounts/")
+                if not account_id or "/" in account_id:
+                    return self.json_response({"error": "Nicht gefunden."}, 404)
+                return self.json_response(REPOSITORY.delete_account(hid, account_id))
             if path.startswith("/api/cash-flows/"):
                 flow_id = path.removeprefix("/api/cash-flows/")
                 if not flow_id or "/" in flow_id:
@@ -171,6 +202,16 @@ class Handler(BaseHTTPRequestHandler):
                 if not transfer_id or "/" in transfer_id:
                     return self.json_response({"error": "Nicht gefunden."}, 404)
                 return self.json_response(REPOSITORY.delete_transfer(hid, transfer_id))
+            if path.startswith("/api/credits/") and "/payments/" in path:
+                parts = path.strip("/").split("/")
+                if len(parts) != 5:
+                    return self.json_response({"error": "Nicht gefunden."}, 404)
+                return self.json_response(REPOSITORY.delete_credit_payment(hid, parts[2], parts[4]))
+            if path.startswith("/api/credits/"):
+                credit_id = path.removeprefix("/api/credits/")
+                if not credit_id or "/" in credit_id:
+                    return self.json_response({"error": "Nicht gefunden."}, 404)
+                return self.json_response(REPOSITORY.delete_credit(hid, credit_id))
             if path.startswith("/api/households/"):
                 household_id = path.removeprefix("/api/households/")
                 if not household_id or "/" in household_id:
