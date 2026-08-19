@@ -1081,6 +1081,20 @@ class PlanningModelV011Tests(unittest.TestCase):
             )
 
 
+class StaticUiTests(unittest.TestCase):
+    def test_credit_page_contains_type_filter_with_counts(self):
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "app/static/index.html").read_text(encoding="utf-8")
+        script = (root / "app/static/app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="credit-filter"', html)
+        self.assertIn("data-credit-filter", script)
+        self.assertIn("state.creditFilter==='all'", script)
+        self.assertIn("aria-pressed", script)
+        for credit_type in ("consumer_credit", "credit", "borrowed"):
+            self.assertIn(credit_type, script)
+
+
 class MigrationTests(unittest.TestCase):
     def test_legacy_loan_tables_and_rows_are_removed(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.4
+
+- Kreditseite um einen direkten Filter für Alle, Konsumkredit, Kredit und Geliehen erweitert
+- jeder Filter zeigt die Anzahl der enthaltenen Kredite und aktualisiert Überschrift sowie Liste sofort
+- nach dem Anlegen oder Ändern eines Kredits wird automatisch dessen Kreditart angezeigt
+- Filterzustand und leere Trefferlisten sind eindeutig und barrierearm beschriftet
+
 ## 0.12.3
 
 - Checkbox „Vorgang erledigt“ bei jeder geplanten Bewegung in der Monatsvorschau
