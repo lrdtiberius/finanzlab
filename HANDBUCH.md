@@ -1,8 +1,8 @@
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **0.11.6**
+Gültig für Version **0.12.3**
 
-Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Daraus entstehen Tages- und Monatsprognosen für die hinterlegten Konten.
+Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
 ## 1. Grundprinzip
 
@@ -11,9 +11,10 @@ Die Anwendung unterscheidet zwischen:
 - **gespeicherten Kontoständen** als bestätigten Ausgangspunkten,
 - **Einnahmen und Ausgaben** mit Datum und Zahlungsrhythmus,
 - **Umbuchungen** zwischen eigenen Konten,
-- **berechneten Kontoständen** für zukünftige Tage.
+- **Krediten und Tilgungen** mit einer eigenen Historie,
+- **berechneten Kontoständen** und separat simulierten Kreditsalden für zukünftige Tage.
 
-Ein gespeicherter Kontostand wird nicht durch die Prognose überschrieben. Neue Kontostände werden als weitere Einträge in der Historie gespeichert. Für eine Berechnung verwendet die Anwendung je Konto den jüngsten geeigneten Stand vor oder am gewählten Stichtag.
+Ein gespeicherter Kontostand wird nicht durch eine Berechnung überschrieben. Neue Kontostände werden als weitere Einträge in der Historie gespeichert. Für eine Berechnung verwendet die Anwendung je Konto den jüngsten geeigneten Stand vor oder am gewählten Stichtag.
 
 ## 2. Installation
 
@@ -99,11 +100,11 @@ Die Anwendung enthält folgende Seiten:
 | Seite | Zweck |
 | --- | --- |
 | Dashboard | Gesamtüberblick zum gewählten Stichtag |
-| Prognose | Detailberechnung für einen einzelnen Tag |
 | Vorschau | Tagesliste und Kontostände eines vollständigen Monats |
 | Konten | Konten, Disporahmen und Kontostand-Historie |
 | Einnahmen | Alle regelmäßigen und einmaligen Einnahmen |
-| Ausgaben | Alle Ausgaben, einschließlich der Art Kredit |
+| Ausgaben | Alle Ausgaben, optional mit einem Kredit und Tilgungsanteil verknüpft |
+| Kredite | Kreditstammdaten, offene Salden und vollständige Tilgungshistorie |
 | Umbuchungen | Geldbewegungen zwischen eigenen Konten |
 | Einstellungen | Haushalte, Personen, Datenprüfung und Excel-Export |
 
@@ -129,11 +130,13 @@ Genau ein Konto kann als Standardkonto markiert sein. Beim Anlegen einer Einnahm
 
 Jeder neu gespeicherte Kontostand wird als eigener historischer Eintrag abgelegt. Dadurch kann beispielsweise heute ein Stand für heute und morgen ein neuer Stand für morgen erfasst werden.
 
+Beim Öffnen des Kontodialogs wird das aktuell in der Anwendung gewählte Stichtagsdatum für den neuen Eintrag vorbelegt. Nach dem Speichern wechselt die Ansicht auf dieses Datum, damit der übernommene Kontostand sofort kontrolliert werden kann. Existiert für das gewählte Datum bereits ein Eintrag, wird genau dieser aktualisiert; andere Tage der Historie bleiben erhalten.
+
 Die Historie ist im Bearbeitungsdialog des Kontos sichtbar. Manuell erfasste Einträge können gelöscht werden, solange mindestens ein verwendbarer Kontostand für das Konto erhalten bleibt.
 
 ### 5.4 Checkbox für Tagesbuchungen
 
-Die Checkbox **Alle Buchungen dieses Tages sind bereits enthalten** beeinflusst die Berechnung am Datum des Kontostands:
+Die Checkbox **Zahlungen an diesem Tag sind im Kontostand bereits enthalten** beeinflusst die Berechnung am Datum des Kontostands. Der Hinweis unter der Checkbox zeigt ihre aktuelle Wirkung sofort an:
 
 - **aktiviert:** Einnahmen, Ausgaben und Umbuchungen dieses Tages werden nicht noch einmal auf den gespeicherten Stand gerechnet;
 - **nicht aktiviert:** die an diesem Tag fälligen Bewegungen werden ab dem gespeicherten Stand berücksichtigt.
@@ -147,6 +150,17 @@ Der Disporahmen wird als positiver Betrag eingegeben. Beispiel: `800,00 €` erl
 Sinkt ein simulierter Stand unter diesen Wert, zeigt die Anwendung eine Warnung mit dem überschrittenen Betrag. Die Warnung erscheint auch in der Monatsvorschau und im Excel-Export.
 
 Zins- und Dispozinsberechnungen sind nicht Bestandteil der Anwendung.
+
+### 5.6 Konto löschen
+
+Im Bearbeitungsdialog eines bestehenden Kontos steht **Konto löschen** zur Verfügung. Vor dem Löschen zeigt die Anwendung eine ausdrückliche Bestätigung mit den Folgen:
+
+- die Kontostand-Historie des Kontos wird gelöscht,
+- Umbuchungen mit diesem Konto werden gelöscht,
+- Einnahmen und Ausgaben bleiben erhalten, verlieren aber ihre Kontozuordnung,
+- ein verbleibendes Konto wird automatisch zum Standardkonto, falls das gelöschte Konto Standardkonto war.
+
+Positionen ohne Konto erscheinen anschließend unter **Einstellungen → Datenprüfung** und können dort neu zugeordnet werden. Auch das letzte Konto eines Haushalts kann gelöscht werden; der Haushalt selbst bleibt bestehen.
 
 ## 6. Einnahmen
 
@@ -166,16 +180,17 @@ Verfügbare Rhythmen:
 
 - monatlich
 - vierteljährlich
+- halbjährlich
 - jährlich
 - einmalig
 
 Mit **In Berechnungen berücksichtigen** kann eine Einnahme vorübergehend deaktiviert werden, ohne sie zu löschen.
 
-Im Kopf der Einnahmenkarte steht der positive Saldo aller angelegten Einnahmepositionen. Deaktivierte Positionen werden in diesem Bestandssaldo mitgezählt; für Prognosen werden sie nicht berücksichtigt.
+Im Kopf der Einnahmenkarte steht der positive Saldo aller angelegten Einnahmepositionen. Deaktivierte Positionen werden in diesem Bestandssaldo mitgezählt; für Vorschauen werden sie nicht berücksichtigt.
 
 ## 7. Ausgaben
 
-Unter **Ausgaben** werden regelmäßige und einmalige Zahlungen verwaltet. Die Art **Kredit** ist eine normale Ausgabenart und besitzt kein separates Kreditmodul.
+Unter **Ausgaben** werden regelmäßige und einmalige Zahlungen verwaltet. Für Kreditraten stehen die Arten **Konsumkredit**, **Kredit** und **Geliehen** zur Verfügung. Nach der Auswahl muss ein Kredit derselben Art zugeordnet werden.
 
 Erforderliche Angaben entsprechen grundsätzlich den Einnahmen. Zusätzlich können Ausgaben zeitlich begrenzt werden.
 
@@ -204,9 +219,37 @@ Das berechnete Enddatum ist ebenfalls einschließlich gültig. Werden Enddatum u
 
 ### 7.3 Saldo aller Ausgaben
 
-Im Kopf der Ausgabenkarte steht der negative Saldo aller angelegten Ausgabenpositionen. Deaktivierte Positionen werden in diesem Bestandssaldo mitgezählt, aber nicht in Prognosen eingerechnet.
+Im Kopf der Ausgabenkarte steht der negative Saldo aller angelegten Ausgabenpositionen. Deaktivierte Positionen werden in diesem Bestandssaldo mitgezählt, aber nicht in Vorschauen eingerechnet.
 
-## 8. Umbuchungen
+### 7.4 Kontoabbuchung und Tilgung
+
+Bei einer verknüpften Kredit-Ausgabe werden zwei Beträge unterschieden:
+
+- **Betrag:** vollständige Abbuchung vom Bankkonto;
+- **Davon Tilgung:** Anteil, der den offenen Kreditsaldo verringert.
+
+Beispiel für ein Annuitätendarlehen: Bei einer Rate von `400,00 €` und einem Tilgungsanteil von `320,00 €` werden `400,00 €` vom Konto abgezogen, aber nur `320,00 €` in der Kredit-Historie gutgeschrieben. Die übrigen `80,00 €` werden nicht als Tilgung behandelt. Ein Tilgungswert von `0,00 €` erlaubt, den tatsächlich festgestellten Tilgungsanteil später manuell beim Kredit zu erfassen.
+
+## 8. Kredite
+
+Unter **Kredite** werden drei Arten verwaltet:
+
+- Konsumkredit
+- Kredit
+- Geliehen
+
+Beim Anlegen werden Bezeichnung, Art, Anfangssaldo und optional eine Notiz gespeichert. Ein Klick auf den Kredit öffnet den aktuellen Saldo und die vollständige Zahlungshistorie.
+
+Die Historie enthält:
+
+- automatisch erzeugte Tilgungen aus verknüpften Ausgaben,
+- manuell erfasste Tilgungen,
+- Datum, Betrag, Bezeichnung und Quelle jeder Tilgung,
+- geplante zukünftige Tilgungen in grauer Darstellung.
+
+Zukünftige Tilgungen reduzieren den aktuellen Kreditsaldo nicht. Sie werden erst am eingetragenen Datum saldowirksam. Manuelle Tilgungen können aus der Historie wieder gelöscht werden; automatisch erzeugte Einträge werden über die zugehörige Ausgabe geändert.
+
+## 9. Umbuchungen
 
 Umbuchungen bilden Bewegungen zwischen eigenen Konten ab, ohne dafür getrennte Einnahmen und Ausgaben anzulegen.
 
@@ -227,9 +270,9 @@ Angaben:
 - optionales Ende
 - optionale Anzahl der Ausführungen
 
-Das Ende ist einschließlich. Wenn Ende und Anzahl gemeinsam gesetzt werden, müssen beide Angaben dieselbe letzte Ausführung beschreiben. Beispiel: Eine monatliche Umbuchung mit erster Fälligkeit am 15.08.2026 und 12 Ausführungen endet am 15.07.2027. Abweichende Kombinationen werden mit dem passenden Enddatum angezeigt und nicht gespeichert.
+Für Umbuchungen stehen dieselben Rhythmen einschließlich **halbjährlich** zur Verfügung. Das Ende ist einschließlich. Wenn Ende und Anzahl gemeinsam gesetzt werden, müssen beide Angaben dieselbe letzte Ausführung beschreiben. Beispiel: Eine monatliche Umbuchung mit erster Fälligkeit am 15.08.2026 und 12 Ausführungen endet am 15.07.2027. Abweichende Kombinationen werden mit dem passenden Enddatum angezeigt und nicht gespeichert.
 
-## 9. Dashboard
+## 10. Dashboard
 
 Das Dashboard zeigt den berechneten Gesamtstand aller Konten zum gewählten Stichtag. Über die Pfeile kann tageweise vor- oder zurückgesprungen werden.
 
@@ -241,18 +284,9 @@ Zusätzlich werden angezeigt:
 - Anzahl der Konten
 - Verteilung der Positionen
 - Kontostände und Dispowarnungen
+- Anzahl und offener Gesamtsaldo getrennt nach Konsumkredit, Kredit und Geliehen
 
 Für eine vollständige Auflistung der tatsächlich fälligen Bewegungen eines Monats ist die Seite **Vorschau** maßgeblich.
-
-## 10. Prognose
-
-Die Seite **Prognose** berechnet einen frei wählbaren Stichtag.
-
-1. Bis zu vier Konten auswählen.
-2. Mit den Pfeilen den Stichtag ändern.
-3. Berechnete Kontostände und Tagesveränderung prüfen.
-4. Unter **Zahlungen und Einnahmen** die Bewegungen des Stichtags öffnen.
-5. Unter **Noch kommende Geldbewegungen** die restlichen Fälligkeiten bis zum Monatsende prüfen.
 
 ## 11. Vorschau
 
@@ -261,11 +295,15 @@ Die Vorschau simuliert einen vollständigen Monat.
 - Mit den Pfeilen wird monatsweise navigiert.
 - **+2** springt zwei Monate vor.
 - Die Kontenauswahl bestimmt, welche Konten angezeigt werden.
+- Kredite können getrennt von den Konten ausgewählt werden.
 - Jeder Tag enthält die simulierten Kontostände der gewählten Konten.
 - Ein Klick auf einen Tag öffnet die dazugehörigen Bewegungen.
+- Jede geplante Bewegung besitzt die Checkbox **Vorgang erledigt**.
 - Dispoüberschreitungen werden am jeweiligen Tag hervorgehoben.
 
-Anfangsstand, Einnahmen, Ausgaben und Monatsendstand basieren auf den tatsächlich in diesem Monat fälligen Positionen.
+Anfangsstand, Einnahmen, Ausgaben und Monatsendstand basieren auf den tatsächlich in diesem Monat fälligen Positionen. Ausgewählte Kredite erscheinen mit Anfangssaldo, Tilgungen und Endsaldo in einem separaten Bereich. Kreditsalden werden niemals zur Kontensumme addiert oder von ihr abgezogen; nur die zugehörige Ausgabe beeinflusst das Bankkonto.
+
+Wird **Vorgang erledigt** aktiviert, bleibt die konkrete Fälligkeit am betreffenden Tag sichtbar und wird als erledigt markiert. Sie wird danach nicht mehr in den simulierten Kontostand, die Tagesänderung oder die Monatssummen eingerechnet. Der Status wird dauerhaft gespeichert. Wird der Haken wieder entfernt, fließt die Bewegung erneut in alle Vorschauwerte ein. Bei einer Umbuchung gilt der Status immer gemeinsam für Abgang und Eingang, auch wenn nur eines der beteiligten Konten angezeigt wird.
 
 ## 12. Excel-Export
 
@@ -276,24 +314,27 @@ Der Excel-Export befindet sich unter **Einstellungen**.
 3. Endmonat festlegen.
 4. **Excel herunterladen** wählen.
 
-Der Prognosezeitraum darf höchstens 24 Monate umfassen.
+Der Vorschauzeitraum darf höchstens 24 Monate umfassen.
 
 Die Arbeitsmappe enthält:
 
 | Tabellenblatt | Inhalt |
 | --- | --- |
 | Übersicht | Zeitraum, Bestandszahlen und Prognosesummen |
-| Monatsprognose | Anfang, Einnahmen, Ausgaben, Veränderung und Ende pro Monat |
-| Kontoprognose | Monatswerte und niedrigster Stand je Konto |
-| Tagesprognose | Simulierter Kontostand für jeden Tag und jedes Konto |
-| Bewegungen | Alle im Zeitraum fälligen Einnahmen, Ausgaben und Umbuchungen |
+| Monatsvorschau | Anfang, Einnahmen, Ausgaben, Veränderung und Ende pro Monat |
+| Kontovorschau | Monatswerte und niedrigster Stand je Konto |
+| Tagesvorschau | Simulierter Kontostand für jeden Tag und jedes Konto |
+| Bewegungen | Alle im Zeitraum fälligen Einnahmen, Ausgaben und Umbuchungen einschließlich Erledigt-Status |
 | Konten | Kontostände, Disporahmen und Endprognose |
 | Einnahmen | Alle eingegebenen Einnahmen |
 | Ausgaben | Alle eingegebenen Ausgaben einschließlich Enddatum und Dauer |
 | Umbuchungen | Alle Umbuchungen einschließlich Ende und Anzahl |
 | Kontostand-Historie | Alle gespeicherten Kontostände |
+| Kredite | Kreditart, Anfangssaldo, bisherige Tilgung und offener Saldo |
+| Kreditzahlungen | Vollständige manuelle und automatische Tilgungshistorie |
+| Kreditvorschau | Monatlich separat simulierte Kreditstände |
 
-Alle eingegebenen Einnahmen und Ausgaben werden unabhängig vom gewählten Prognosezeitraum exportiert. Das umfasst auch deaktivierte, zukünftige und beendete Positionen. In den Prognoseblättern erscheinen dagegen nur Bewegungen, die nach den gespeicherten Regeln tatsächlich berücksichtigt werden dürfen.
+Alle eingegebenen Einnahmen, Ausgaben und Kredite werden unabhängig vom gewählten Vorschauzeitraum exportiert. Das umfasst auch deaktivierte, zukünftige und beendete Positionen. In den Vorschaublättern erscheinen dagegen nur Bewegungen, die nach den gespeicherten Regeln tatsächlich berücksichtigt werden dürfen.
 
 Die Arbeitsblätter besitzen Filter, fixierte Kopfzeilen sowie formatierte Datums- und Geldzellen. Dispoüberschreitungen werden farblich hervorgehoben.
 
@@ -363,7 +404,7 @@ Prüfen, ob Port `8798` bereits von einem anderen Dienst verwendet wird.
 
 Beim letzten gespeicherten Kontostand prüfen, ob die Checkbox für bereits enthaltene Tagesbuchungen korrekt gesetzt ist.
 
-### Eine Zahlung fehlt in der Prognose
+### Eine Zahlung fehlt in der Vorschau
 
 Prüfen:
 
@@ -389,7 +430,6 @@ Nicht enthalten sind insbesondere:
 
 - Online-Banking-Zugänge
 - automatische Bankabfragen
-- Kredit-Sondermodule
 - Zins- oder Dispozinsberechnungen
 - Cloud-Synchronisierung persönlicher Haushaltsdaten
 

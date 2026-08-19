@@ -38,6 +38,18 @@ CREATE TABLE IF NOT EXISTS balance_anchors(
  balance_cents INTEGER NOT NULL, bookings_applied INTEGER NOT NULL DEFAULT 1,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  UNIQUE(account_id,anchor_date));
+CREATE TABLE IF NOT EXISTS credits(
+ id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+ name TEXT NOT NULL, credit_type TEXT NOT NULL CHECK(credit_type IN('consumer_credit','credit','borrowed')),
+ opening_balance_cents INTEGER NOT NULL, note TEXT,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE(household_id,name));
+CREATE TABLE IF NOT EXISTS credit_payments(
+ id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+ credit_id TEXT NOT NULL REFERENCES credits(id) ON DELETE CASCADE,
+ payment_date TEXT NOT NULL, amount_cents INTEGER NOT NULL, note TEXT,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS credit_payments_dates ON credit_payments(credit_id,payment_date);
 CREATE TABLE IF NOT EXISTS cash_flows(
  id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
  kind TEXT NOT NULL, name TEXT NOT NULL, owner_scope TEXT NOT NULL,
@@ -48,7 +60,8 @@ CREATE TABLE IF NOT EXISTS cash_flow_versions(
  amount_cents INTEGER NOT NULL, active INTEGER NOT NULL, version_from TEXT NOT NULL, version_to TEXT,
  stream_start TEXT, stream_end TEXT, due_date TEXT, source_reference TEXT,
  gross_amount_cents INTEGER, recurrence TEXT NOT NULL DEFAULT 'monthly', name TEXT, category TEXT,
- owner_scope TEXT, owner_person_id TEXT, account_id TEXT);
+ owner_scope TEXT, owner_person_id TEXT, account_id TEXT,
+ credit_id TEXT, credit_reduction_cents INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS transfers(
  id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
  name TEXT NOT NULL, source_account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -57,6 +70,13 @@ CREATE TABLE IF NOT EXISTS transfers(
  end_date TEXT, occurrence_count INTEGER,
  active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE INDEX IF NOT EXISTS transfers_projection ON transfers(household_id,due_date,active);
+CREATE TABLE IF NOT EXISTS movement_completions(
+ id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+ occurrence_key TEXT NOT NULL, source_type TEXT NOT NULL CHECK(source_type IN('cash_flow','transfer')),
+ source_id TEXT NOT NULL, occurrence_date TEXT NOT NULL, completed_at TEXT NOT NULL,
+ UNIQUE(household_id,occurrence_key));
+CREATE INDEX IF NOT EXISTS movement_completions_source
+ ON movement_completions(household_id,source_type,source_id,occurrence_date);
 CREATE TABLE IF NOT EXISTS schema_migrations(
  name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS bank_statement_previews(
@@ -149,6 +169,8 @@ class Repository:
             self.ensure_column(con,"cash_flow_versions","owner_scope","TEXT")
             self.ensure_column(con,"cash_flow_versions","owner_person_id","TEXT")
             self.ensure_column(con,"cash_flow_versions","account_id","TEXT")
+            self.ensure_column(con,"cash_flow_versions","credit_id","TEXT")
+            self.ensure_column(con,"cash_flow_versions","credit_reduction_cents","INTEGER NOT NULL DEFAULT 0")
             self.ensure_column(con,"accounts","is_default","INTEGER NOT NULL DEFAULT 0")
             self.ensure_column(con,"balance_anchors","created_at","TEXT")
             self.ensure_column(con,"balance_anchors","bookings_applied","INTEGER NOT NULL DEFAULT 1")
@@ -285,6 +307,31 @@ class Repository:
             if count+statements<=1: raise ValueError("Der einzige Kontostand eines Kontos kann nicht gelöscht werden.")
             con.execute("DELETE FROM balance_anchors WHERE id=?",(entry_id,))
         return {"id":entry_id,"deleted":True}
+    def delete_account(self,hid,account_id):
+        if not hid or not account_id: raise ValueError("Haushalt und Konto sind erforderlich.")
+        with self.lock,self.connect() as con:
+            account=con.execute("SELECT id,name,is_default FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone()
+            if not account: raise ValueError("Konto nicht gefunden.")
+            flow_count=con.execute("""SELECT COUNT(DISTINCT f.id) FROM cash_flows f
+                LEFT JOIN cash_flow_versions v ON v.cash_flow_id=f.id
+                WHERE f.household_id=? AND (f.account_id=? OR v.account_id=?)""",(hid,account_id,account_id)).fetchone()[0]
+            transfer_rows=con.execute("SELECT id FROM transfers WHERE household_id=? AND (source_account_id=? OR target_account_id=?)",(hid,account_id,account_id)).fetchall()
+            transfer_ids=[row["id"] for row in transfer_rows]
+            transfer_count=len(transfer_ids)
+            history_count=con.execute("SELECT COUNT(*) FROM balance_anchors WHERE account_id=?",(account_id,)).fetchone()[0]
+            history_count+=con.execute("SELECT COUNT(*) FROM account_reconciliations WHERE account_id=?",(account_id,)).fetchone()[0]
+            con.execute("UPDATE cash_flows SET account_id=NULL WHERE household_id=? AND account_id=?",(hid,account_id))
+            con.execute("UPDATE cash_flow_versions SET account_id=NULL WHERE account_id=?",(account_id,))
+            if transfer_ids:
+                placeholders=",".join("?" for _ in transfer_ids)
+                con.execute(f"DELETE FROM movement_completions WHERE household_id=? AND source_type='transfer' AND source_id IN ({placeholders})",(hid,*transfer_ids))
+            con.execute("DELETE FROM accounts WHERE id=? AND household_id=?",(account_id,hid))
+            if account["is_default"]:
+                replacement=con.execute("SELECT id FROM accounts WHERE household_id=? ORDER BY created_at,id LIMIT 1",(hid,)).fetchone()
+                if replacement: con.execute("UPDATE accounts SET is_default=1 WHERE id=?",(replacement["id"],))
+        return {"id":account_id,"name":account["name"],"deleted":True,
+            "unassigned_cash_flow_count":int(flow_count),"deleted_transfer_count":int(transfer_count),
+            "deleted_history_count":int(history_count)}
     def delete_household(self,hid):
         if not hid: raise ValueError("Haushalt ist erforderlich.")
         with self.lock,self.connect() as con:
@@ -292,6 +339,135 @@ class Repository:
             if not household: raise ValueError("Haushalt nicht gefunden.")
             con.execute("DELETE FROM households WHERE id=?",(hid,))
         return {"id":hid,"name":household["name"],"deleted":True}
+    def credit_values(self,con,payload):
+        hid=payload.get("household_id"); name=str(payload.get("name") or "").strip()
+        credit_type=str(payload.get("credit_type") or "")
+        if not hid or not name: raise ValueError("Haushalt und Kreditname sind erforderlich.")
+        if credit_type not in ("consumer_credit","credit","borrowed"):
+            raise ValueError("Die Kreditart muss Konsumkredit, Kredit oder Geliehen sein.")
+        if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone():
+            raise ValueError("Haushalt nicht gefunden.")
+        try: opening_balance_cents=int(payload.get("opening_balance_cents") or 0)
+        except (TypeError,ValueError): raise ValueError("Der Anfangssaldo muss ein gültiger Geldwert sein.")
+        if opening_balance_cents<0: raise ValueError("Der Anfangssaldo darf nicht negativ sein.")
+        note=str(payload.get("note") or "").strip() or None
+        return {"household_id":hid,"name":name,"credit_type":credit_type,
+            "opening_balance_cents":opening_balance_cents,"note":note}
+    def create_credit(self,payload):
+        with self.lock,self.connect() as con:
+            values=self.credit_values(con,payload)
+            if con.execute("SELECT 1 FROM credits WHERE household_id=? AND name=?",(values["household_id"],values["name"])).fetchone():
+                raise ValueError("Ein Kredit mit diesem Namen existiert bereits.")
+            credit_id=uid()
+            con.execute("INSERT INTO credits(id,household_id,name,credit_type,opening_balance_cents,note) VALUES(?,?,?,?,?,?)",
+                (credit_id,values["household_id"],values["name"],values["credit_type"],values["opening_balance_cents"],values["note"]))
+        return self.credit_detail(values["household_id"],credit_id)
+    def update_credit(self,credit_id,payload):
+        with self.lock,self.connect() as con:
+            values=self.credit_values(con,payload)
+            if not con.execute("SELECT 1 FROM credits WHERE id=? AND household_id=?",(credit_id,values["household_id"])).fetchone():
+                raise ValueError("Kredit nicht gefunden.")
+            if con.execute("SELECT 1 FROM credits WHERE household_id=? AND name=? AND id<>?",(values["household_id"],values["name"],credit_id)).fetchone():
+                raise ValueError("Ein Kredit mit diesem Namen existiert bereits.")
+            linked_types={row["category"] for row in con.execute(
+                "SELECT DISTINCT category FROM cash_flow_versions WHERE credit_id=?",(credit_id,)).fetchall()}
+            if linked_types and linked_types!={values["credit_type"]}:
+                raise ValueError("Die Kreditart kann wegen verknüpfter Ausgaben nicht geändert werden.")
+            con.execute("UPDATE credits SET name=?,credit_type=?,opening_balance_cents=?,note=? WHERE id=? AND household_id=?",
+                (values["name"],values["credit_type"],values["opening_balance_cents"],values["note"],credit_id,values["household_id"]))
+        return self.credit_detail(values["household_id"],credit_id)
+    def delete_credit(self,hid,credit_id):
+        with self.lock,self.connect() as con:
+            row=con.execute("SELECT id,name FROM credits WHERE id=? AND household_id=?",(credit_id,hid)).fetchone()
+            if not row: raise ValueError("Kredit nicht gefunden.")
+            con.execute("UPDATE cash_flow_versions SET credit_id=NULL,credit_reduction_cents=0 WHERE credit_id=?",(credit_id,))
+            con.execute("DELETE FROM credits WHERE id=?",(credit_id,))
+        return {"id":credit_id,"name":row["name"],"deleted":True}
+    def add_credit_payment(self,credit_id,payload):
+        hid=payload.get("household_id")
+        try: payment_date=date.fromisoformat(str(payload.get("payment_date") or "")).isoformat()
+        except ValueError: raise ValueError("Das Zahlungsdatum muss ein gültiges Datum sein.")
+        try: amount_cents=int(payload.get("amount_cents") or 0)
+        except (TypeError,ValueError): raise ValueError("Die Tilgung muss ein gültiger Geldwert sein.")
+        if amount_cents<=0: raise ValueError("Die Tilgung muss größer als 0,00 € sein.")
+        note=str(payload.get("note") or "").strip() or "Manuelle Tilgung"
+        with self.lock,self.connect() as con:
+            if not con.execute("SELECT 1 FROM credits WHERE id=? AND household_id=?",(credit_id,hid)).fetchone():
+                raise ValueError("Kredit nicht gefunden.")
+            payment_id=uid()
+            con.execute("INSERT INTO credit_payments(id,household_id,credit_id,payment_date,amount_cents,note) VALUES(?,?,?,?,?,?)",
+                (payment_id,hid,credit_id,payment_date,amount_cents,note))
+        return self.credit_detail(hid,credit_id)
+    def delete_credit_payment(self,hid,credit_id,payment_id):
+        with self.lock,self.connect() as con:
+            row=con.execute("SELECT id FROM credit_payments WHERE id=? AND credit_id=? AND household_id=?",(payment_id,credit_id,hid)).fetchone()
+            if not row: raise ValueError("Tilgung nicht gefunden oder nicht manuell erfasst.")
+            con.execute("DELETE FROM credit_payments WHERE id=?",(payment_id,))
+        return {"id":payment_id,"deleted":True}
+    def list_credits(self,hid,as_of=None,through=None):
+        requested=as_of_date(as_of); actual_today=date.today().isoformat(); cutoff=min(requested,actual_today)
+        default_through=add_months_anchored(actual_today,24).isoformat()
+        through_date=as_of_date(through) if through else default_through
+        if through_date<cutoff: through_date=cutoff
+        with self.connect() as con:
+            if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone(): raise ValueError("Haushalt nicht gefunden.")
+            credits=[dict(row) for row in con.execute("SELECT * FROM credits WHERE household_id=? ORDER BY created_at,name",(hid,)).fetchall()]
+            if through is None:
+                finite_end=con.execute("""SELECT MAX(COALESCE(v.stream_end,v.due_date)) AS last_date
+                    FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
+                    WHERE f.household_id=? AND f.kind='expense' AND v.credit_id IS NOT NULL
+                      AND (v.stream_end IS NOT NULL OR v.recurrence='once')""",(hid,)).fetchone()["last_date"]
+                if finite_end and finite_end>through_date: through_date=finite_end
+            result=[]
+            for credit in credits:
+                payments=[{
+                    "id":row["id"],"date":row["payment_date"],"amount_cents":int(row["amount_cents"]),
+                    "label":row["note"] or "Manuelle Tilgung","source":"manual","source_id":row["id"],
+                } for row in con.execute("SELECT * FROM credit_payments WHERE credit_id=? ORDER BY payment_date,created_at",(credit["id"],)).fetchall()]
+                versions=con.execute("""SELECT f.id AS flow_id,COALESCE(v.name,f.name) AS label,v.credit_reduction_cents,
+                        v.version_from,v.version_to,v.stream_start,v.stream_end,v.due_date,v.recurrence
+                    FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
+                    WHERE f.household_id=? AND f.kind='expense' AND v.credit_id=? AND v.active=1
+                      AND v.credit_reduction_cents>0 AND v.version_from<=?""",(hid,credit["id"],through_date)).fetchall()
+                for version in versions:
+                    if not version["due_date"]: continue
+                    try:
+                        start=(date.fromisoformat(version["due_date"])-timedelta(days=1)).isoformat()
+                        due_dates=recurrence_dates(version["due_date"],version["recurrence"] or "monthly",start,through_date,
+                            version["version_from"],version["version_to"],version["stream_start"],version["stream_end"])
+                    except (TypeError,ValueError):
+                        continue
+                    for due in due_dates:
+                        due_text=due.isoformat()
+                        payments.append({"id":f"expense:{version['flow_id']}:{due_text}","date":due_text,
+                            "amount_cents":int(version["credit_reduction_cents"]),"label":version["label"],
+                            "source":"expense","source_id":version["flow_id"]})
+                for payment in payments:
+                    payment["future"]=payment["date"]>actual_today
+                    payment["applied"]=payment["date"]<=cutoff
+                payments.sort(key=lambda item:(item["date"],item["source"],item["id"]),reverse=True)
+                paid=sum(item["amount_cents"] for item in payments if item["applied"])
+                opening=int(credit["opening_balance_cents"] or 0)
+                credit["paid_cents"]=paid
+                credit["remaining_balance_cents"]=max(0,opening-paid)
+                credit["overpaid_cents"]=max(0,paid-opening)
+                credit["future_payment_cents"]=sum(item["amount_cents"] for item in payments if not item["applied"])
+                credit["payments"]=payments
+                credit["as_of"]=cutoff
+                credit["through"]=through_date
+                result.append(credit)
+        groups=[]
+        for credit_type in ("consumer_credit","credit","borrowed"):
+            matching=[item for item in result if item["credit_type"]==credit_type]
+            groups.append({"credit_type":credit_type,"count":len(matching),
+                "balance_cents":sum(item["remaining_balance_cents"] for item in matching)})
+        return {"as_of":cutoff,"today":actual_today,"through":through_date,"items":result,"groups":groups,
+            "totals":{"count":len(result),"balance_cents":sum(item["remaining_balance_cents"] for item in result)}}
+    def credit_detail(self,hid,credit_id,as_of=None):
+        result=self.list_credits(hid,as_of)
+        credit=next((item for item in result["items"] if item["id"]==credit_id),None)
+        if not credit: raise ValueError("Kredit nicht gefunden.")
+        return credit
     def list_cash_flows(self,hid,kind,as_of=None):
         if kind not in ("income","expense"): raise ValueError("Ungültige Zahlungsart.")
         selected_date=as_of_date(as_of)
@@ -306,9 +482,9 @@ class Repository:
                 upcoming=[version for version in versions if version["version_from"]>selected_date]
                 shown=(current[-1] if current else (upcoming[0] if upcoming else (versions[-1] if versions else {})))
                 item=dict(flow)
-                for field in ("name","category","owner_scope","owner_person_id","account_id"):
+                for field in ("name","category","owner_scope","owner_person_id","account_id","credit_id"):
                     item[field]=shown.get(field) if shown.get(field) is not None else item.get(field)
-                for field in ("amount_cents","active","version_from","version_to","stream_start","stream_end","due_date","recurrence"):
+                for field in ("amount_cents","active","version_from","version_to","stream_start","stream_end","due_date","recurrence","credit_reduction_cents"):
                     item[field]=shown.get(field)
                 item["configured_active"]=int(bool(shown.get("active")))
                 in_stream=(not item.get("stream_start") or item["stream_start"]<=selected_date) and (not item.get("stream_end") or item["stream_end"]>=selected_date)
@@ -327,6 +503,9 @@ class Repository:
         if not detail: raise ValueError("Haushalt nicht gefunden.")
         account_ids={account["id"] for account in detail["accounts"]}
         person_ids={person["id"] for person in detail["persons"]}
+        with self.connect() as con:
+            credit_types={row["id"]:row["credit_type"] for row in con.execute(
+                "SELECT id,credit_type FROM credits WHERE household_id=?",(hid,)).fetchall()}
         items=[]
 
         def valid_date(value):
@@ -348,7 +527,7 @@ class Repository:
                     add("invalid_account","error","Das zugeordnete Konto existiert in diesem Haushalt nicht mehr.")
                 if not valid_date(flow.get("due_date")):
                     add("invalid_due_date","error","Die Fälligkeit fehlt oder ist ungültig.")
-                if flow.get("recurrence") not in ("monthly","quarterly","yearly","once"):
+                if flow.get("recurrence") not in ("monthly","quarterly","semiannual","yearly","once"):
                     add("invalid_recurrence","error","Der Zahlungsrhythmus ist ungültig.")
                 if flow.get("owner_scope") not in ("person","joint"):
                     add("invalid_owner","error","Die Besitzerzuordnung ist ungültig.")
@@ -358,6 +537,16 @@ class Repository:
                     add("zero_amount","warning","Der Betrag ist 0,00 € und hat deshalb keine Auswirkung.")
                 if not int(flow.get("configured_active") or 0):
                     add("inactive","warning","Die Position ist deaktiviert und wird derzeit nicht berücksichtigt.")
+                if kind=="expense" and flow.get("category") in ("consumer_credit","credit","borrowed"):
+                    credit_id=flow.get("credit_id")
+                    if not credit_id:
+                        add("missing_credit","error","Für diese Kredit-Ausgabe ist kein Kredit ausgewählt.")
+                    elif credit_id not in credit_types:
+                        add("invalid_credit","error","Der zugeordnete Kredit existiert in diesem Haushalt nicht mehr.")
+                    elif credit_types[credit_id]!=flow.get("category"):
+                        add("credit_type_mismatch","error","Ausgabenart und Kreditart stimmen nicht überein.")
+                    if int(flow.get("credit_reduction_cents") or 0)>int(flow.get("amount_cents") or 0):
+                        add("invalid_credit_reduction","error","Der Tilgungsanteil ist höher als die Kontoabbuchung.")
                 if not issues: continue
                 blocking=any(issue["severity"]=="error" for issue in issues)
                 not_considered=blocking or any(issue["code"] in ("zero_amount","inactive") for issue in issues)
@@ -382,7 +571,7 @@ class Repository:
         except (TypeError,ValueError): raise ValueError("Beträge müssen gültige Geldwerte sein.")
         if amount<0: raise ValueError("Beträge dürfen nicht negativ sein.")
         recurrence=str(payload.get("recurrence") or "monthly")
-        if recurrence not in ("monthly","quarterly","yearly","once"): raise ValueError("Ungültiger Zahlungsrhythmus.")
+        if recurrence not in ("monthly","quarterly","semiannual","yearly","once"): raise ValueError("Ungültiger Zahlungsrhythmus.")
         effective=str(payload.get("effective_from") or date.today().isoformat())
         due=str(payload.get("due_date") or "")
         try:
@@ -420,8 +609,21 @@ class Repository:
         else: raise ValueError("Ungültiger Besitzer.")
         account_id=payload.get("account_id") or None
         if account_id and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone(): raise ValueError("Das gewählte Konto gehört nicht zum Haushalt.")
+        credit_id=None; credit_reduction_cents=0
+        credit_categories=("consumer_credit","credit","borrowed")
+        if kind=="expense" and category in credit_categories:
+            credit_id=payload.get("credit_id") or None
+            if not credit_id: raise ValueError("Für diese Ausgabenart muss ein Kredit ausgewählt werden.")
+            linked_credit=con.execute("SELECT credit_type FROM credits WHERE id=? AND household_id=?",(credit_id,hid)).fetchone()
+            if not linked_credit: raise ValueError("Der gewählte Kredit gehört nicht zum Haushalt.")
+            if linked_credit["credit_type"]!=category: raise ValueError("Ausgabenart und Kreditart müssen übereinstimmen.")
+            reduction_raw=payload.get("credit_reduction_cents")
+            try: credit_reduction_cents=amount if reduction_raw in (None,"") else int(reduction_raw)
+            except (TypeError,ValueError): raise ValueError("Der Tilgungsanteil muss ein gültiger Geldwert sein.")
+            if credit_reduction_cents<0 or credit_reduction_cents>amount:
+                raise ValueError("Der Tilgungsanteil muss zwischen 0,00 € und dem Ausgabenbetrag liegen.")
         active=0 if payload.get("active") in (False,0,"0") else 1
-        return {"household_id":hid,"name":name,"category":category,"amount_cents":amount,"gross_amount_cents":None,"recurrence":recurrence,"effective_from":effective,"due_date":due,"stream_end":stream_end,"duration_months":duration_months,"active":active,"owner_scope":scope,"owner_person_id":owner_id,"account_id":account_id}
+        return {"household_id":hid,"name":name,"category":category,"amount_cents":amount,"gross_amount_cents":None,"recurrence":recurrence,"effective_from":effective,"due_date":due,"stream_end":stream_end,"duration_months":duration_months,"active":active,"owner_scope":scope,"owner_person_id":owner_id,"account_id":account_id,"credit_id":credit_id,"credit_reduction_cents":credit_reduction_cents}
     def create_cash_flow(self,payload):
         kind=payload.get("kind")
         with self.lock,self.connect() as con:
@@ -429,8 +631,8 @@ class Repository:
             flow_id=uid()
             con.execute("""INSERT INTO cash_flows(id,household_id,kind,name,owner_scope,owner_person_id,account_id,source_key,category)
                 VALUES(?,?,?,?,?,?,?,?,?)""",(flow_id,values["household_id"],kind,values["name"],values["owner_scope"],values["owner_person_id"],values["account_id"],None,values["category"]))
-            con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,owner_scope,owner_person_id,account_id)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,values["amount_cents"],values["active"],values["effective_from"],None,values["effective_from"],values["stream_end"],values["due_date"],"Manuell erstellt",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"]))
+            con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,owner_scope,owner_person_id,account_id,credit_id,credit_reduction_cents)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,values["amount_cents"],values["active"],values["effective_from"],None,values["effective_from"],values["stream_end"],values["due_date"],"Manuell erstellt",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],values["credit_id"],values["credit_reduction_cents"]))
         return next(item for item in self.list_cash_flows(values["household_id"],kind,values["effective_from"]) if item["id"]==flow_id)
     def update_cash_flow(self,flow_id,payload):
         kind=payload.get("kind")
@@ -443,15 +645,15 @@ class Repository:
             same=next((row for row in versions if row["version_from"]==effective),None)
             next_date=next((row["version_from"] for row in versions if row["version_from"]>effective),None)
             if same:
-                con.execute("""UPDATE cash_flow_versions SET amount_cents=?,active=?,stream_start=?,stream_end=?,due_date=?,source_reference=?,gross_amount_cents=?,recurrence=?,name=?,category=?,owner_scope=?,owner_person_id=?,account_id=? WHERE id=?""",
-                    (values["amount_cents"],values["active"],effective,values["stream_end"],values["due_date"],"Manuelle Änderung",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],same["id"]))
+                con.execute("""UPDATE cash_flow_versions SET amount_cents=?,active=?,stream_start=?,stream_end=?,due_date=?,source_reference=?,gross_amount_cents=?,recurrence=?,name=?,category=?,owner_scope=?,owner_person_id=?,account_id=?,credit_id=?,credit_reduction_cents=? WHERE id=?""",
+                    (values["amount_cents"],values["active"],effective,values["stream_end"],values["due_date"],"Manuelle Änderung",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],values["credit_id"],values["credit_reduction_cents"],same["id"]))
             else:
                 previous=[row for row in versions if row["version_from"]<effective]
                 if previous:
                     prior=previous[-1]
                     if prior["version_to"] is None or prior["version_to"]>effective: con.execute("UPDATE cash_flow_versions SET version_to=? WHERE id=?",(effective,prior["id"]))
-                con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,owner_scope,owner_person_id,account_id)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,values["amount_cents"],values["active"],effective,next_date,effective,values["stream_end"],values["due_date"],"Manuelle Änderung",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"]))
+                con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,owner_scope,owner_person_id,account_id,credit_id,credit_reduction_cents)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,values["amount_cents"],values["active"],effective,next_date,effective,values["stream_end"],values["due_date"],"Manuelle Änderung",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],values["credit_id"],values["credit_reduction_cents"]))
             if effective<=date.today().isoformat():
                 con.execute("UPDATE cash_flows SET name=?,category=?,owner_scope=?,owner_person_id=?,account_id=?,source_key=NULL WHERE id=?",(values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],flow_id))
             else:
@@ -461,6 +663,7 @@ class Repository:
         with self.lock,self.connect() as con:
             flow=con.execute("SELECT id,name FROM cash_flows WHERE id=? AND household_id=?",(flow_id,hid)).fetchone()
             if not flow: raise ValueError("Zahlungsstrom nicht gefunden.")
+            con.execute("DELETE FROM movement_completions WHERE household_id=? AND source_type='cash_flow' AND source_id=?",(hid,flow_id))
             con.execute("DELETE FROM cash_flows WHERE id=?",(flow_id,))
         return {"id":flow_id,"name":flow["name"],"deleted":True}
     def transfer_values(self,con,payload):
@@ -474,7 +677,7 @@ class Repository:
         except (TypeError,ValueError): raise ValueError("Der Betrag muss ein gültiger Geldwert sein.")
         if amount<=0: raise ValueError("Der Umbuchungsbetrag muss größer als 0,00 € sein.")
         recurrence=str(payload.get("recurrence") or "once")
-        if recurrence not in ("monthly","quarterly","yearly","once"): raise ValueError("Ungültiger Zahlungsrhythmus.")
+        if recurrence not in ("monthly","quarterly","semiannual","yearly","once"): raise ValueError("Ungültiger Zahlungsrhythmus.")
         due_raw=payload.get("due_date")
         if due_raw in (None,""): raise ValueError("Die erste Fälligkeit ist erforderlich.")
         try: due=date.fromisoformat(str(due_raw)).isoformat()
@@ -529,8 +732,39 @@ class Repository:
         with self.lock,self.connect() as con:
             row=con.execute("SELECT id,name FROM transfers WHERE id=? AND household_id=?",(transfer_id,hid)).fetchone()
             if not row: raise ValueError("Umbuchung nicht gefunden.")
+            con.execute("DELETE FROM movement_completions WHERE household_id=? AND source_type='transfer' AND source_id=?",(hid,transfer_id))
             con.execute("DELETE FROM transfers WHERE id=?",(transfer_id,))
         return {"id":transfer_id,"name":row["name"],"deleted":True}
+
+    def set_movement_completion(self,payload):
+        hid=str(payload.get("household_id") or "").strip()
+        occurrence_key=str(payload.get("occurrence_key") or "").strip()
+        raw_completed=payload.get("completed")
+        if not hid or not occurrence_key:
+            raise ValueError("Haushalt und Bewegung sind erforderlich.")
+        if raw_completed not in (True,False,0,1,"0","1"):
+            raise ValueError("Der Erledigt-Status ist ungültig.")
+        completed=raw_completed in (True,1,"1")
+        parts=occurrence_key.split(":")
+        if len(parts)!=3 or parts[0] not in ("cash-flow","transfer"):
+            raise ValueError("Die Bewegung ist ungültig.")
+        source_type="cash_flow" if parts[0]=="cash-flow" else "transfer"
+        source_id=parts[1]
+        try: occurrence_date=date.fromisoformat(parts[2]).isoformat()
+        except ValueError: raise ValueError("Das Bewegungsdatum ist ungültig.")
+        with self.lock,self.connect() as con:
+            table="cash_flows" if source_type=="cash_flow" else "transfers"
+            if not con.execute(f"SELECT 1 FROM {table} WHERE id=? AND household_id=?",(source_id,hid)).fetchone():
+                raise ValueError("Die Bewegung gehört nicht zu diesem Haushalt oder existiert nicht mehr.")
+            if completed:
+                con.execute("""INSERT INTO movement_completions(id,household_id,occurrence_key,source_type,source_id,occurrence_date,completed_at)
+                    VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(household_id,occurrence_key) DO UPDATE SET completed_at=excluded.completed_at""",
+                    (uid(),hid,occurrence_key,source_type,source_id,occurrence_date,timestamp()))
+            else:
+                con.execute("DELETE FROM movement_completions WHERE household_id=? AND occurrence_key=?",(hid,occurrence_key))
+        return {"household_id":hid,"occurrence_key":occurrence_key,"completed":completed,
+            "occurrence_date":occurrence_date}
     def household_detail(self,hid,as_of=None):
         selected_date=as_of_date(as_of)
         with self.connect() as con:
@@ -576,18 +810,30 @@ class Repository:
             FROM bank_transaction_matches m JOIN bank_transactions t ON t.id=m.transaction_id
             WHERE t.household_id=?""",(hid,)).fetchall()
         matched_occurrences={row["occurrence_key"] for row in matches}
+        completed_occurrences={row["occurrence_key"] for row in con.execute(
+            "SELECT occurrence_key FROM movement_completions WHERE household_id=?",(hid,)).fetchall()}
         bank_actual_flow_ids={
             row["target_id"] for row in matches
             if row["target_type"]=="cash_flow" and row["match_method"]=="created-other-expense"
         }
 
-        def add_event(account_id,event_date,amount_cents,kind,label,source_id,occurrence_key,origin,show_on_anchor=False):
+        def add_event(account_id,event_date,amount_cents,kind,label,source_id,occurrence_key,origin,
+                      show_on_anchor=False,completion_key=None):
+            completion_allowed=bool(completion_key)
+            completed=completion_allowed and completion_key in completed_occurrences
             event={
                 "date":event_date,"account_id":account_id,"kind":kind,"label":label,
                 "source_id":source_id,"occurrence_key":occurrence_key,
                 "origin":origin,"amount_cents":amount_cents,
+                "completion_key":completion_key,"completion_allowed":completion_allowed,
+                "completed":completed,
             }
             target=projected.get(account_id)
+            if completed:
+                completed_event={**event,"applied_to_projection":False}
+                if target is None: result["unassigned_events"].append(completed_event)
+                else: result["events"].append(completed_event)
+                return
             if target is None:
                 result["event_count"]+=1; result["net_cents"]+=amount_cents
                 result["unassigned_events"].append(event)
@@ -646,7 +892,8 @@ class Repository:
                 due_text=due.isoformat(); occurrence_key=f"cash-flow:{version['flow_id']}:{due_text}"
                 if occurrence_key in matched_occurrences: continue
                 amount=int(version["amount_cents"] or 0)*(1 if version["kind"]=="income" else -1)
-                add_event(version["account_id"],due_text,amount,version["kind"],version["label"],version["flow_id"],occurrence_key,"planned")
+                add_event(version["account_id"],due_text,amount,version["kind"],version["label"],version["flow_id"],
+                    occurrence_key,"planned",completion_key=occurrence_key)
 
         transfers=con.execute("SELECT * FROM transfers WHERE household_id=? AND active=1",(hid,)).fetchall()
         for transfer in transfers:
@@ -666,8 +913,11 @@ class Repository:
                 continue
             for due in due_dates:
                 due_text=due.isoformat(); amount=int(transfer["amount_cents"] or 0)
-                add_event(transfer["source_account_id"],due_text,-amount,"transfer_out",transfer["name"],transfer["id"],f"transfer:{transfer['id']}:{due_text}:out","transfer")
-                add_event(transfer["target_account_id"],due_text,amount,"transfer_in",transfer["name"],transfer["id"],f"transfer:{transfer['id']}:{due_text}:in","transfer")
+                completion_key=f"transfer:{transfer['id']}:{due_text}"
+                add_event(transfer["source_account_id"],due_text,-amount,"transfer_out",transfer["name"],transfer["id"],
+                    f"{completion_key}:out","transfer",completion_key=completion_key)
+                add_event(transfer["target_account_id"],due_text,amount,"transfer_in",transfer["name"],transfer["id"],
+                    f"{completion_key}:in","transfer",completion_key=completion_key)
 
         bank_rows=con.execute("""SELECT t.*,m.target_type,m.target_id
             FROM bank_transactions t LEFT JOIN bank_transaction_matches m ON m.transaction_id=t.id
@@ -722,15 +972,18 @@ class Repository:
         for account in detail["accounts"]:
             if account["id"] not in account_ids: continue
             item=dict(account)
-            day_delta=sum(event["amount_cents"] for event in projection["events"] if event["account_id"]==account["id"] and event["date"]==selected_date)
+            day_delta=sum(event["amount_cents"] for event in projection["events"]
+                if event["account_id"]==account["id"] and event["date"]==selected_date
+                and event.get("applied_to_projection",True))
             item["available"]=item["anchor_date"] is not None and item["projected_balance_cents"] is not None
             item["day_delta_cents"]=day_delta
             selected.append(item)
         selected_ids=set(account_ids)
         movements=[event for event in projection["events"] if event["account_id"] in selected_ids and event["date"]==selected_date]
         movements.sort(key=lambda item:(account_ids.index(item["account_id"]),item["kind"],item["label"]))
-        day_income=sum(item["amount_cents"] for item in movements if item["amount_cents"]>0)
-        day_expense=sum(-item["amount_cents"] for item in movements if item["amount_cents"]<0)
+        applied_movements=[item for item in movements if item.get("applied_to_projection",True)]
+        day_income=sum(item["amount_cents"] for item in applied_movements if item["amount_cents"]>0)
+        day_expense=sum(-item["amount_cents"] for item in applied_movements if item["amount_cents"]<0)
         projected_total=sum(int(item["projected_balance_cents"] or 0) for item in selected if item["available"])
         month_movements=[
             event for event in month_projection["events"]
@@ -745,8 +998,9 @@ class Repository:
         month_movements.sort(key=lambda item:(
             item["date"],account_order.get(item["account_id"],len(account_order)),item["kind"],item["label"]
         ))
-        month_income=sum(item["amount_cents"] for item in month_movements if item["amount_cents"]>0)
-        month_expense=sum(-item["amount_cents"] for item in month_movements if item["amount_cents"]<0)
+        applied_month_movements=[item for item in month_movements if item.get("applied_to_projection",True)]
+        month_income=sum(item["amount_cents"] for item in applied_month_movements if item["amount_cents"]>0)
+        month_expense=sum(-item["amount_cents"] for item in applied_month_movements if item["amount_cents"]<0)
         return {
             "as_of":selected_date,"accounts":selected,"movements":movements,
             "totals":{"projected_balance_cents":projected_total,"day_income_cents":day_income,
@@ -759,7 +1013,7 @@ class Repository:
             "excluded_cash_flow_ids":excluded,
         }
 
-    def monthly_preview(self,hid,month,account_ids):
+    def monthly_preview(self,hid,month,account_ids,credit_ids=None):
         try:
             month_start=date.fromisoformat(f"{str(month)[:7]}-01")
         except ValueError:
@@ -768,11 +1022,21 @@ class Repository:
         month_end=next_month-timedelta(days=1); opening_day=month_start-timedelta(days=1)
         if not isinstance(account_ids,list): raise ValueError("Die Kontenauswahl muss eine Liste sein.")
         account_ids=list(dict.fromkeys(str(value) for value in account_ids if str(value)))
+        if credit_ids is None: credit_ids=[]
+        if not isinstance(credit_ids,list): raise ValueError("Die Kreditauswahl muss eine Liste sein.")
+        credit_ids=list(dict.fromkeys(str(value) for value in credit_ids if str(value)))
         end_detail=self.household_detail(hid,month_end.isoformat())
         opening_detail=self.household_detail(hid,opening_day.isoformat())
         if not end_detail or not opening_detail: raise ValueError("Haushalt nicht gefunden.")
         owned={account["id"] for account in end_detail["accounts"]}
         if any(account_id not in owned for account_id in account_ids): raise ValueError("Mindestens ein Konto gehört nicht zu diesem Haushalt.")
+        credit_schedule=self.list_credits(hid,date.today().isoformat(),month_end.isoformat())
+        credit_by_id={item["id"]:item for item in credit_schedule["items"]}
+        if any(credit_id not in credit_by_id for credit_id in credit_ids): raise ValueError("Mindestens ein Kredit gehört nicht zu diesem Haushalt.")
+        selected_credit_rows=[credit_by_id[credit_id] for credit_id in credit_ids]
+        def credit_balance_on(credit,day_text):
+            paid=sum(item["amount_cents"] for item in credit["payments"] if item["date"]<=day_text)
+            return max(0,int(credit["opening_balance_cents"] or 0)-paid)
         selected_ids=set(account_ids)
         account_order={account_id:index for index,account_id in enumerate(account_ids)}
         with self.connect() as con:
@@ -807,10 +1071,19 @@ class Repository:
                 movements.extend(day_movements)
                 day_total=sum(int(account["projected_balance_cents"] or 0) for account in day_accounts
                     if account["projected_balance_cents"] is not None)
+                day_credits=[]
+                for credit in selected_credit_rows:
+                    credit_payments=[item for item in credit["payments"] if item["date"]==day_text]
+                    day_credits.append({"id":credit["id"],"name":credit["name"],"credit_type":credit["credit_type"],
+                        "remaining_balance_cents":credit_balance_on(credit,day_text),
+                        "reduction_cents":sum(item["amount_cents"] for item in credit_payments),
+                        "payments":credit_payments})
                 days.append({
                     "date":day_text,"accounts":day_accounts,"balances":day_accounts,
+                    "credits":day_credits,
                     "total_balance_cents":day_total,
-                    "delta_cents":sum(int(event["amount_cents"] or 0) for event in day_movements),
+                    "delta_cents":sum(int(event["amount_cents"] or 0) for event in day_movements
+                        if event.get("applied_to_projection",True)),
                     "movement_count":len(day_movements),"movements":day_movements,
                     "overdraft_warning_count":sum(1 for account in day_accounts if account["overdraft_exceeded"]),
                 })
@@ -834,17 +1107,32 @@ class Repository:
             item["overdraft_exceeded_during_month"]=bool(limit>0 and minimum is not None and minimum < -limit)
             item["monthly_overdraft_overage_cents"]=max(0,-limit-int(minimum)) if item["overdraft_exceeded_during_month"] else 0
             selected.append(item)
+        selected_credits=[]
+        for credit in selected_credit_rows:
+            opening_balance=credit_balance_on(credit,opening_day.isoformat())
+            closing_balance=credit_balance_on(credit,month_end.isoformat())
+            item={key:value for key,value in credit.items() if key!="payments"}
+            item["opening_balance_cents"]=opening_balance
+            item["closing_balance_cents"]=closing_balance
+            item["month_reduction_cents"]=opening_balance-closing_balance
+            item["payments"]=[payment for payment in credit["payments"] if month_start.isoformat()<=payment["date"]<=month_end.isoformat()]
+            selected_credits.append(item)
         movements.sort(key=lambda item:(item["date"],account_order.get(item["account_id"],len(account_order)),item["kind"],item["label"]))
-        income=sum(item["amount_cents"] for item in movements if item["kind"]=="income" and item["amount_cents"]>0)
-        expenses=sum(-item["amount_cents"] for item in movements if item["kind"]=="expense" and item["amount_cents"]<0)
-        transfers=sum(abs(item["amount_cents"]) for item in movements if item["kind"] in ("transfer_in","transfer_out"))
+        applied_movements=[item for item in movements if item.get("applied_to_projection",True)]
+        income=sum(item["amount_cents"] for item in applied_movements if item["kind"]=="income" and item["amount_cents"]>0)
+        expenses=sum(-item["amount_cents"] for item in applied_movements if item["kind"]=="expense" and item["amount_cents"]<0)
+        transfers=sum(abs(item["amount_cents"]) for item in applied_movements if item["kind"] in ("transfer_in","transfer_out"))
         opening_total=sum(int(item["opening_balance_cents"] or 0) for item in selected if item["opening_balance_cents"] is not None)
         closing_total=sum(int(item["closing_balance_cents"] or 0) for item in selected if item["closing_balance_cents"] is not None)
+        credit_opening_total=sum(item["opening_balance_cents"] for item in selected_credits)
+        credit_closing_total=sum(item["closing_balance_cents"] for item in selected_credits)
         return {"month":month_start.strftime("%Y-%m"),"from":month_start.isoformat(),"through":month_end.isoformat(),
-            "accounts":selected,"days":days,"movements":movements,
+            "accounts":selected,"credits":selected_credits,"days":days,"movements":movements,
             "totals":{"opening_balance_cents":opening_total,"closing_balance_cents":closing_total,
                 "income_cents":income,"expense_cents":expenses,"transfer_volume_cents":transfers,
                 "delta_cents":closing_total-opening_total},
+            "credit_totals":{"opening_balance_cents":credit_opening_total,"closing_balance_cents":credit_closing_total,
+                "reduction_cents":credit_opening_total-credit_closing_total},
             "unassigned":{"items":[item for item in movements if item.get("account_id") is None]},
             "overdraft_warnings":[{"account_id":account["id"],"name":account["name"],"overage_cents":account["monthly_overdraft_overage_cents"]}
                 for account in selected if account.get("overdraft_exceeded_during_month")]}
@@ -870,12 +1158,15 @@ class Repository:
         account_ids=[account["id"] for account in detail["accounts"]]
         account_names={account["id"]:account["name"] for account in detail["accounts"]}
         people={person["id"]:person["display_name"] for person in detail["persons"]}
+        credit_result=self.list_credits(hid,date.today().isoformat(),through_date)
+        credit_ids=[credit["id"] for credit in credit_result["items"]]
+        credit_names={credit["id"]:credit["name"] for credit in credit_result["items"]}
 
-        months=[]; account_months=[]; days=[]; movements=[]
+        months=[]; account_months=[]; credit_months=[]; days=[]; movements=[]
         cursor=first
         while cursor<=last:
             month_value=cursor.strftime("%Y-%m")
-            preview=self.monthly_preview(hid,month_value,account_ids)
+            preview=self.monthly_preview(hid,month_value,account_ids,credit_ids)
             months.append({
                 "month":month_value,"from":preview["from"],"through":preview["through"],
                 **preview["totals"],"warning_count":len(preview["overdraft_warnings"]),
@@ -890,6 +1181,14 @@ class Repository:
                     "overdraft_limit_cents":int(account.get("overdraft_limit_cents") or 0),
                     "overdraft_exceeded":bool(account.get("overdraft_exceeded_during_month")),
                     "overdraft_overage_cents":int(account.get("monthly_overdraft_overage_cents") or 0),
+                })
+            for credit in preview["credits"]:
+                credit_months.append({
+                    "month":month_value,"credit_id":credit["id"],"credit_name":credit["name"],
+                    "credit_type":credit["credit_type"],
+                    "opening_balance_cents":credit.get("opening_balance_cents"),
+                    "reduction_cents":credit.get("month_reduction_cents"),
+                    "closing_balance_cents":credit.get("closing_balance_cents"),
                 })
             for day in preview["days"]:
                 for account in day["balances"]:
@@ -921,15 +1220,23 @@ class Repository:
             for item in collection:
                 item["account_name"]=account_names.get(item.get("account_id"),"Nicht zugeordnet")
                 item["owner_name"]="Gemeinsam" if item.get("owner_scope")=="joint" else people.get(item.get("owner_person_id"),"Nicht zugeordnet")
+                item["credit_name"]=credit_names.get(item.get("credit_id"))
+
+        credit_payments=[]
+        for credit in credit_result["items"]:
+            for payment in credit["payments"]:
+                credit_payments.append({**payment,"credit_id":credit["id"],"credit_name":credit["name"],
+                    "credit_type":credit["credit_type"]})
+        credit_payments.sort(key=lambda item:(item["date"],item["credit_name"].casefold(),item["source"],item["id"]))
 
         return {
             "generated_at":timestamp(),"from_month":first.strftime("%Y-%m"),
             "through_month":last.strftime("%Y-%m"),"from_date":first.isoformat(),
             "through_date":through_date,"month_count":month_count,
-            "household":detail,"months":months,"account_months":account_months,
+            "household":detail,"months":months,"account_months":account_months,"credit_months":credit_months,
             "days":days,"movements":movements,"accounts":detail["accounts"],
             "incomes":incomes,"expenses":expenses,"transfers":transfers,
-            "balance_history":histories,
+            "balance_history":histories,"credits":credit_result["items"],"credit_payments":credit_payments,
         }
 
     def planned_occurrences_for_matching(self,con,hid,account_id,period_from,period_to):
@@ -1134,7 +1441,7 @@ class Repository:
                     recurrence=row["recurrence"] or "monthly"; amount=int(row["amount_cents"] or 0)
                     if recurrence=="once": contribution=amount if str(row["due_date"] or "")[:7]==selected_date[:7] else 0
                     else:
-                        divisor={"monthly":1,"quarterly":3,"yearly":12}.get(recurrence,1)
+                        divisor={"monthly":1,"quarterly":3,"semiannual":6,"yearly":12}.get(recurrence,1)
                         contribution=int((Decimal(amount)/Decimal(divisor)).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
                     if contribution: values.append({"label":row["name"],"amount_cents":contribution})
                 return values
@@ -1143,12 +1450,14 @@ class Repository:
             expenses=sum(item["amount_cents"] for item in expense_items)
             balances=sum((a["projected_balance_cents"] or 0) for a in detail["accounts"] if a["projected_balance_cents"] is not None)
         warning_accounts=[account for account in detail["accounts"] if account.get("overdraft_exceeded")]
+        credit_summary=self.list_credits(hid,selected_date)
         return {"as_of":selected_date,"household":detail,"metrics":{"balance_cents":balances,
             "income_cents":income,"expenses_cents":expenses,"surplus_cents":income-expenses,
             "unassigned_projection_count":unassigned_projection["event_count"],
             "unassigned_projection_cents":unassigned_projection["net_cents"],
             "overdraft_warning_count":len(warning_accounts)},
             "breakdowns":{"income":income_items,"expenses":expense_items},
+            "credit_summary":{"as_of":credit_summary["as_of"],"groups":credit_summary["groups"],"totals":credit_summary["totals"]},
             "overdraft_warnings":[{"account_id":account["id"],"name":account["name"],
                 "overage_cents":account["overdraft_overage_cents"],"projected_balance_cents":account["projected_balance_cents"],
                 "overdraft_limit_cents":account["overdraft_limit_cents"]} for account in warning_accounts]}

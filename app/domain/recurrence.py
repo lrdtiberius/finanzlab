@@ -2,7 +2,7 @@ import calendar
 from datetime import date
 
 
-RECURRENCE_MONTHS={"monthly":1,"quarterly":3,"yearly":12}
+RECURRENCE_MONTHS={"monthly":1,"quarterly":3,"semiannual":6,"yearly":12}
 
 
 def _as_date(value):
