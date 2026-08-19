@@ -1,6 +1,6 @@
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **0.12.3**
+Gültig für Version **0.12.4**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
@@ -239,6 +239,8 @@ Unter **Kredite** werden drei Arten verwaltet:
 - Geliehen
 
 Beim Anlegen werden Bezeichnung, Art, Anfangssaldo und optional eine Notiz gespeichert. Ein Klick auf den Kredit öffnet den aktuellen Saldo und die vollständige Zahlungshistorie.
+
+Über der Kreditliste stehen die Filter **Alle**, **Konsumkredit**, **Kredit** und **Geliehen**. Die Zahl im jeweiligen Filter zeigt, wie viele Kredite dieser Art vorhanden sind. Der gewählte Filter wirkt nur auf die Liste; die drei Summenkarten darüber zeigen weiterhin jederzeit Anzahl und offenen Gesamtsaldo aller Kreditarten.
 
 Die Historie enthält:
 
