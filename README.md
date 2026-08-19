@@ -13,6 +13,7 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - Einnahmen und Ausgaben mit monatlichem, vierteljährlichem, halbjährlichem, jährlichem oder einmaligem Rhythmus und optionalem Enddatum
 - Saldo aller angelegten Positionen direkt auf den Einnahmen- und Ausgabenseiten
 - eigene Kreditverwaltung für Konsumkredit, Kredit und Geliehen
+- Kreditliste mit direktem Filter und Anzahl je Kreditart
 - vollständige Kredit-Historie aus verknüpften Ausgaben und manuellen Tilgungen
 - getrennter Abbuchungs- und Tilgungsbetrag für Annuitäten
 - zukünftige Tilgungen werden angezeigt, wirken aber erst ab ihrem Datum auf den Kreditsaldo
