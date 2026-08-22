@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.6
+
+- zwei links angeordnete Schnellaktionen für neue Ausgaben und Einnahmen direkt auf dem Dashboard
+- die Schnellaktionen verwenden dieselben Dialoge, Prüfungen und Speicherwege wie die Verwaltungsseiten
+- neu angelegte Positionen erscheinen sofort auf der jeweiligen Seite sowie in Dashboard und Vorschau
+
+## 0.12.5
+
+- Dashboard-Summen enthalten nur Einnahmen und Ausgaben, die im Monat des gewählten Stichtags tatsächlich fällig sind
+- vierteljährliche, halbjährliche und jährliche Positionen erscheinen mit dem vollständigen Betrag ausschließlich in ihrem Fälligkeitsmonat
+- Startdatum, Enddatum, Version und Aktivstatus werden bei der Monatszusammenfassung berücksichtigt
+- Dashboard-Monatssummen und Monatsvorschau werden durch einen gemeinsamen Regressionstest abgeglichen
+
 ## 0.12.4
 
 - Kreditseite um einen direkten Filter für Alle, Konsumkredit, Kredit und Geliehen erweitert
