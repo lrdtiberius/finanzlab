@@ -2,7 +2,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from threading import RLock
 from uuid import uuid4
@@ -1433,18 +1433,35 @@ class Repository:
         with self.connect() as con:
             unassigned_projection=self.projected_account_balances(con,hid,detail["accounts"],selected_date)
             def monthly_values(kind):
-                rows=con.execute("""SELECT COALESCE(v.name,f.name) AS name,v.amount_cents,v.recurrence,v.due_date FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
-                    WHERE f.household_id=? AND f.kind=? AND v.active=1 AND v.version_from<=? AND (v.version_to IS NULL OR v.version_to>?)
-                    AND (v.stream_start IS NULL OR v.stream_start<=?) AND (v.stream_end IS NULL OR v.stream_end>=?)""",(hid,kind,selected_date,selected_date,selected_date,selected_date)).fetchall()
-                values=[]
+                month_start=date.fromisoformat(f"{selected_date[:7]}-01")
+                next_month=(month_start.replace(day=28)+timedelta(days=4)).replace(day=1)
+                month_end=next_month-timedelta(days=1)
+                rows=con.execute("""SELECT COALESCE(v.name,f.name) AS name,v.amount_cents,v.recurrence,v.due_date,
+                        v.version_from,v.version_to,v.stream_start,v.stream_end
+                    FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
+                    WHERE f.household_id=? AND f.kind=? AND v.active=1
+                      AND v.version_from<=? AND (v.version_to IS NULL OR v.version_to>?)
+                      AND (v.stream_start IS NULL OR v.stream_start<=?)
+                      AND (v.stream_end IS NULL OR v.stream_end>=?)""",
+                    (hid,kind,month_end.isoformat(),month_start.isoformat(),
+                     month_end.isoformat(),month_start.isoformat())).fetchall()
+                totals={}
                 for row in rows:
-                    recurrence=row["recurrence"] or "monthly"; amount=int(row["amount_cents"] or 0)
-                    if recurrence=="once": contribution=amount if str(row["due_date"] or "")[:7]==selected_date[:7] else 0
-                    else:
-                        divisor={"monthly":1,"quarterly":3,"semiannual":6,"yearly":12}.get(recurrence,1)
-                        contribution=int((Decimal(amount)/Decimal(divisor)).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
-                    if contribution: values.append({"label":row["name"],"amount_cents":contribution})
-                return values
+                    try:
+                        due_dates=recurrence_dates(
+                            row["due_date"],row["recurrence"] or "monthly",
+                            (month_start-timedelta(days=1)).isoformat(),month_end.isoformat(),
+                            row["version_from"],row["version_to"],row["stream_start"],row["stream_end"])
+                    except (TypeError,ValueError):
+                        continue
+                    if not due_dates: continue
+                    label=row["name"]
+                    totals[label]=totals.get(label,0)+int(row["amount_cents"] or 0)*len(due_dates)
+                return [
+                    {"label":label,"amount_cents":amount}
+                    for label,amount in sorted(totals.items(),key=lambda item:(-item[1],item[0].lower()))
+                    if amount
+                ]
             income_items=monthly_values("income"); expense_items=monthly_values("expense")
             income=sum(item["amount_cents"] for item in income_items)
             expenses=sum(item["amount_cents"] for item in expense_items)

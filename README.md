@@ -18,6 +18,8 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - getrennter Abbuchungs- und Tilgungsbetrag für Annuitäten
 - zukünftige Tilgungen werden angezeigt, wirken aber erst ab ihrem Datum auf den Kreditsaldo
 - Umbuchungen mit Rhythmus, optionalem Enddatum und optionaler Ausführungsanzahl
+- Dashboard-Summen aus den im gewählten Monat tatsächlich fälligen Einnahmen und Ausgaben
+- Schnellaktionen zum Anlegen neuer Einnahmen und Ausgaben direkt auf dem Dashboard
 - taggenaue Monatsvorschau für Konten sowie separat auswählbare Kreditsimulation
 - dauerhaft gespeicherter Erledigt-Status je konkreter Bewegung; erledigte Vorgänge bleiben sichtbar und werden nicht erneut simuliert
 - strukturierter Excel-Export mit Monats-/Tagesvorschau, Krediten, Tilgungshistorie, Bewegungen und sämtlichen Eingaben

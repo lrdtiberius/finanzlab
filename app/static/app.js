@@ -109,7 +109,7 @@ function openFlow(kind,item=null){
   $('#cash-flow-dialog-eyebrow').textContent=item?(kind==='income'?'EINNAHME BEARBEITEN':'AUSGABE BEARBEITEN'):(kind==='income'?'NEUE EINNAHME':'NEUE AUSGABE');
   $('#cash-flow-dialog-title').textContent=item?'Position bearbeiten':(kind==='income'?'Einnahme anlegen':'Ausgabe anlegen');$('#delete-cash-flow').hidden=!item;$('#cash-flow-error').hidden=true;$('#cash-flow-dialog').showModal()
 }
-$('#new-income').addEventListener('click',()=>openFlow('income'));$('#new-expense').addEventListener('click',()=>openFlow('expense'));
+$('#new-income').addEventListener('click',()=>openFlow('income'));$('#new-expense').addEventListener('click',()=>openFlow('expense'));$('#dashboard-new-income').addEventListener('click',()=>openFlow('income'));$('#dashboard-new-expense').addEventListener('click',()=>openFlow('expense'));
 $('#cash-flow-form').elements.duration_months.addEventListener('input',syncFlowEndFromDuration);$('#cash-flow-form').elements.due_date.addEventListener('change',()=>{if($('#cash-flow-form').elements.duration_months.value)syncFlowEndFromDuration();else syncFlowDurationFromEnd()});$('#cash-flow-form').elements.end_date.addEventListener('change',syncFlowDurationFromEnd);$('#cash-flow-form').elements.category.addEventListener('change',configureFlowCreditFields);
 function flowClick(event){const button=event.target.closest('[data-edit-flow]');if(!button)return;const kind=button.dataset.editFlowKind,item=flowById(kind,button.dataset.editFlow);if(item)openFlow(kind,item)}
 $('#income-list').addEventListener('click',flowClick);$('#expense-list').addEventListener('click',flowClick);$('#diagnostics-list').addEventListener('click',flowClick);

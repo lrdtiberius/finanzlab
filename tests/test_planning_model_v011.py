@@ -471,8 +471,8 @@ class PlanningModelV011Tests(unittest.TestCase):
         )
 
         dashboard = self.repository.dashboard(self.household_id, "2026-09-01")
-        self.assertEqual(10_000, dashboard["metrics"]["income_cents"])
-        self.assertEqual(5_000, dashboard["metrics"]["expenses_cents"])
+        self.assertEqual(0, dashboard["metrics"]["income_cents"])
+        self.assertEqual(0, dashboard["metrics"]["expenses_cents"])
         diagnostics = self.repository.cash_flow_diagnostics(
             self.household_id, "2026-09-01"
         )
@@ -492,6 +492,79 @@ class PlanningModelV011Tests(unittest.TestCase):
                 "Halbjährlich",
                 archive.read("xl/worksheets/sheet7.xml").decode("utf-8"),
             )
+
+    def test_dashboard_monthly_totals_use_due_occurrences_and_match_preview(self):
+        self.repository.create_cash_flow(
+            self.flow(
+                kind="income",
+                name="Monatliche Einnahme",
+                category="other_income",
+                amount_cents=10_000,
+                recurrence="monthly",
+                due_date="2026-08-20",
+            )
+        )
+        self.repository.create_cash_flow(
+            self.flow(
+                kind="income",
+                name="Vierteljährliche Einnahme",
+                category="other_income",
+                amount_cents=30_000,
+                recurrence="quarterly",
+                due_date="2026-08-21",
+            )
+        )
+        self.repository.create_cash_flow(
+            self.flow(
+                name="Monatliche Ausgabe",
+                amount_cents=5_000,
+                recurrence="monthly",
+                due_date="2026-08-20",
+            )
+        )
+        self.repository.create_cash_flow(
+            self.flow(
+                name="Vierteljährliche Ausgabe",
+                amount_cents=15_000,
+                recurrence="quarterly",
+                due_date="2026-08-21",
+            )
+        )
+        self.repository.create_cash_flow(
+            self.flow(
+                name="Einmalige September-Ausgabe",
+                amount_cents=7_000,
+                recurrence="once",
+                due_date="2026-09-03",
+            )
+        )
+
+        september_dashboard = self.repository.dashboard(
+            self.household_id, "2026-09-01"
+        )
+        september_preview = self.repository.monthly_preview(
+            self.household_id, "2026-09", [self.giro_id]
+        )
+        self.assertEqual(10_000, september_dashboard["metrics"]["income_cents"])
+        self.assertEqual(12_000, september_dashboard["metrics"]["expenses_cents"])
+        self.assertEqual(
+            september_preview["totals"]["income_cents"],
+            september_dashboard["metrics"]["income_cents"],
+        )
+        self.assertEqual(
+            september_preview["totals"]["expense_cents"],
+            september_dashboard["metrics"]["expenses_cents"],
+        )
+        self.assertNotIn(
+            "Vierteljährliche Ausgabe",
+            {item["label"] for item in september_dashboard["breakdowns"]["expenses"]},
+        )
+
+        november_dashboard = self.repository.dashboard(
+            self.household_id, "2026-11-01"
+        )
+        self.assertEqual(40_000, november_dashboard["metrics"]["income_cents"])
+        self.assertEqual(20_000, november_dashboard["metrics"]["expenses_cents"])
 
     def test_completed_movement_stays_visible_but_is_not_projected(self):
         expense = self.repository.create_cash_flow(
@@ -1082,6 +1155,23 @@ class PlanningModelV011Tests(unittest.TestCase):
 
 
 class StaticUiTests(unittest.TestCase):
+    def test_dashboard_quick_actions_reuse_cash_flow_dialog(self):
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "app/static/index.html").read_text(encoding="utf-8")
+        script = (root / "app/static/app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="dashboard-new-expense"', html)
+        self.assertIn('id="dashboard-new-income"', html)
+        self.assertEqual(1, html.count('id="cash-flow-dialog"'))
+        self.assertIn(
+            "$('#dashboard-new-expense').addEventListener('click',()=>openFlow('expense'))",
+            script,
+        )
+        self.assertIn(
+            "$('#dashboard-new-income').addEventListener('click',()=>openFlow('income'))",
+            script,
+        )
+
     def test_credit_page_contains_type_filter_with_counts(self):
         root = Path(__file__).resolve().parents[1]
         html = (root / "app/static/index.html").read_text(encoding="utf-8")

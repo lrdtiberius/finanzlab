@@ -1,6 +1,6 @@
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **0.12.4**
+Gültig für Version **0.12.6**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
@@ -278,17 +278,19 @@ Für Umbuchungen stehen dieselben Rhythmen einschließlich **halbjährlich** zur
 
 Das Dashboard zeigt den berechneten Gesamtstand aller Konten zum gewählten Stichtag. Über die Pfeile kann tageweise vor- oder zurückgesprungen werden.
 
+Links im oberen Dashboard-Bereich stehen die Schnellaktionen **Ausgabe hinzufügen** und **Einnahme hinzufügen** bereit. Beide öffnen denselben Eingabedialog wie die jeweilige Verwaltungsseite. Gespeicherte Positionen erscheinen deshalb unmittelbar unter **Ausgaben** beziehungsweise **Einnahmen** und werden zugleich in Dashboard und Vorschau berücksichtigt.
+
 Zusätzlich werden angezeigt:
 
-- monatliche Einnahmepositionen
-- monatliche Ausgabenpositionen
+- im Monat des gewählten Stichtags tatsächlich fällige Einnahmen
+- im Monat des gewählten Stichtags tatsächlich fällige Ausgaben
 - Differenz aus Einnahmen und Ausgaben
 - Anzahl der Konten
 - Verteilung der Positionen
 - Kontostände und Dispowarnungen
 - Anzahl und offener Gesamtsaldo getrennt nach Konsumkredit, Kredit und Geliehen
 
-Für eine vollständige Auflistung der tatsächlich fälligen Bewegungen eines Monats ist die Seite **Vorschau** maßgeblich.
+Vierteljährliche, halbjährliche und jährliche Positionen werden dabei mit ihrem vollständigen Betrag ausschließlich im tatsächlichen Fälligkeitsmonat berücksichtigt. Sie werden nicht rechnerisch auf andere Monate verteilt. Start, Ende, Versionszeitraum und Aktivstatus werden ausgewertet. Für die vollständige Auflistung der einzelnen Fälligkeiten ist die Seite **Vorschau** maßgeblich.
 
 ## 11. Vorschau
 
