@@ -376,6 +376,490 @@ class PlanningModelV011Tests(unittest.TestCase):
         self.assertIn("missing_credit", {issue["code"] for issue in orphan["issues"]})
         self.assertTrue(orphan["not_considered"])
 
+    def test_dashboard_projects_credit_balance_to_future_selected_date(self):
+        today = date.today()
+        future_due = today + timedelta(days=10)
+        selected_future = today + timedelta(days=20)
+        after_selected_future = selected_future + timedelta(days=1)
+        credit = self.repository.create_credit(
+            {
+                "household_id": self.household_id,
+                "name": "Zukünftiger Kredit",
+                "credit_type": "consumer_credit",
+                "opening_balance_cents": 100_000,
+            }
+        )
+        self.repository.create_cash_flow(
+            self.flow(
+                name="Zukünftige Kreditrate",
+                category="consumer_credit",
+                amount_cents=25_000,
+                credit_id=credit["id"],
+                credit_reduction_cents=20_000,
+                recurrence="once",
+                due_date=future_due.isoformat(),
+                effective_from=today.isoformat(),
+            )
+        )
+        self.repository.add_credit_payment(
+            credit["id"],
+            {
+                "household_id": self.household_id,
+                "payment_date": future_due.isoformat(),
+                "amount_cents": 5_000,
+                "note": "Zukünftige Sondertilgung",
+            },
+        )
+        self.repository.add_credit_payment(
+            credit["id"],
+            {
+                "household_id": self.household_id,
+                "payment_date": after_selected_future.isoformat(),
+                "amount_cents": 7_000,
+                "note": "Spätere Sondertilgung",
+            },
+        )
+
+        current_dashboard = self.repository.dashboard(
+            self.household_id, today.isoformat()
+        )
+        future_dashboard = self.repository.dashboard(
+            self.household_id, selected_future.isoformat()
+        )
+        current_group = next(
+            group
+            for group in current_dashboard["credit_summary"]["groups"]
+            if group["credit_type"] == "consumer_credit"
+        )
+        future_group = next(
+            group
+            for group in future_dashboard["credit_summary"]["groups"]
+            if group["credit_type"] == "consumer_credit"
+        )
+        self.assertEqual(100_000, current_group["balance_cents"])
+        self.assertEqual(75_000, future_group["balance_cents"])
+        self.assertEqual(
+            selected_future.isoformat(), future_dashboard["credit_summary"]["as_of"]
+        )
+
+        normal_credit_page = self.repository.list_credits(
+            self.household_id, selected_future.isoformat()
+        )
+        self.assertEqual(today.isoformat(), normal_credit_page["as_of"])
+        self.assertEqual(
+            100_000, normal_credit_page["items"][0]["remaining_balance_cents"]
+        )
+
+    def test_credit_overpayment_is_clamped_to_zero_in_future_views(self):
+        today = date.today()
+        payment_date = today + timedelta(days=1)
+        credit = self.repository.create_credit(
+            {
+                "household_id": self.household_id,
+                "name": "Kredit mit hoher Schlussrate",
+                "credit_type": "credit",
+                "opening_balance_cents": 10_000,
+            }
+        )
+        self.repository.add_credit_payment(
+            credit["id"],
+            {
+                "household_id": self.household_id,
+                "payment_date": payment_date.isoformat(),
+                "amount_cents": 12_000,
+                "note": "Schlussrate",
+            },
+        )
+
+        projected = self.repository.list_credits(
+            self.household_id,
+            payment_date.isoformat(),
+            simulate_future=True,
+        )["items"][0]
+        self.assertEqual(0, projected["remaining_balance_cents"])
+        self.assertEqual(2_000, projected["overpaid_cents"])
+
+        dashboard = self.repository.dashboard(
+            self.household_id, payment_date.isoformat()
+        )
+        credit_group = next(
+            group
+            for group in dashboard["credit_summary"]["groups"]
+            if group["credit_type"] == "credit"
+        )
+        self.assertEqual(0, credit_group["balance_cents"])
+
+        preview = self.repository.monthly_preview(
+            self.household_id,
+            payment_date.strftime("%Y-%m"),
+            account_ids=[],
+            credit_ids=[credit["id"]],
+        )
+        preview_day = next(
+            day for day in preview["days"] if day["date"] == payment_date.isoformat()
+        )
+        self.assertEqual(0, preview_day["credits"][0]["remaining_balance_cents"])
+        self.assertEqual(0, preview["credit_totals"]["closing_balance_cents"])
+
+    def test_early_manual_payoff_skips_all_later_linked_expenses(self):
+        credit = self.repository.create_credit(
+            {
+                "household_id": self.household_id,
+                "name": "Vorzeitig getilgter Kredit",
+                "credit_type": "consumer_credit",
+                "opening_balance_cents": 100_000,
+            }
+        )
+        expense = self.repository.create_cash_flow(
+            self.flow(
+                name="Monatliche Kreditrate",
+                category="consumer_credit",
+                amount_cents=40_000,
+                credit_id=credit["id"],
+                credit_reduction_cents=32_000,
+                recurrence="monthly",
+                due_date="2026-08-20",
+                effective_from="2026-08-01",
+            )
+        )
+        self.repository.add_credit_payment(
+            credit["id"],
+            {
+                "household_id": self.household_id,
+                "payment_date": "2026-09-10",
+                "amount_cents": 68_000,
+                "note": "Vorzeitige Ablösung",
+            },
+        )
+
+        september = self.repository.monthly_preview(
+            self.household_id, "2026-09", [self.giro_id], [credit["id"]]
+        )
+        skipped = next(
+            item
+            for item in september["movements"]
+            if item["source_id"] == expense["id"] and item["date"] == "2026-09-20"
+        )
+        self.assertEqual(0, skipped["amount_cents"])
+        self.assertEqual("credit_repaid", skipped["skip_reason"])
+        self.assertFalse(skipped["applied_to_projection"])
+        self.assertFalse(skipped["completion_allowed"])
+        self.assertEqual(60_000, september["totals"]["opening_balance_cents"])
+        self.assertEqual(60_000, september["totals"]["closing_balance_cents"])
+        self.assertEqual(0, september["totals"]["expense_cents"])
+        self.assertEqual(0, september["credit_totals"]["closing_balance_cents"])
+
+        dashboard = self.repository.dashboard(self.household_id, "2026-09-20")
+        self.assertEqual(0, dashboard["metrics"]["expenses_cents"])
+        self.assertEqual(60_000, dashboard["metrics"]["balance_cents"])
+
+        projected_credit = self.repository.list_credits(
+            self.household_id, "2026-10-31", "2026-10-31", simulate_future=True
+        )["items"][0]
+        later_rates = [
+            item for item in projected_credit["payments"]
+            if item["source"] == "expense" and item["date"] >= "2026-09-20"
+        ]
+        self.assertEqual(2, len(later_rates))
+        self.assertTrue(all(item["skipped"] for item in later_rates))
+        self.assertTrue(all(item["effective_reduction_cents"] == 0 for item in later_rates))
+
+    def test_final_linked_expense_is_limited_to_remaining_credit_balance(self):
+        credit = self.repository.create_credit(
+            {
+                "household_id": self.household_id,
+                "name": "Kredit mit gekürzter Schlussrate",
+                "credit_type": "credit",
+                "opening_balance_cents": 50_000,
+            }
+        )
+        expense = self.repository.create_cash_flow(
+            self.flow(
+                name="Annuitätenrate",
+                category="credit",
+                amount_cents=40_000,
+                credit_id=credit["id"],
+                credit_reduction_cents=32_000,
+                recurrence="monthly",
+                due_date="2026-08-20",
+                effective_from="2026-08-01",
+            )
+        )
+
+        september = self.repository.monthly_preview(
+            self.household_id, "2026-09", [self.giro_id], [credit["id"]]
+        )
+        final_rate = next(
+            item
+            for item in september["movements"]
+            if item["source_id"] == expense["id"] and item["date"] == "2026-09-20"
+        )
+        self.assertEqual(-18_000, final_rate["amount_cents"])
+        self.assertEqual(40_000, final_rate["planned_amount_cents"])
+        self.assertEqual(18_000, final_rate["credit_reduction_cents"])
+        self.assertTrue(final_rate["credit_adjusted"])
+        self.assertEqual(60_000, september["totals"]["opening_balance_cents"])
+        self.assertEqual(42_000, september["totals"]["closing_balance_cents"])
+        self.assertEqual(18_000, september["totals"]["expense_cents"])
+        self.assertEqual(0, september["credit_totals"]["closing_balance_cents"])
+
+        dashboard = self.repository.dashboard(self.household_id, "2026-09-20")
+        self.assertEqual(18_000, dashboard["metrics"]["expenses_cents"])
+        self.assertEqual(42_000, dashboard["metrics"]["balance_cents"])
+
+        october = self.repository.monthly_preview(
+            self.household_id, "2026-10", [self.giro_id], [credit["id"]]
+        )
+        skipped = next(
+            item
+            for item in october["movements"]
+            if item["source_id"] == expense["id"] and item["date"] == "2026-10-20"
+        )
+        self.assertEqual(0, skipped["amount_cents"])
+        self.assertEqual("credit_repaid", skipped["skip_reason"])
+        self.assertEqual(42_000, october["totals"]["closing_balance_cents"])
+
+        export_payload = self.repository.excel_export_payload(
+            self.household_id, "2026-09", "2026-10"
+        )
+        exported_final = next(
+            item
+            for item in export_payload["movements"]
+            if item["source_id"] == expense["id"] and item["date"] == "2026-09-20"
+        )
+        exported_skipped = next(
+            item
+            for item in export_payload["movements"]
+            if item["source_id"] == expense["id"] and item["date"] == "2026-10-20"
+        )
+        self.assertEqual(-18_000, exported_final["amount_cents"])
+        self.assertTrue(exported_final["credit_adjusted"])
+        self.assertFalse(exported_skipped["applied_to_projection"])
+        self.assertEqual("credit_repaid", exported_skipped["skip_reason"])
+        self.assertGreater(len(build_forecast_workbook(export_payload)), 1_000)
+
+    def test_mobilezone_cent_remainder_is_projected_for_every_credit_type(self):
+        credits=[]; expenses=[]
+        for credit_type,name in (
+            ("consumer_credit","Konsumkredit Centrest"),
+            ("credit","Kredit Centrest"),
+            ("borrowed","Geliehen Centrest"),
+        ):
+            credit=self.repository.create_credit({
+                "household_id":self.household_id,"name":name,
+                "credit_type":credit_type,"opening_balance_cents":16_930,
+            })
+            values=self.flow(
+                name=name,category=credit_type,amount_cents=8_464,
+                credit_id=credit["id"],credit_reduction_cents=8_464,
+                recurrence="monthly",due_date="2026-08-21",
+                end_date="2026-11-21",duration_months="3",
+                effective_from="2026-08-01",
+            )
+            expense=self.repository.create_cash_flow(values)
+            self.repository.set_movement_completion({
+                "household_id":self.household_id,
+                "occurrence_key":f"cash-flow:{expense['id']}:2026-08-21",
+                "completed":True,
+            })
+            # Editing after the first instalment creates a new dated version;
+            # the original monthly cadence must nevertheless continue.
+            self.repository.update_cash_flow(
+                expense["id"],{**values,"effective_from":"2026-08-23"}
+            )
+            credits.append(credit); expenses.append(expense)
+
+        september=self.repository.monthly_preview(
+            self.household_id,"2026-09",[self.giro_id],[item["id"] for item in credits]
+        )
+        september_day=next(day for day in september["days"] if day["date"]=="2026-09-21")
+        self.assertEqual(
+            {item["id"]:2 for item in credits},
+            {item["id"]:item["remaining_balance_cents"] for item in september_day["credits"]},
+        )
+        self.assertEqual(
+            [-8_464,-8_464,-8_464],
+            sorted(item["amount_cents"] for item in september_day["movements"]),
+        )
+
+        october=self.repository.monthly_preview(
+            self.household_id,"2026-10",[self.giro_id],[item["id"] for item in credits]
+        )
+        october_day=next(day for day in october["days"] if day["date"]=="2026-10-21")
+        self.assertEqual(
+            {item["id"]:0 for item in credits},
+            {item["id"]:item["remaining_balance_cents"] for item in october_day["credits"]},
+        )
+        self.assertEqual(
+            [-2,-2,-2],sorted(item["amount_cents"] for item in october_day["movements"])
+        )
+        self.assertTrue(all(item["credit_adjusted"] for item in october_day["movements"]))
+
+        november=self.repository.monthly_preview(
+            self.household_id,"2026-11",[self.giro_id],[item["id"] for item in credits]
+        )
+        november_day=next(day for day in november["days"] if day["date"]=="2026-11-21")
+        self.assertEqual([0,0,0],sorted(item["amount_cents"] for item in november_day["movements"]))
+        self.assertTrue(all(item["skip_reason"]=="credit_repaid" for item in november_day["movements"]))
+
+        future_dashboard=self.repository.dashboard(self.household_id,"2026-11-21")
+        balances={group["credit_type"]:group["balance_cents"]
+            for group in future_dashboard["credit_summary"]["groups"]}
+        self.assertEqual({"consumer_credit":0,"credit":0,"borrowed":0},balances)
+
+    def test_regular_edit_removes_hidden_future_override_from_credit_expense(self):
+        credit=self.repository.create_credit({
+            "household_id":self.household_id,"name":"Mobilezone mit Altversion",
+            "credit_type":"consumer_credit","opening_balance_cents":16_930,
+        })
+        values=self.flow(
+            name="Mobilezone mit Altversion",category="consumer_credit",
+            amount_cents=8_464,credit_id=credit["id"],credit_reduction_cents=8_464,
+            recurrence="monthly",due_date="2026-08-21",end_date="2026-11-21",
+            duration_months="3",effective_from="2026-08-01",
+        )
+        expense=self.repository.create_cash_flow(values)
+        # A former release could leave this invisible future override behind.
+        self.repository.update_cash_flow(
+            expense["id"],{**values,"effective_from":"2026-09-21","active":False}
+        )
+        # The current browser form does not submit an effective date.  Saving
+        # the visible active configuration must replace every future override.
+        browser_payload={key:value for key,value in values.items() if key!="effective_from"}
+        self.repository.update_cash_flow(expense["id"],browser_payload)
+        self.repository.set_movement_completion({
+            "household_id":self.household_id,
+            "occurrence_key":f"cash-flow:{expense['id']}:2026-08-21",
+            "completed":True,
+        })
+
+        item=next(item for item in self.repository.list_cash_flows(
+            self.household_id,"expense","2026-08-23") if item["id"]==expense["id"])
+        self.assertFalse(any(version["version_from"]>"2026-08-23" for version in item["versions"]))
+        september=self.repository.monthly_preview(
+            self.household_id,"2026-09",[self.giro_id],[credit["id"]]
+        )
+        september_day=next(day for day in september["days"] if day["date"]=="2026-09-21")
+        self.assertEqual([-8_464],[movement["amount_cents"] for movement in september_day["movements"]])
+        self.assertEqual(2,september_day["credits"][0]["remaining_balance_cents"])
+
+    def test_v013_migration_repairs_hidden_future_credit_override(self):
+        credit=self.repository.create_credit({
+            "household_id":self.household_id,"name":"Mobilezone Migration",
+            "credit_type":"consumer_credit","opening_balance_cents":16_930,
+        })
+        values=self.flow(
+            name="Mobilezone Migration",category="consumer_credit",amount_cents=8_464,
+            credit_id=credit["id"],credit_reduction_cents=8_464,recurrence="monthly",
+            due_date="2026-08-21",end_date="2026-11-21",duration_months="3",
+            effective_from="2026-08-01",
+        )
+        expense=self.repository.create_cash_flow(values)
+        self.repository.update_cash_flow(
+            expense["id"],{**values,"effective_from":"2026-09-21","active":False}
+        )
+        self.repository.set_movement_completion({
+            "household_id":self.household_id,
+            "occurrence_key":f"cash-flow:{expense['id']}:2026-08-21",
+            "completed":True,
+        })
+        with self.repository.connect() as con:
+            con.execute("DELETE FROM schema_migrations WHERE name='v0.13-collapse-hidden-future-flow-versions'")
+
+        reopened=Repository(Path(self.temp_dir.name)/"planner.db")
+        september=reopened.monthly_preview(
+            self.household_id,"2026-09",[self.giro_id],[credit["id"]]
+        )
+        september_day=next(day for day in september["days"] if day["date"]=="2026-09-21")
+        self.assertEqual([-8_464],[movement["amount_cents"] for movement in september_day["movements"]])
+        self.assertEqual(2,september_day["credits"][0]["remaining_balance_cents"])
+        repaired=next(item for item in reopened.list_cash_flows(
+            self.household_id,"expense","2026-09-21") if item["id"]==expense["id"])
+        self.assertEqual(1,len(repaired["versions"]))
+        self.assertIsNone(repaired["versions"][0]["version_to"])
+
+    def test_bounded_credit_plan_adds_small_residual_to_final_rate_for_all_types(self):
+        credits=[]
+        for credit_type,name in (
+            ("consumer_credit","Konsumkredit Schlusscent"),
+            ("credit","Kredit Schlusscent"),
+            ("borrowed","Geliehen Schlusscent"),
+        ):
+            credit=self.repository.create_credit({
+                "household_id":self.household_id,"name":name,
+                "credit_type":credit_type,"opening_balance_cents":16_930,
+            })
+            expense=self.repository.create_cash_flow(self.flow(
+                name=name,category=credit_type,amount_cents=8_464,
+                credit_id=credit["id"],credit_reduction_cents=8_464,
+                recurrence="monthly",due_date="2026-08-21",
+                end_date="2026-09-21",duration_months="1",
+                effective_from="2026-08-01",
+            ))
+            self.repository.set_movement_completion({
+                "household_id":self.household_id,
+                "occurrence_key":f"cash-flow:{expense['id']}:2026-08-21",
+                "completed":True,
+            })
+            credits.append(credit)
+
+        preview=self.repository.monthly_preview(
+            self.household_id,"2026-09",[self.giro_id],[credit["id"] for credit in credits]
+        )
+        final_day=next(day for day in preview["days"] if day["date"]=="2026-09-21")
+        self.assertEqual([-8_466,-8_466,-8_466],sorted(
+            movement["amount_cents"] for movement in final_day["movements"]
+        ))
+        self.assertTrue(all(
+            movement["final_residual_added_cents"]==2 for movement in final_day["movements"]
+        ))
+        self.assertEqual([0,0,0],sorted(
+            credit["remaining_balance_cents"] for credit in final_day["credits"]
+        ))
+        self.assertEqual([8_466,8_466,8_466],sorted(
+            credit["reduction_cents"] for credit in final_day["credits"]
+        ))
+
+    def test_small_final_residual_rule_requires_end_and_is_strictly_below_three_euros(self):
+        exact_three=self.repository.create_credit({
+            "household_id":self.household_id,"name":"Exakt drei Euro",
+            "credit_type":"consumer_credit","opening_balance_cents":17_228,
+        })
+        exact_expense=self.repository.create_cash_flow(self.flow(
+            name="Exakt drei Euro",category="consumer_credit",amount_cents=8_464,
+            credit_id=exact_three["id"],credit_reduction_cents=8_464,
+            recurrence="monthly",due_date="2026-08-21",end_date="2026-09-21",
+            duration_months="1",effective_from="2026-08-01",
+        ))
+        unbounded=self.repository.create_credit({
+            "household_id":self.household_id,"name":"Ohne Ende",
+            "credit_type":"consumer_credit","opening_balance_cents":16_930,
+        })
+        unbounded_expense=self.repository.create_cash_flow(self.flow(
+            name="Ohne Ende",category="consumer_credit",amount_cents=8_464,
+            credit_id=unbounded["id"],credit_reduction_cents=8_464,
+            recurrence="monthly",due_date="2026-08-21",effective_from="2026-08-01",
+        ))
+        for expense in (exact_expense,unbounded_expense):
+            self.repository.set_movement_completion({
+                "household_id":self.household_id,
+                "occurrence_key":f"cash-flow:{expense['id']}:2026-08-21",
+                "completed":True,
+            })
+
+        preview=self.repository.monthly_preview(
+            self.household_id,"2026-09",[self.giro_id],[exact_three["id"],unbounded["id"]]
+        )
+        final_day=next(day for day in preview["days"] if day["date"]=="2026-09-21")
+        movements={movement["label"]:movement for movement in final_day["movements"]}
+        balances={credit["name"]:credit["remaining_balance_cents"] for credit in final_day["credits"]}
+        self.assertEqual(-8_464,movements["Exakt drei Euro"]["amount_cents"])
+        self.assertEqual(0,movements["Exakt drei Euro"]["final_residual_added_cents"])
+        self.assertEqual(300,balances["Exakt drei Euro"])
+        self.assertEqual(-8_464,movements["Ohne Ende"]["amount_cents"])
+        self.assertEqual(0,movements["Ohne Ende"]["final_residual_added_cents"])
+        self.assertEqual(2,balances["Ohne Ende"])
+
     def test_transfer_moves_money_between_accounts_without_changing_total(self):
         detail = self.repository.create_account(
             {

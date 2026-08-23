@@ -24,3 +24,14 @@
   font-size: 15px;
   -webkit-text-fill-color: var(--accent-dark);
 }
+
+.credit-payment-row.skipped,
+.movement-row.skipped {
+  opacity: 0.58;
+  background: #f2f0eb;
+}
+
+.credit-payment-row.skipped strong,
+.movement-row.skipped strong {
+  color: var(--muted);
+}

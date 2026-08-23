@@ -114,6 +114,11 @@ def build_forecast_workbook(payload):
         "applied": yes_no(item.get("applied_to_projection", True)),
         "completed": yes_no(item.get("completed", False)),
         "origin": "Gebucht" if item.get("origin") == "actual" else ("Umbuchung" if item.get("origin") == "transfer" else "Geplant"),
+        "note": ("Entfällt – Kredit bereits getilgt" if item.get("skip_reason") == "credit_repaid"
+                 else (f"Restbetrag {euro(item.get('final_residual_added_cents')):.2f} € in Schlussrate enthalten"
+                       if item.get("final_residual_added_cents")
+                       else (f"Auf Restschuld begrenzt; ursprünglich {euro(item.get('planned_amount_cents')):.2f} €"
+                             if item.get("credit_adjusted") else ""))),
     } for item in payload["movements"]]
 
     accounts = []
@@ -168,10 +173,18 @@ def build_forecast_workbook(payload):
     } for item in payload.get("credits", [])]
     credit_payments = [{
         "credit": item["credit_name"], "type": CREDIT_TYPE_LABELS.get(item["credit_type"], item["credit_type"]),
-        "date": item["date"], "amount": euro(item["amount_cents"]),
+        "date": item["date"], "planned": euro(item.get("planned_amount_cents")),
+        "amount": euro(item.get("effective_reduction_cents")),
+        "account_amount": euro(item.get("account_amount_cents")) if item["source"] == "expense" else None,
         "source": "Verknüpfte Ausgabe" if item["source"] == "expense" else "Manuell",
         "label": item["label"],
-        "status": StyledValue("Zukünftig – noch nicht saldowirksam", style="warning") if item.get("future") else "Im Saldo berücksichtigt",
+        "status": ("Entfällt – Kredit bereits getilgt" if item.get("skipped")
+                   else (StyledValue(
+                            f"Restbetrag {euro(item.get('final_residual_added_cents')):.2f} € zugeschlagen",
+                            style="warning") if item.get("final_residual_added_cents")
+                         else (StyledValue("Auf Restschuld begrenzt", style="warning") if item.get("adjusted")
+                               else (StyledValue("Zukünftig – noch nicht saldowirksam", style="warning")
+                                     if item.get("future") else "Im Saldo berücksichtigt")))),
     } for item in payload.get("credit_payments", [])]
     credit_months = [{
         "month": month_date(item["month"]), "credit": item["credit_name"],
@@ -227,7 +240,7 @@ def build_forecast_workbook(payload):
             Column("date", "Datum", "date", 13), Column("kind", "Art", width=21), Column("label", "Bezeichnung", width=34),
             Column("account", "Konto", width=25), Column("amount", "Betrag", "currency", 17),
             Column("applied", "Eingerechnet", width=15), Column("completed", "Vorgang erledigt", width=18),
-            Column("origin", "Quelle", width=15),
+            Column("origin", "Quelle", width=15), Column("note", "Berechnungshinweis", width=40),
         ], movements),
         TableSheet("Konten", "Konten", f"Kontostände und Prognosewerte zum Ende des Exportzeitraums ({payload['through_date']}).", [
             Column("name", "Kontoname", width=25), Column("owner", "Besitzer", width=21), Column("default", "Standardkonto", width=16),
@@ -257,7 +270,8 @@ def build_forecast_workbook(payload):
         ], credits),
         TableSheet("Kreditzahlungen", "Kredit-Historie", "Manuelle und durch Ausgaben geplante Tilgungen. Zukünftige Zahlungen sind noch nicht saldowirksam.", [
             Column("credit", "Kredit", width=29), Column("type", "Art", width=19), Column("date", "Datum", "date", 13),
-            Column("amount", "Tilgung", "currency", 17), Column("source", "Quelle", width=22),
+            Column("planned", "Geplante Tilgung", "currency", 19), Column("amount", "Wirksame Tilgung", "currency", 19),
+            Column("account_amount", "Wirksame Kontobelastung", "currency", 24), Column("source", "Quelle", width=22),
             Column("label", "Bezeichnung / Notiz", width=38), Column("status", "Status", width=33),
         ], credit_payments),
         TableSheet("Kreditvorschau", "Monatliche Kreditvorschau", "Separat simulierte Kreditstände; sie verändern niemals die Kontensumme.", [
@@ -394,7 +408,7 @@ def _write_xlsx(sheets, payload):
         for index, sheet in enumerate(sheets, 1):
             archive.writestr(f"xl/worksheets/sheet{index}.xml", _worksheet_xml(sheet))
         titles = "".join(f"<vt:lpstr>{escape(sheet.name)}</vt:lpstr>" for sheet in sheets)
-        archive.writestr("docProps/app.xml", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Haushaltsplaner</Application><DocSecurity>0</DocSecurity><ScaleCrop>false</ScaleCrop><HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Arbeitsblätter</vt:lpstr></vt:variant><vt:variant><vt:i4>{len(sheets)}</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="{len(sheets)}" baseType="lpstr">{titles}</vt:vector></TitlesOfParts><Company>Lrd.Tiberius</Company><AppVersion>0.12.6</AppVersion></Properties>''')
+        archive.writestr("docProps/app.xml", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Haushaltsplaner</Application><DocSecurity>0</DocSecurity><ScaleCrop>false</ScaleCrop><HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Arbeitsblätter</vt:lpstr></vt:variant><vt:variant><vt:i4>{len(sheets)}</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="{len(sheets)}" baseType="lpstr">{titles}</vt:vector></TitlesOfParts><Company>Lrd.Tiberius</Company><AppVersion>0.13.1</AppVersion></Properties>''')
         generated = str(payload.get("generated_at") or datetime.now(timezone.utc).isoformat()).replace("+00:00", "Z")
         archive.writestr("docProps/core.xml", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>Haushaltsplaner Vorschau-Export</dc:title><dc:creator>Lrd.Tiberius</dc:creator><cp:lastModifiedBy>Haushaltsplaner</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">{escape(generated)}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">{escape(generated)}</dcterms:modified></cp:coreProperties>''')
     return output.getvalue()
