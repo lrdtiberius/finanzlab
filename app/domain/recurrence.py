@@ -31,6 +31,22 @@ def last_occurrence_date(first_due_date,recurrence,occurrence_count):
     return add_months_anchored(first,(count-1)*months)
 
 
+def last_occurrence_on_or_before(first_due_date,recurrence,end_date):
+    """Return the final contractual occurrence not later than ``end_date``."""
+    first=_as_date(first_due_date); end=_as_date(end_date)
+    if end<first: return None
+    if recurrence=="once": return first
+    months=RECURRENCE_MONTHS.get(recurrence)
+    if months is None: raise ValueError(f"Unbekannter Zahlungsrhythmus: {recurrence}")
+    month_distance=(end.year-first.year)*12+end.month-first.month
+    occurrence_index=max(0,month_distance//months)
+    candidate=add_months_anchored(first,occurrence_index*months)
+    while candidate>end and occurrence_index>0:
+        occurrence_index-=1
+        candidate=add_months_anchored(first,occurrence_index*months)
+    return candidate if candidate<=end else None
+
+
 def recurrence_dates(first_due_date,recurrence,start_exclusive,end_inclusive,
                      active_from=None,active_to_exclusive=None,stream_start=None,stream_end=None,
                      max_occurrences=None):

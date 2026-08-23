@@ -11,12 +11,18 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - historisierte Kontostände mit Kennzeichnung bereits enthaltener Tagesbuchungen
 - Standardkonto für neue Einnahmen und Ausgaben
 - Einnahmen und Ausgaben mit monatlichem, vierteljährlichem, halbjährlichem, jährlichem oder einmaligem Rhythmus und optionalem Enddatum
+- automatische Bereinigung unsichtbarer Zukunftsversionen aus älteren Programmständen
 - Saldo aller angelegten Positionen direkt auf den Einnahmen- und Ausgabenseiten
 - eigene Kreditverwaltung für Konsumkredit, Kredit und Geliehen
 - Kreditliste mit direktem Filter und Anzahl je Kreditart
+- stichtagsbezogene Kreditsalden bei der Zukunftsbetrachtung auf dem Dashboard
 - vollständige Kredit-Historie aus verknüpften Ausgaben und manuellen Tilgungen
 - getrennter Abbuchungs- und Tilgungsbetrag für Annuitäten
 - zukünftige Tilgungen werden angezeigt, wirken aber erst ab ihrem Datum auf den Kreditsaldo
+- überzahlte Kredite bleiben bei einem offenen Saldo von 0,00 € und werden nicht als Forderung dargestellt
+- vorzeitig vollständig getilgte Kredite stoppen automatisch alle späteren verknüpften Ausgaben
+- eine zu hohe Schlussrate wird bei Kontobelastung und Tilgung automatisch auf die verbleibende Restschuld begrenzt
+- Restschulden unter 3,00 € werden bei einem hinterlegten Enddatum automatisch der letzten Rate zugeschlagen
 - Umbuchungen mit Rhythmus, optionalem Enddatum und optionaler Ausführungsanzahl
 - Dashboard-Summen aus den im gewählten Monat tatsächlich fälligen Einnahmen und Ausgaben
 - Schnellaktionen zum Anlegen neuer Einnahmen und Ausgaben direkt auf dem Dashboard

@@ -1,6 +1,6 @@
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **0.12.6**
+Gültig für Version **0.13.1**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
@@ -221,6 +221,8 @@ Das berechnete Enddatum ist ebenfalls einschließlich gültig. Werden Enddatum u
 
 Im Kopf der Ausgabenkarte steht der negative Saldo aller angelegten Ausgabenpositionen. Deaktivierte Positionen werden in diesem Bestandssaldo mitgezählt, aber nicht in Vorschauen eingerechnet.
 
+Beim Bearbeiten gilt die gespeicherte Konfiguration ab dem aktuellen Tag für alle folgenden Fälligkeiten. Nicht mehr sichtbare Zukunftsversionen aus älteren Programmständen werden beim ersten Start von Version 0.13.0 automatisch entfernt. Historische Konfigurationen vor dem aktuellen Tag und bereits gesetzte Erledigt-Markierungen bleiben erhalten.
+
 ### 7.4 Kontoabbuchung und Tilgung
 
 Bei einer verknüpften Kredit-Ausgabe werden zwei Beträge unterschieden:
@@ -250,6 +252,14 @@ Die Historie enthält:
 - geplante zukünftige Tilgungen in grauer Darstellung.
 
 Zukünftige Tilgungen reduzieren den aktuellen Kreditsaldo nicht. Sie werden erst am eingetragenen Datum saldowirksam. Manuelle Tilgungen können aus der Historie wieder gelöscht werden; automatisch erzeugte Einträge werden über die zugehörige Ausgabe geändert.
+
+Ist die letzte Tilgung höher als der noch offene Betrag, bleibt der angezeigte offene Saldo bei **0,00 €**. Der rechnerische Mehrbetrag wird nicht als Forderung des Haushalts dargestellt und erhöht weder Dashboard noch Kreditseite oder Vorschau.
+
+Alle manuellen und über Ausgaben geplanten Tilgungen werden in Datumsreihenfolge verarbeitet. Eine manuelle Tilgung wird am selben Tag vor einer geplanten Rate berücksichtigt. Erreicht der Kredit dadurch vorzeitig **0,00 €**, werden alle späteren verknüpften Ausgaben automatisch aus der Kontoberechnung entfernt. Sie bleiben in der Vorschau als **„Entfällt – Kredit bereits getilgt“** sichtbar, verändern aber weder Konto noch Monatswerte oder Kreditsaldo.
+
+Ist bei einer noch offenen Restschuld die nächste geplante Rate zu hoch, wird die letzte Kontobelastung automatisch auf die Restschuld begrenzt. Beispiel: Bei einer geplanten Rate von `400,00 €`, einem Tilgungsanteil von `320,00 €` und nur noch `100,00 €` Restschuld werden genau `100,00 €` vom Konto abgebucht und `100,00 €` getilgt. Ab diesem Termin beträgt der offene Kreditsaldo `0,00 €`; spätere Raten entfallen.
+
+Ist für die verknüpfte Ausgabe ein Enddatum hinterlegt und verbleiben nach der letzten vorgesehenen Rate nur noch **0,01 € bis 2,99 €**, wird dieser Kleinbetrag automatisch der Schlussrate zugeschlagen. Bei einer geplanten Schlussrate von `84,64 €` und einer Restschuld von `84,66 €` werden deshalb `84,66 €` abgebucht und getilgt. Der Kredit endet bei `0,00 €`. Bei exakt `3,00 €` oder mehr sowie bei Zahlungsplänen ohne Enddatum erfolgt keine automatische Erhöhung.
 
 ## 9. Umbuchungen
 
@@ -289,6 +299,8 @@ Zusätzlich werden angezeigt:
 - Verteilung der Positionen
 - Kontostände und Dispowarnungen
 - Anzahl und offener Gesamtsaldo getrennt nach Konsumkredit, Kredit und Geliehen
+
+Wird auf dem Dashboard ein zukünftiger Stichtag gewählt, werden auch die Kreditsalden bis zu diesem Tag simuliert. Verknüpfte Tilgungsanteile und manuelle Tilgungen mit einem Datum bis einschließlich des Stichtags reduzieren dann den angezeigten Kreditsaldo. Noch spätere Zahlungen bleiben unberücksichtigt. Auf der eigentlichen Kreditseite bleibt ohne Zukunftssimulation weiterhin der heutige reale Saldo maßgeblich.
 
 Vierteljährliche, halbjährliche und jährliche Positionen werden dabei mit ihrem vollständigen Betrag ausschließlich im tatsächlichen Fälligkeitsmonat berücksichtigt. Sie werden nicht rechnerisch auf andere Monate verteilt. Start, Ende, Versionszeitraum und Aktivstatus werden ausgewertet. Für die vollständige Auflistung der einzelnen Fälligkeiten ist die Seite **Vorschau** maßgeblich.
 

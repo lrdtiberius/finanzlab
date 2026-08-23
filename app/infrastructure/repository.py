@@ -7,7 +7,12 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
-from app.domain.recurrence import add_months_anchored, last_occurrence_date, recurrence_dates
+from app.domain.recurrence import (
+    add_months_anchored,
+    last_occurrence_date,
+    last_occurrence_on_or_before,
+    recurrence_dates,
+)
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -198,6 +203,31 @@ class Repository:
                 con.execute("UPDATE account_versions SET overdraft_apr='0'")
                 con.execute("UPDATE cash_flow_versions SET gross_amount_cents=NULL")
                 con.execute("INSERT INTO schema_migrations(name) VALUES('v0.11.1-remove-interest-and-gross')")
+            future_cleanup=con.execute(
+                "SELECT 1 FROM schema_migrations WHERE name='v0.13-collapse-hidden-future-flow-versions'"
+            ).fetchone()
+            if not future_cleanup:
+                # "Gültig ab/bis" is no longer editable in the application.
+                # Older releases could nevertheless leave a future version
+                # behind.  Such a hidden row silently replaced the visible
+                # configuration on its version date and made recurring
+                # payments disappear from the forecast.  Keep the historic
+                # version that is effective today and make it authoritative
+                # for the future.
+                today=date.today().isoformat()
+                for flow in con.execute("SELECT id FROM cash_flows").fetchall():
+                    current=con.execute("""SELECT id,substr(version_from,1,10) AS version_day
+                        FROM cash_flow_versions
+                        WHERE cash_flow_id=? AND substr(version_from,1,10)<=?
+                        ORDER BY substr(version_from,1,10) DESC,rowid DESC LIMIT 1""",
+                        (flow["id"],today)).fetchone()
+                    if not current:
+                        continue
+                    con.execute("""DELETE FROM cash_flow_versions
+                        WHERE cash_flow_id=? AND id<>? AND substr(version_from,1,10)>=?""",
+                        (flow["id"],current["id"],current["version_day"]))
+                    con.execute("UPDATE cash_flow_versions SET version_to=NULL WHERE id=?",(current["id"],))
+                con.execute("INSERT INTO schema_migrations(name) VALUES('v0.13-collapse-hidden-future-flow-versions')")
             for household in con.execute("SELECT id FROM households").fetchall():
                 if not con.execute("SELECT 1 FROM accounts WHERE household_id=? AND is_default=1",(household["id"],)).fetchone():
                     first=con.execute("SELECT id FROM accounts WHERE household_id=? ORDER BY created_at,id LIMIT 1",(household["id"],)).fetchone()
@@ -404,54 +434,152 @@ class Repository:
             if not row: raise ValueError("Tilgung nicht gefunden oder nicht manuell erfasst.")
             con.execute("DELETE FROM credit_payments WHERE id=?",(payment_id,))
         return {"id":payment_id,"deleted":True}
-    def list_credits(self,hid,as_of=None,through=None):
-        requested=as_of_date(as_of); actual_today=date.today().isoformat(); cutoff=min(requested,actual_today)
+
+    def _credit_timelines(self,con,hid,through_date):
+        """Build effective credit payments and account debits in date order.
+
+        Manual payments are applied before linked expenses on the same day.
+        Once a credit reaches zero, later linked expenses are retained as
+        skipped planning rows but no longer affect either credit or account.
+        """
+        credits=[dict(row) for row in con.execute(
+            "SELECT * FROM credits WHERE household_id=? ORDER BY created_at,name",(hid,)
+        ).fetchall()]
+        events_by_credit={credit["id"]:[] for credit in credits}
+        for row in con.execute("""SELECT * FROM credit_payments
+                WHERE household_id=? AND payment_date<=?
+                ORDER BY payment_date,created_at,id""",(hid,through_date)).fetchall():
+            events_by_credit.setdefault(row["credit_id"],[]).append({
+                "id":row["id"],"date":row["payment_date"],
+                "requested_reduction_cents":int(row["amount_cents"] or 0),
+                "planned_account_amount_cents":0,
+                "label":row["note"] or "Manuelle Tilgung","source":"manual",
+                "source_id":row["id"],"occurrence_key":None,
+            })
+        versions=con.execute("""SELECT f.id AS flow_id,COALESCE(v.name,f.name) AS label,
+                    v.amount_cents,v.credit_reduction_cents,v.credit_id,
+                    v.version_from,v.version_to,v.stream_start,v.stream_end,v.due_date,v.recurrence
+                FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
+                WHERE f.household_id=? AND f.kind='expense' AND v.credit_id IS NOT NULL
+                  AND v.active=1 AND v.version_from<=?""",(hid,through_date)).fetchall()
+        for version in versions:
+            if not version["due_date"]: continue
+            try:
+                start=(date.fromisoformat(version["due_date"])-timedelta(days=1)).isoformat()
+                final_due=None
+                if version["stream_end"] and (
+                    version["version_to"] is None or version["version_to"]>version["stream_end"]
+                ):
+                    final_date=last_occurrence_on_or_before(
+                        version["due_date"],version["recurrence"] or "monthly",version["stream_end"]
+                    )
+                    final_due=final_date.isoformat() if final_date else None
+                due_dates=recurrence_dates(
+                    version["due_date"],version["recurrence"] or "monthly",start,through_date,
+                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"])
+            except (TypeError,ValueError):
+                continue
+            for due in due_dates:
+                due_text=due.isoformat()
+                events_by_credit.setdefault(version["credit_id"],[]).append({
+                    "id":f"expense:{version['flow_id']}:{due_text}","date":due_text,
+                    "requested_reduction_cents":int(version["credit_reduction_cents"] or 0),
+                    "planned_account_amount_cents":int(version["amount_cents"] or 0),
+                    "label":version["label"],"source":"expense","source_id":version["flow_id"],
+                    "occurrence_key":f"cash-flow:{version['flow_id']}:{due_text}",
+                    "is_final_scheduled_occurrence":bool(final_due and due_text==final_due),
+                })
+
+        timelines={}; occurrence_adjustments={}
+        for credit in credits:
+            remaining=max(0,int(credit["opening_balance_cents"] or 0)); timeline=[]
+            events=events_by_credit.get(credit["id"],[])
+            events.sort(key=lambda item:(item["date"],0 if item["source"]=="manual" else 1,item["id"]))
+            for raw in events:
+                item=dict(raw); before=remaining
+                requested=max(0,int(item["requested_reduction_cents"] or 0))
+                planned_account=max(0,int(item["planned_account_amount_cents"] or 0))
+                final_residual_added=0
+                if item["source"]=="manual":
+                    effective=min(requested,before)
+                    account_amount=0; skipped=False; skip_reason=None
+                    overpaid=max(0,requested-effective)
+                elif before<=0:
+                    effective=0; account_amount=0; skipped=True; skip_reason="credit_repaid"
+                    overpaid=0
+                elif requested>0:
+                    effective=min(requested,before)
+                    residual_after_rate=max(0,before-effective)
+                    final_residual_added=(residual_after_rate
+                        if item.get("is_final_scheduled_occurrence") and 0<residual_after_rate<300
+                        else 0)
+                    if final_residual_added:
+                        # A tiny residual at the explicitly bounded end of the
+                        # plan is collected with the final instalment instead
+                        # of leaving a few cents of debt behind.
+                        effective+=final_residual_added
+                        account_amount=planned_account+final_residual_added
+                    else:
+                        # Without a separate interest model, a shortened final
+                        # instalment is exactly the remaining principal balance.
+                        account_amount=effective if effective<requested else planned_account
+                    skipped=False; skip_reason=None; overpaid=0
+                else:
+                    effective=0; account_amount=planned_account
+                    skipped=False; skip_reason=None; overpaid=0
+                remaining=max(0,before-effective)
+                item.update({
+                    "amount_cents":requested if item["source"]=="manual" else effective,
+                    "planned_amount_cents":requested,
+                    "effective_reduction_cents":effective,
+                    "account_amount_cents":account_amount,
+                    "remaining_before_cents":before,"remaining_after_cents":remaining,
+                    "adjusted":item["source"]=="expense" and (
+                        effective!=requested or account_amount!=planned_account),
+                    "final_residual_added_cents":final_residual_added,
+                    "skipped":skipped,"skip_reason":skip_reason,"overpaid_cents":overpaid,
+                })
+                timeline.append(item)
+                if item["occurrence_key"]:
+                    occurrence_adjustments[item["occurrence_key"]]=item
+            timelines[credit["id"]]={"credit":credit,"events":timeline,"remaining_balance_cents":remaining}
+        return {"credits":timelines,"occurrences":occurrence_adjustments}
+
+    def list_credits(self,hid,as_of=None,through=None,simulate_future=False):
+        requested=as_of_date(as_of); actual_today=date.today().isoformat()
+        cutoff=requested if simulate_future else min(requested,actual_today)
         default_through=add_months_anchored(actual_today,24).isoformat()
         through_date=as_of_date(through) if through else default_through
         if through_date<cutoff: through_date=cutoff
         with self.connect() as con:
             if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone(): raise ValueError("Haushalt nicht gefunden.")
-            credits=[dict(row) for row in con.execute("SELECT * FROM credits WHERE household_id=? ORDER BY created_at,name",(hid,)).fetchall()]
             if through is None:
                 finite_end=con.execute("""SELECT MAX(COALESCE(v.stream_end,v.due_date)) AS last_date
                     FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
                     WHERE f.household_id=? AND f.kind='expense' AND v.credit_id IS NOT NULL
                       AND (v.stream_end IS NOT NULL OR v.recurrence='once')""",(hid,)).fetchone()["last_date"]
                 if finite_end and finite_end>through_date: through_date=finite_end
+                manual_end=con.execute(
+                    "SELECT MAX(payment_date) AS last_date FROM credit_payments WHERE household_id=?",(hid,)
+                ).fetchone()["last_date"]
+                if manual_end and manual_end>through_date: through_date=manual_end
+            schedule=self._credit_timelines(con,hid,through_date)
             result=[]
-            for credit in credits:
-                payments=[{
-                    "id":row["id"],"date":row["payment_date"],"amount_cents":int(row["amount_cents"]),
-                    "label":row["note"] or "Manuelle Tilgung","source":"manual","source_id":row["id"],
-                } for row in con.execute("SELECT * FROM credit_payments WHERE credit_id=? ORDER BY payment_date,created_at",(credit["id"],)).fetchall()]
-                versions=con.execute("""SELECT f.id AS flow_id,COALESCE(v.name,f.name) AS label,v.credit_reduction_cents,
-                        v.version_from,v.version_to,v.stream_start,v.stream_end,v.due_date,v.recurrence
-                    FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
-                    WHERE f.household_id=? AND f.kind='expense' AND v.credit_id=? AND v.active=1
-                      AND v.credit_reduction_cents>0 AND v.version_from<=?""",(hid,credit["id"],through_date)).fetchall()
-                for version in versions:
-                    if not version["due_date"]: continue
-                    try:
-                        start=(date.fromisoformat(version["due_date"])-timedelta(days=1)).isoformat()
-                        due_dates=recurrence_dates(version["due_date"],version["recurrence"] or "monthly",start,through_date,
-                            version["version_from"],version["version_to"],version["stream_start"],version["stream_end"])
-                    except (TypeError,ValueError):
-                        continue
-                    for due in due_dates:
-                        due_text=due.isoformat()
-                        payments.append({"id":f"expense:{version['flow_id']}:{due_text}","date":due_text,
-                            "amount_cents":int(version["credit_reduction_cents"]),"label":version["label"],
-                            "source":"expense","source_id":version["flow_id"]})
+            for credit_id,timeline in schedule["credits"].items():
+                credit=dict(timeline["credit"])
+                payments=[dict(item) for item in timeline["events"]
+                    if item["source"]=="manual" or int(item["planned_amount_cents"] or 0)>0]
                 for payment in payments:
                     payment["future"]=payment["date"]>actual_today
-                    payment["applied"]=payment["date"]<=cutoff
+                    payment["applied"]=payment["date"]<=cutoff and not payment["skipped"]
                 payments.sort(key=lambda item:(item["date"],item["source"],item["id"]),reverse=True)
-                paid=sum(item["amount_cents"] for item in payments if item["applied"])
                 opening=int(credit["opening_balance_cents"] or 0)
-                credit["paid_cents"]=paid
-                credit["remaining_balance_cents"]=max(0,opening-paid)
-                credit["overpaid_cents"]=max(0,paid-opening)
-                credit["future_payment_cents"]=sum(item["amount_cents"] for item in payments if not item["applied"])
+                effective_paid=sum(item["effective_reduction_cents"] for item in payments if item["date"]<=cutoff)
+                credit["paid_cents"]=min(opening,effective_paid)
+                credit["remaining_balance_cents"]=max(0,opening-effective_paid)
+                credit["overpaid_cents"]=sum(item["overpaid_cents"] for item in payments if item["date"]<=cutoff)
+                credit["future_payment_cents"]=sum(
+                    item["effective_reduction_cents"] for item in payments if item["date"]>cutoff)
                 credit["payments"]=payments
                 credit["as_of"]=cutoff
                 credit["through"]=through_date
@@ -641,12 +769,19 @@ class Repository:
             if not flow: raise ValueError("Zahlungsstrom nicht gefunden.")
             if kind and kind!=flow["kind"]: raise ValueError("Die Zahlungsart kann nicht geändert werden.")
             kind=flow["kind"]; values=self.cash_flow_values(con,payload,kind); effective=values["effective_from"]
+            replace_future=payload.get("effective_from") in (None,"")
+            if replace_future:
+                # The current UI has no validity-date control.  A regular edit
+                # therefore means "from today onward" and must supersede old,
+                # invisible future versions instead of ending at the next one.
+                con.execute("DELETE FROM cash_flow_versions WHERE cash_flow_id=? AND substr(version_from,1,10)>=?",
+                    (flow_id,effective))
             versions=con.execute("SELECT * FROM cash_flow_versions WHERE cash_flow_id=? ORDER BY version_from,rowid",(flow_id,)).fetchall()
             same=next((row for row in versions if row["version_from"]==effective),None)
             next_date=next((row["version_from"] for row in versions if row["version_from"]>effective),None)
             if same:
-                con.execute("""UPDATE cash_flow_versions SET amount_cents=?,active=?,stream_start=?,stream_end=?,due_date=?,source_reference=?,gross_amount_cents=?,recurrence=?,name=?,category=?,owner_scope=?,owner_person_id=?,account_id=?,credit_id=?,credit_reduction_cents=? WHERE id=?""",
-                    (values["amount_cents"],values["active"],effective,values["stream_end"],values["due_date"],"Manuelle Änderung",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],values["credit_id"],values["credit_reduction_cents"],same["id"]))
+                con.execute("""UPDATE cash_flow_versions SET amount_cents=?,active=?,version_to=?,stream_start=?,stream_end=?,due_date=?,source_reference=?,gross_amount_cents=?,recurrence=?,name=?,category=?,owner_scope=?,owner_person_id=?,account_id=?,credit_id=?,credit_reduction_cents=? WHERE id=?""",
+                    (values["amount_cents"],values["active"],None if replace_future else same["version_to"],effective,values["stream_end"],values["due_date"],"Manuelle Änderung",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],values["credit_id"],values["credit_reduction_cents"],same["id"]))
             else:
                 previous=[row for row in versions if row["version_from"]<effective]
                 if previous:
@@ -818,7 +953,7 @@ class Repository:
         }
 
         def add_event(account_id,event_date,amount_cents,kind,label,source_id,occurrence_key,origin,
-                      show_on_anchor=False,completion_key=None):
+                      show_on_anchor=False,completion_key=None,applied_override=None,event_meta=None):
             completion_allowed=bool(completion_key)
             completed=completion_allowed and completion_key in completed_occurrences
             event={
@@ -828,6 +963,7 @@ class Repository:
                 "completion_key":completion_key,"completion_allowed":completion_allowed,
                 "completed":completed,
             }
+            if event_meta: event.update(event_meta)
             target=projected.get(account_id)
             if completed:
                 completed_event={**event,"applied_to_projection":False}
@@ -835,6 +971,9 @@ class Repository:
                 else: result["events"].append(completed_event)
                 return
             if target is None:
+                if applied_override is False:
+                    result["unassigned_events"].append({**event,"applied_to_projection":False})
+                    return
                 result["event_count"]+=1; result["net_cents"]+=amount_cents
                 result["unassigned_events"].append(event)
                 return
@@ -848,15 +987,20 @@ class Repository:
                 if show_on_anchor and event_date==account["anchor_date"] and event_date==selected_date:
                     result["events"].append({**event,"applied_to_projection":False})
                 return
+            if applied_override is False:
+                result["events"].append({**event,"applied_to_projection":False})
+                return
             if target["balance_cents"] is None: return
             target["balance_cents"]+=amount_cents; target["event_count"]+=1
             if amount_cents>=0: target["income_cents"]+=amount_cents
             else: target["expense_cents"]+=-amount_cents
             result["events"].append({**event,"applied_to_projection":True})
 
+        credit_occurrences=self._credit_timelines(con,hid,selected_date)["occurrences"]
         versions=con.execute("""SELECT f.id AS flow_id,f.kind,COALESCE(v.name,f.name) AS label,
                    v.amount_cents,v.active,v.version_from,v.version_to,v.stream_start,v.stream_end,
-                   v.due_date,v.recurrence,COALESCE(v.account_id,f.account_id) AS account_id
+                   v.due_date,v.recurrence,COALESCE(v.account_id,f.account_id) AS account_id,
+                   v.credit_id,v.credit_reduction_cents
             FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
             WHERE f.household_id=? AND v.active=1 AND v.version_from<=?
               AND (v.stream_start IS NULL OR v.stream_start<=?)""",(hid,selected_date,selected_date)).fetchall()
@@ -891,9 +1035,28 @@ class Repository:
             for due in due_dates:
                 due_text=due.isoformat(); occurrence_key=f"cash-flow:{version['flow_id']}:{due_text}"
                 if occurrence_key in matched_occurrences: continue
-                amount=int(version["amount_cents"] or 0)*(1 if version["kind"]=="income" else -1)
+                planned_amount=int(version["amount_cents"] or 0)
+                amount=planned_amount*(1 if version["kind"]=="income" else -1)
+                applied_override=None; event_meta=None; completion_key=occurrence_key
+                if version["kind"]=="expense" and version["credit_id"]:
+                    adjustment=credit_occurrences.get(occurrence_key)
+                    if adjustment:
+                        effective_amount=int(adjustment["account_amount_cents"] or 0)
+                        amount=-effective_amount
+                        event_meta={
+                            "credit_id":version["credit_id"],
+                            "credit_reduction_cents":int(adjustment["effective_reduction_cents"] or 0),
+                            "planned_amount_cents":planned_amount,
+                            "planned_credit_reduction_cents":int(version["credit_reduction_cents"] or 0),
+                            "credit_adjusted":bool(adjustment["adjusted"]),
+                            "final_residual_added_cents":int(adjustment.get("final_residual_added_cents") or 0),
+                            "skip_reason":adjustment["skip_reason"],
+                        }
+                        if adjustment["skipped"]:
+                            applied_override=False; completion_key=None
                 add_event(version["account_id"],due_text,amount,version["kind"],version["label"],version["flow_id"],
-                    occurrence_key,"planned",completion_key=occurrence_key)
+                    occurrence_key,"planned",completion_key=completion_key,
+                    applied_override=applied_override,event_meta=event_meta)
 
         transfers=con.execute("SELECT * FROM transfers WHERE household_id=? AND active=1",(hid,)).fetchall()
         for transfer in transfers:
@@ -1035,7 +1198,7 @@ class Repository:
         if any(credit_id not in credit_by_id for credit_id in credit_ids): raise ValueError("Mindestens ein Kredit gehört nicht zu diesem Haushalt.")
         selected_credit_rows=[credit_by_id[credit_id] for credit_id in credit_ids]
         def credit_balance_on(credit,day_text):
-            paid=sum(item["amount_cents"] for item in credit["payments"] if item["date"]<=day_text)
+            paid=sum(item["effective_reduction_cents"] for item in credit["payments"] if item["date"]<=day_text)
             return max(0,int(credit["opening_balance_cents"] or 0)-paid)
         selected_ids=set(account_ids)
         account_order={account_id:index for index,account_id in enumerate(account_ids)}
@@ -1076,7 +1239,7 @@ class Repository:
                     credit_payments=[item for item in credit["payments"] if item["date"]==day_text]
                     day_credits.append({"id":credit["id"],"name":credit["name"],"credit_type":credit["credit_type"],
                         "remaining_balance_cents":credit_balance_on(credit,day_text),
-                        "reduction_cents":sum(item["amount_cents"] for item in credit_payments),
+                        "reduction_cents":sum(item["effective_reduction_cents"] for item in credit_payments),
                         "payments":credit_payments})
                 days.append({
                     "date":day_text,"accounts":day_accounts,"balances":day_accounts,
@@ -1432,11 +1595,13 @@ class Repository:
         if not detail: raise KeyError("household")
         with self.connect() as con:
             unassigned_projection=self.projected_account_balances(con,hid,detail["accounts"],selected_date)
+            month_start=date.fromisoformat(f"{selected_date[:7]}-01")
+            next_month=(month_start.replace(day=28)+timedelta(days=4)).replace(day=1)
+            month_end=next_month-timedelta(days=1)
+            credit_occurrences=self._credit_timelines(con,hid,month_end.isoformat())["occurrences"]
             def monthly_values(kind):
-                month_start=date.fromisoformat(f"{selected_date[:7]}-01")
-                next_month=(month_start.replace(day=28)+timedelta(days=4)).replace(day=1)
-                month_end=next_month-timedelta(days=1)
-                rows=con.execute("""SELECT COALESCE(v.name,f.name) AS name,v.amount_cents,v.recurrence,v.due_date,
+                rows=con.execute("""SELECT f.id AS flow_id,COALESCE(v.name,f.name) AS name,
+                        v.amount_cents,v.recurrence,v.due_date,v.credit_id,
                         v.version_from,v.version_to,v.stream_start,v.stream_end
                     FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
                     WHERE f.household_id=? AND f.kind=? AND v.active=1
@@ -1456,7 +1621,13 @@ class Repository:
                         continue
                     if not due_dates: continue
                     label=row["name"]
-                    totals[label]=totals.get(label,0)+int(row["amount_cents"] or 0)*len(due_dates)
+                    amount=0
+                    for due in due_dates:
+                        occurrence_key=f"cash-flow:{row['flow_id']}:{due.isoformat()}"
+                        adjustment=credit_occurrences.get(occurrence_key) if kind=="expense" and row["credit_id"] else None
+                        amount+=(int(adjustment["account_amount_cents"])
+                            if adjustment is not None else int(row["amount_cents"] or 0))
+                    totals[label]=totals.get(label,0)+amount
                 return [
                     {"label":label,"amount_cents":amount}
                     for label,amount in sorted(totals.items(),key=lambda item:(-item[1],item[0].lower()))
@@ -1467,7 +1638,7 @@ class Repository:
             expenses=sum(item["amount_cents"] for item in expense_items)
             balances=sum((a["projected_balance_cents"] or 0) for a in detail["accounts"] if a["projected_balance_cents"] is not None)
         warning_accounts=[account for account in detail["accounts"] if account.get("overdraft_exceeded")]
-        credit_summary=self.list_credits(hid,selected_date)
+        credit_summary=self.list_credits(hid,selected_date,simulate_future=True)
         return {"as_of":selected_date,"household":detail,"metrics":{"balance_cents":balances,
             "income_cents":income,"expenses_cents":expenses,"surplus_cents":income-expenses,
             "unassigned_projection_count":unassigned_projection["event_count"],

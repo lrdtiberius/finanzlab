@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.13.1
+
+- bei kreditverknüpften Ausgaben mit Enddatum wird ein nach der letzten planmäßigen Rate verbleibender Rest von weniger als 3,00 € automatisch der Schlussrate zugeschlagen
+- Kontoabbuchung und Kredittilgung werden dabei gemeinsam erhöht, sodass der Kredit am angegebenen Ende exakt 0,00 € erreicht
+- ohne Enddatum sowie bei einer Restschuld ab 3,00 € bleibt der reguläre Zahlungsplan unverändert
+- Vorschau, Kredithistorie und Excel-Export kennzeichnen den automatisch in der Schlussrate enthaltenen Restbetrag
+- die Schlussratenregel ist für Konsumkredit, Kredit und Geliehen sowie die Grenzwerte 2,99 € und 3,00 € getestet
+
+## 0.13.0
+
+- unsichtbare zukünftige Altversionen von Einnahmen und Ausgaben werden beim ersten Start automatisch bereinigt
+- eine normale Bearbeitung ersetzt die sichtbare Position ab heute vollständig und kann nicht mehr unbemerkt von einer alten Zukunftsversion überschrieben werden
+- wiederkehrende Kreditraten erscheinen dadurch zuverlässig an allen künftigen Fälligkeitstagen in Vorschau, Dashboard, Kreditverlauf und Excel-Export
+- Cent-Restbeträge werden über die vorletzte volle Rate und eine automatisch gekürzte Schlussrate vollständig bis 0,00 € fortgeschrieben
+- Regressionstests decken die reale Mobilezone-Konstellation, vorhandene Altversionen und alle drei Kreditarten ab
+
+## 0.12.8
+
+- Kreditverläufe werden strikt chronologisch berechnet; manuelle Tilgungen wirken am selben Tag vor geplanten Raten
+- erreicht ein Kredit durch eine vorzeitige Tilgung 0,00 €, werden alle späteren verknüpften Ausgaben nicht mehr in Konto, Dashboard, Vorschau oder Excel-Prognose eingerechnet
+- ist die nächste geplante Rate höher als die Restschuld, werden Kontobelastung und Tilgung automatisch auf die tatsächliche Restschuld begrenzt
+- entfallene und gekürzte Raten bleiben in Vorschau, Kreditplanung und Excel-Export mit einem eindeutigen Berechnungshinweis sichtbar
+
+## 0.12.7
+
+- Kreditsalden auf dem Dashboard folgen jetzt dem dort gewählten Stichtag
+- bei zukünftigen Stichtagen werden verknüpfte Tilgungsanteile und manuelle Tilgungen bis einschließlich dieses Tages simuliert
+- Zahlungen nach dem gewählten Stichtag beeinflussen den angezeigten Kreditsaldo nicht
+- die normale Kreditseite zeigt weiterhin den realen Saldo zum heutigen Datum
+- übersteigt eine Schlussrate den Restbetrag, wird der offene Kreditsaldo auf 0,00 € begrenzt und niemals als Forderung dargestellt
+
 ## 0.12.6
 
 - zwei links angeordnete Schnellaktionen für neue Ausgaben und Einnahmen direkt auf dem Dashboard
