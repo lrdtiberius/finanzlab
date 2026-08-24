@@ -71,7 +71,7 @@
 
       <section id="expenses-view" class="view" hidden>
         <div class="page-heading"><p class="eyebrow">AUSGABENPLANUNG</p><h1>Ausgaben</h1><p>Alle regelmäßigen oder einmaligen Ausgaben. Kreditraten können mit ihrem tatsächlichen Tilgungsanteil einem Kredit zugeordnet werden.</p></div>
-        <section class="panel"><div class="section-heading"><div><p class="eyebrow">ZAHLUNGEN</p><h2>Ausgaben</h2></div><div class="section-actions"><span class="flow-total expense"><small>Saldo aller Positionen</small><strong id="expense-position-total">− 0,00 €</strong><em>inkl. deaktivierte</em></span><button id="new-expense" class="button compact" type="button">+ Ausgabe</button></div></div><div id="expense-list" class="flow-list"></div></section>
+        <section class="panel"><div class="section-heading"><div><p class="eyebrow">ZAHLUNGEN</p><h2 id="expense-list-title">Aktive Ausgaben</h2></div><div class="section-actions"><span class="flow-total expense"><small>Saldo aller Positionen</small><strong id="expense-position-total">− 0,00 €</strong><em>inkl. Archiv und deaktivierte</em></span><button id="new-expense" class="button compact" type="button">+ Ausgabe</button></div></div><div id="expense-filter" class="credit-filter" role="group" aria-label="Ausgaben nach Status filtern"></div><div id="expense-list" class="flow-list"></div></section>
       </section>
 
       <section id="credits-view" class="view" hidden>
@@ -82,7 +82,7 @@
 
       <section id="transfers-view" class="view" hidden>
         <div class="page-heading"><p class="eyebrow">ZWISCHEN EIGENEN KONTEN</p><h1>Umbuchungen</h1><p>Der Betrag geht vom Quellkonto ab und beim Zielkonto ein. Der Haushaltsgesamtstand bleibt unverändert.</p></div>
-        <section class="panel"><div class="section-heading"><div><p class="eyebrow">GEPLANT</p><h2>Umbuchungen</h2></div><button id="new-transfer" class="button compact" type="button">+ Umbuchung</button></div><div id="transfer-list" class="flow-list"></div></section>
+        <section class="panel"><div class="section-heading"><div><p class="eyebrow">GEPLANT</p><h2 id="transfer-list-title">Aktive Umbuchungen</h2></div><button id="new-transfer" class="button compact" type="button">+ Umbuchung</button></div><div id="transfer-filter" class="credit-filter" role="group" aria-label="Umbuchungen nach Status filtern"></div><div id="transfer-list" class="flow-list"></div></section>
       </section>
 
       <section id="settings-view" class="view" hidden>
@@ -96,7 +96,7 @@
       </section>
     </main>
 
-    <footer><span>Haushaltsplaner <b>by Lrd.Tiberius</b> · Version 0.13.1</span><a href="https://www.buymeacoffee.com/" target="_blank" rel="noreferrer">☕ Buy me a coffee</a></footer>
+    <footer><span>Haushaltsplaner <b>by Lrd.Tiberius</b> · Version 0.13.3</span><a href="https://www.buymeacoffee.com/" target="_blank" rel="noreferrer">☕ Buy me a coffee</a></footer>
   </div>
 
   <dialog id="setup-dialog" class="modal small-modal"><form id="setup-form"><div class="modal-head"><div><p class="eyebrow">HAUSHALT ANLEGEN</p><h2>Willkommen</h2></div><button id="close-setup" class="icon-button" type="button" data-close="setup-dialog">×</button></div><div class="form-grid"><label class="wide">Name des Haushalts<input name="name" required></label><fieldset class="wide"><legend>Haushaltsmodell</legend><label class="choice"><input type="radio" name="mode" value="single" checked> Einzelperson</label><label class="choice"><input type="radio" name="mode" value="couple"> Paar</label></fieldset><label>Name Person A<input name="person_a" required></label><label id="person-b-field" hidden>Name Person B<input name="person_b"></label><label class="wide">Erstes Konto <span class="hint">optional</span><input name="account_name"></label><label>Kontostand<input name="balance" type="number" step="0.01" value="0"></label><label>Stand vom<input name="anchor_date" type="date"></label><label>Disporahmen<input name="overdraft_limit" type="number" step="0.01" min="0" value="0"></label><label class="check wide"><input name="bookings_applied" type="checkbox"> Alle Buchungen des Stichtags sind bereits im Kontostand enthalten</label></div><div id="setup-error" class="notice error" hidden></div><div class="modal-actions"><button class="button" type="submit">Haushalt anlegen</button></div></form></dialog>

@@ -1,6 +1,6 @@
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **0.13.1**
+Gültig für Version **0.13.3**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
@@ -72,11 +72,13 @@ Für eine Portainer-Installation kann entweder das Repository als Git-Stack verw
 
 Beim Portainer-Paket:
 
-1. die enthaltene Build-TAR als Image importieren,
-2. sicherstellen, dass das externe Volume `finanzlab` vorhanden ist,
-3. die enthaltene Stack-YAML in Portainer anlegen,
+1. unter **Images → Import** die enthaltene Datei `finanzlab-image-v0.13.3-amd64.tar` oder das gleichnamige GitHub-Release-Archiv mit der Endung `.tar.gz` importieren,
+2. beim bestehenden Stack den Inhalt durch die mitgelieferte Stack-YAML ersetzen,
+3. den Stack erneut bereitstellen,
 4. den Stack starten,
 5. Port `8798` im Browser öffnen.
+
+Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:0.13.3` für `linux/amd64`. Die zusätzlich enthaltene Build-TAR ist nur der Quell- und Buildkontext und darf nicht unter **Images → Import** verwendet werden.
 
 Das Volume wird im Container unter `/data` eingebunden. Dort liegt insbesondere die Datenbankdatei `planner.db`.
 
@@ -219,7 +221,14 @@ Das berechnete Enddatum ist ebenfalls einschließlich gültig. Werden Enddatum u
 
 ### 7.3 Saldo aller Ausgaben
 
-Im Kopf der Ausgabenkarte steht der negative Saldo aller angelegten Ausgabenpositionen. Deaktivierte Positionen werden in diesem Bestandssaldo mitgezählt, aber nicht in Vorschauen eingerechnet.
+Im Kopf der Ausgabenkarte steht der negative Saldo aller angelegten Ausgabenpositionen. Archivierte und deaktivierte Positionen werden in diesem Bestandssaldo mitgezählt, aber nur zum gewählten Monat passende aktive Fälligkeiten fließen in Dashboard und Vorschauen ein.
+
+Über der Ausgabenliste stehen die Bereiche **Aktiv** und **Archiv**. Die jeweilige Zahl zeigt, wie viele Positionen enthalten sind:
+
+- **Aktiv:** wiederkehrende Ausgaben ohne Enddatum sowie Ausgaben, deren End- oder einmaliges Fälligkeitsdatum heute oder in der Zukunft liegt;
+- **Archiv:** Ausgaben, deren Enddatum vor dem heutigen Datum liegt, sowie einmalige Ausgaben mit einer vergangenen Fälligkeit.
+
+Das Enddatum bleibt einschließlich gültig. Eine Ausgabe mit Enddatum `24.08.2026` steht deshalb am 24.08. noch unter **Aktiv** und wechselt erst am 25.08. automatisch ins **Archiv**. Bei einer einmaligen Ausgabe übernimmt die Fälligkeit diese Funktion: Eine einmalige Ausgabe vom `18.08.2026` wird ab dem 19.08. im Archiv angezeigt. Wird das Enddatum einer archivierten wiederkehrenden Ausgabe verlängert oder entfernt, erscheint sie wieder unter **Aktiv**. Es werden keine Daten gelöscht; beide Bereiche bleiben vollständig bearbeitbar.
 
 Beim Bearbeiten gilt die gespeicherte Konfiguration ab dem aktuellen Tag für alle folgenden Fälligkeiten. Nicht mehr sichtbare Zukunftsversionen aus älteren Programmständen werden beim ersten Start von Version 0.13.0 automatisch entfernt. Historische Konfigurationen vor dem aktuellen Tag und bereits gesetzte Erledigt-Markierungen bleiben erhalten.
 
@@ -284,6 +293,8 @@ Angaben:
 
 Für Umbuchungen stehen dieselben Rhythmen einschließlich **halbjährlich** zur Verfügung. Das Ende ist einschließlich. Wenn Ende und Anzahl gemeinsam gesetzt werden, müssen beide Angaben dieselbe letzte Ausführung beschreiben. Beispiel: Eine monatliche Umbuchung mit erster Fälligkeit am 15.08.2026 und 12 Ausführungen endet am 15.07.2027. Abweichende Kombinationen werden mit dem passenden Enddatum angezeigt und nicht gespeichert.
 
+Auch die Umbuchungsliste ist in **Aktiv** und **Archiv** aufgeteilt. Wiederkehrende Umbuchungen ohne Ende oder mit einem Ende ab heute stehen unter **Aktiv**. Liegt das Ende vor dem heutigen Datum, wird die Umbuchung automatisch im **Archiv** angezeigt. Bei einer einmaligen Umbuchung wird stattdessen das Fälligkeitsdatum verwendet. Eine Änderung des Enddatums verschiebt eine wiederkehrende Umbuchung entsprechend wieder zurück.
+
 ## 10. Dashboard
 
 Das Dashboard zeigt den berechneten Gesamtstand aller Konten zum gewählten Stichtag. Über die Pfeile kann tageweise vor- oder zurückgesprungen werden.
@@ -303,6 +314,8 @@ Zusätzlich werden angezeigt:
 Wird auf dem Dashboard ein zukünftiger Stichtag gewählt, werden auch die Kreditsalden bis zu diesem Tag simuliert. Verknüpfte Tilgungsanteile und manuelle Tilgungen mit einem Datum bis einschließlich des Stichtags reduzieren dann den angezeigten Kreditsaldo. Noch spätere Zahlungen bleiben unberücksichtigt. Auf der eigentlichen Kreditseite bleibt ohne Zukunftssimulation weiterhin der heutige reale Saldo maßgeblich.
 
 Vierteljährliche, halbjährliche und jährliche Positionen werden dabei mit ihrem vollständigen Betrag ausschließlich im tatsächlichen Fälligkeitsmonat berücksichtigt. Sie werden nicht rechnerisch auf andere Monate verteilt. Start, Ende, Versionszeitraum und Aktivstatus werden ausgewertet. Für die vollständige Auflistung der einzelnen Fälligkeiten ist die Seite **Vorschau** maßgeblich.
+
+Die monatliche Aufteilung zeigt alle in diesem Monat fälligen Einnahmen und Ausgaben, absteigend nach Betrag sortiert. Die Liste wird nicht auf eine feste Anzahl von Positionen gekürzt. Dadurch stimmen die sichtbaren Positionen jederzeit mit den angezeigten Monatssummen überein.
 
 ## 11. Vorschau
 

@@ -615,9 +615,11 @@ class Repository:
                 for field in ("amount_cents","active","version_from","version_to","stream_start","stream_end","due_date","recurrence","credit_reduction_cents"):
                     item[field]=shown.get(field)
                 item["configured_active"]=int(bool(shown.get("active")))
-                in_stream=(not item.get("stream_start") or item["stream_start"]<=selected_date) and (not item.get("stream_end") or item["stream_end"]>=selected_date)
+                lifecycle_end=item.get("stream_end") or (item.get("due_date") if item.get("recurrence")=="once" else None)
+                in_stream=(not item.get("stream_start") or item["stream_start"]<=selected_date) and (not lifecycle_end or lifecycle_end>=selected_date)
                 item["active"]=int(bool(current) and bool(item.get("active")) and in_stream)
                 item["lifecycle_status"]="current" if current and in_stream else ("upcoming" if upcoming and not current else "ended")
+                item["archive_date"]=lifecycle_end
                 item["end_date"]=item.get("stream_end") if kind=="expense" else None
                 item["duration_months"]=duration_months_between(item.get("due_date"),item.get("stream_end")) if kind=="expense" else None
                 item["is_imported"]=str(flow["source_key"] or "").startswith("excel:household-planning:")

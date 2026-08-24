@@ -55,6 +55,15 @@ jobs:
           git archive --format=tar --prefix="finanzlab-${RELEASE_TAG}/" HEAD | gzip -9 > "dist/finanzlab-${RELEASE_TAG}.tar.gz"
           shasum -a 256 "dist/finanzlab-${RELEASE_TAG}.tar.gz" > "dist/finanzlab-${RELEASE_TAG}.tar.gz.sha256"
 
+      - name: Docker-Image erstellen
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          IMAGE_VERSION="${RELEASE_TAG#v}"
+          docker build --platform linux/amd64 --tag "finanzlab:${IMAGE_VERSION}" .
+          docker save "finanzlab:${IMAGE_VERSION}" | gzip -9 > "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz"
+          shasum -a 256 "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz" > "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz.sha256"
+
       - name: GitHub-Release veröffentlichen
         env:
           GH_TOKEN: ${{ github.token }}
@@ -64,11 +73,15 @@ jobs:
             gh release upload "$RELEASE_TAG" \
               "dist/finanzlab-${RELEASE_TAG}.tar.gz" \
               "dist/finanzlab-${RELEASE_TAG}.tar.gz.sha256" \
+              "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz" \
+              "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz.sha256" \
               --clobber
           else
             gh release create "$RELEASE_TAG" \
               "dist/finanzlab-${RELEASE_TAG}.tar.gz" \
               "dist/finanzlab-${RELEASE_TAG}.tar.gz.sha256" \
+              "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz" \
+              "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz.sha256" \
               --verify-tag \
               --title "Haushaltsplaner ${RELEASE_TAG}" \
               --generate-notes
