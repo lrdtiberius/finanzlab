@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.13.3
+
+- einmalige Ausgaben werden nach Ablauf ihres Fälligkeitsdatums automatisch archiviert, auch wenn kein separates Enddatum hinterlegt ist
+- das Fälligkeitsdatum gilt bei einmaligen Ausgaben einschließlich: am Fälligkeitstag aktiv, ab dem Folgetag archiviert
+- dieselbe Regel gilt für einmalige Umbuchungen
+- die serverseitige Lebenszyklusprüfung kennzeichnet vergangene einmalige Ausgaben nun ebenfalls als beendet
+- zusätzlicher Regressionstest prüft Vergangenheit, heutigen Grenztag und zukünftige einmalige Ausgaben
+
+## 0.13.2
+
+- Ausgaben werden automatisch in die Bereiche „Aktiv“ und „Archiv“ aufgeteilt
+- Ausgaben mit einem Enddatum vor dem heutigen Tag erscheinen im Archiv; das Enddatum selbst zählt weiterhin als aktiver Tag
+- Umbuchungen verwenden dieselbe automatische Aufteilung in „Aktiv“ und „Archiv“
+- Anzahl der enthaltenen Positionen wird direkt in den beiden Statusfiltern angezeigt
+- verlängerte oder entfernte Enddaten holen eine archivierte Position automatisch zurück in den aktiven Bereich
+- die monatliche Aufteilung auf dem Dashboard zeigt jetzt sämtliche im gewählten Monat fälligen Einnahmen und Ausgaben statt höchstens acht Positionen
+- Regressionstest mit zehn gleichzeitig fälligen Ausgaben stellt die vollständige Dashboard-Liste und deren Gesamtsumme sicher
+
 ## 0.13.1
 
 - bei kreditverknüpften Ausgaben mit Enddatum wird ein nach der letzten planmäßigen Rate verbleibender Rest von weniger als 3,00 € automatisch der Schlussrate zugeschlagen

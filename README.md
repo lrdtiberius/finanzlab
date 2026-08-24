@@ -13,6 +13,8 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - Einnahmen und Ausgaben mit monatlichem, vierteljährlichem, halbjährlichem, jährlichem oder einmaligem Rhythmus und optionalem Enddatum
 - automatische Bereinigung unsichtbarer Zukunftsversionen aus älteren Programmständen
 - Saldo aller angelegten Positionen direkt auf den Einnahmen- und Ausgabenseiten
+- automatische Aufteilung von Ausgaben und Umbuchungen in Aktiv und Archiv
+- einmalige Positionen wechseln nach ihrem Fälligkeitsdatum automatisch ins Archiv
 - eigene Kreditverwaltung für Konsumkredit, Kredit und Geliehen
 - Kreditliste mit direktem Filter und Anzahl je Kreditart
 - stichtagsbezogene Kreditsalden bei der Zukunftsbetrachtung auf dem Dashboard
@@ -25,6 +27,7 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - Restschulden unter 3,00 € werden bei einem hinterlegten Enddatum automatisch der letzten Rate zugeschlagen
 - Umbuchungen mit Rhythmus, optionalem Enddatum und optionaler Ausführungsanzahl
 - Dashboard-Summen aus den im gewählten Monat tatsächlich fälligen Einnahmen und Ausgaben
+- vollständige Dashboard-Aufteilung ohne Begrenzung auf acht Positionen
 - Schnellaktionen zum Anlegen neuer Einnahmen und Ausgaben direkt auf dem Dashboard
 - taggenaue Monatsvorschau für Konten sowie separat auswählbare Kreditsimulation
 - dauerhaft gespeicherter Erledigt-Status je konkreter Bewegung; erledigte Vorgänge bleiben sichtbar und werden nicht erneut simuliert
@@ -89,7 +92,11 @@ Vor einer Veröffentlichung eigener Änderungen sollten insbesondere Datenbanken
 
 ## Releases
 
-Ein Tag im Format `v*` startet den enthaltenen GitHub-Workflow. Er führt die Tests aus, erstellt ein Quellpaket des markierten Stands und veröffentlicht daraus ein GitHub-Release.
+Ein Tag im Format `v*` startet den enthaltenen GitHub-Workflow. Er führt die Tests aus und veröffentlicht ein GitHub-Release mit:
+
+- dem vollständigen Quellpaket,
+- einem direkt mit `docker load` oder über **Portainer → Images → Import** ladbaren Docker-Image für `linux/amd64`,
+- SHA-256-Prüfsummen für beide Dateien.
 
 Der Excel-Export wird in der Anwendung unter **Einstellungen** gestartet. Der Zeitraum ist auf höchstens 24 Monate begrenzt; alle eingegebenen Einnahmen, Ausgaben, Kredite und Tilgungen werden unabhängig vom Vorschauzeitraum vollständig in eigenen Tabellenblättern ausgegeben.
 

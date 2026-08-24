@@ -733,9 +733,10 @@ class PlanningModelV011Tests(unittest.TestCase):
             "completed":True,
         })
 
+        edit_day=date.today().isoformat()
         item=next(item for item in self.repository.list_cash_flows(
-            self.household_id,"expense","2026-08-23") if item["id"]==expense["id"])
-        self.assertFalse(any(version["version_from"]>"2026-08-23" for version in item["versions"]))
+            self.household_id,"expense",edit_day) if item["id"]==expense["id"])
+        self.assertFalse(any(version["version_from"]>edit_day for version in item["versions"]))
         september=self.repository.monthly_preview(
             self.household_id,"2026-09",[self.giro_id],[credit["id"]]
         )
@@ -1049,6 +1050,62 @@ class PlanningModelV011Tests(unittest.TestCase):
         )
         self.assertEqual(40_000, november_dashboard["metrics"]["income_cents"])
         self.assertEqual(20_000, november_dashboard["metrics"]["expenses_cents"])
+
+    def test_dashboard_breakdown_contains_every_due_expense(self):
+        for index in range(10):
+            self.repository.create_cash_flow(
+                self.flow(
+                    name=f"Ausgabe {index + 1:02d}",
+                    amount_cents=(index + 1) * 100,
+                    recurrence="monthly",
+                    due_date="2026-08-20",
+                )
+            )
+
+        dashboard = self.repository.dashboard(self.household_id, "2026-11-01")
+        expenses = dashboard["breakdowns"]["expenses"]
+
+        self.assertEqual(10, len(expenses))
+        self.assertEqual(5_500, dashboard["metrics"]["expenses_cents"])
+        self.assertEqual(
+            {f"Ausgabe {index + 1:02d}" for index in range(10)},
+            {item["label"] for item in expenses},
+        )
+
+    def test_frontend_shows_all_breakdown_rows_and_status_filters(self):
+        static_dir = Path(__file__).parents[1] / "app" / "static"
+        script = (static_dir / "app.js").read_text(encoding="utf-8")
+        page = (static_dir / "index.html").read_text(encoding="utf-8")
+
+        self.assertNotIn("values.slice(0,8)", script)
+        self.assertIn("values.map(item=>", script)
+        self.assertIn('id="expense-filter"', page)
+        self.assertIn('id="transfer-filter"', page)
+        self.assertIn("item?.recurrence==='once'?item?.due_date:null", script)
+        self.assertIn("payload.recurrence==='once'?payload.due_date:''", script)
+
+    def test_one_time_expense_is_archived_after_its_due_date(self):
+        past = self.repository.create_cash_flow(
+            self.flow(name="Vergangen", due_date="2026-08-18")
+        )
+        due_today = self.repository.create_cash_flow(
+            self.flow(name="Heute", due_date="2026-08-24")
+        )
+        future = self.repository.create_cash_flow(
+            self.flow(name="Zukünftig", due_date="2026-09-18")
+        )
+
+        expenses = {
+            item["id"]: item
+            for item in self.repository.list_cash_flows(
+                self.household_id, "expense", "2026-08-24"
+            )
+        }
+
+        self.assertEqual("ended", expenses[past["id"]]["lifecycle_status"])
+        self.assertEqual("2026-08-18", expenses[past["id"]]["archive_date"])
+        self.assertEqual("current", expenses[due_today["id"]]["lifecycle_status"])
+        self.assertEqual("current", expenses[future["id"]]["lifecycle_status"])
 
     def test_completed_movement_stays_visible_but_is_not_projected(self):
         expense = self.repository.create_cash_flow(
@@ -1497,6 +1554,14 @@ class PlanningModelV011Tests(unittest.TestCase):
         self.assertEqual(
             0, next(item for item in after_end_date if item["id"] == one_day["id"])["active"]
         )
+        self.assertEqual(
+            "current",
+            next(item for item in on_end_date if item["id"] == one_day["id"])["lifecycle_status"],
+        )
+        self.assertEqual(
+            "ended",
+            next(item for item in after_end_date if item["id"] == one_day["id"])["lifecycle_status"],
+        )
 
     def test_duration_and_end_date_must_match(self):
         with self.assertRaisesRegex(ValueError, "passen nicht zusammen"):
@@ -1648,7 +1713,7 @@ class StaticUiTests(unittest.TestCase):
         self.assertIn('id="dashboard-new-income"', html)
         self.assertEqual(1, html.count('id="cash-flow-dialog"'))
         self.assertIn(
-            "$('#dashboard-new-expense').addEventListener('click',()=>openFlow('expense'))",
+            "$('#dashboard-new-expense').addEventListener('click',()=>{state.expenseFilter='active';openFlow('expense')})",
             script,
         )
         self.assertIn(
