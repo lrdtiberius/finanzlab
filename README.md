@@ -11,6 +11,7 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - historisierte Kontostände mit Kennzeichnung bereits enthaltener Tagesbuchungen
 - Standardkonto für neue Einnahmen und Ausgaben
 - Einnahmen und Ausgaben mit monatlichem, vierteljährlichem, halbjährlichem, jährlichem oder einmaligem Rhythmus und optionalem Enddatum
+- zusätzlicher wöchentlicher Rhythmus für Ausgaben mit einer Fälligkeit alle sieben Tage
 - automatische Bereinigung unsichtbarer Zukunftsversionen aus älteren Programmständen
 - Saldo aller angelegten Positionen direkt auf den Einnahmen- und Ausgabenseiten
 - automatische Aufteilung von Ausgaben und Umbuchungen in Aktiv und Archiv

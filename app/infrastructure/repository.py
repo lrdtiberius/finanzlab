@@ -657,7 +657,8 @@ class Repository:
                     add("invalid_account","error","Das zugeordnete Konto existiert in diesem Haushalt nicht mehr.")
                 if not valid_date(flow.get("due_date")):
                     add("invalid_due_date","error","Die Fälligkeit fehlt oder ist ungültig.")
-                if flow.get("recurrence") not in ("monthly","quarterly","semiannual","yearly","once"):
+                valid_recurrences=("weekly","monthly","quarterly","semiannual","yearly","once") if kind=="expense" else ("monthly","quarterly","semiannual","yearly","once")
+                if flow.get("recurrence") not in valid_recurrences:
                     add("invalid_recurrence","error","Der Zahlungsrhythmus ist ungültig.")
                 if flow.get("owner_scope") not in ("person","joint"):
                     add("invalid_owner","error","Die Besitzerzuordnung ist ungültig.")
@@ -701,7 +702,8 @@ class Repository:
         except (TypeError,ValueError): raise ValueError("Beträge müssen gültige Geldwerte sein.")
         if amount<0: raise ValueError("Beträge dürfen nicht negativ sein.")
         recurrence=str(payload.get("recurrence") or "monthly")
-        if recurrence not in ("monthly","quarterly","semiannual","yearly","once"): raise ValueError("Ungültiger Zahlungsrhythmus.")
+        valid_recurrences=("weekly","monthly","quarterly","semiannual","yearly","once") if kind=="expense" else ("monthly","quarterly","semiannual","yearly","once")
+        if recurrence not in valid_recurrences: raise ValueError("Ungültiger Zahlungsrhythmus.")
         effective=str(payload.get("effective_from") or date.today().isoformat())
         due=str(payload.get("due_date") or "")
         try:

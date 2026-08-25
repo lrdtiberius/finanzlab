@@ -1,8 +1,9 @@
 import calendar
-from datetime import date
+from datetime import date, timedelta
 
 
 RECURRENCE_MONTHS={"monthly":1,"quarterly":3,"semiannual":6,"yearly":12}
+WEEKLY_DAYS=7
 
 
 def _as_date(value):
@@ -26,6 +27,8 @@ def last_occurrence_date(first_due_date,recurrence,occurrence_count):
     if recurrence=="once":
         if count!=1: raise ValueError("a one-time recurrence has exactly one occurrence")
         return first
+    if recurrence=="weekly":
+        return first+timedelta(days=(count-1)*WEEKLY_DAYS)
     months=RECURRENCE_MONTHS.get(recurrence)
     if months is None: raise ValueError(f"Unbekannter Zahlungsrhythmus: {recurrence}")
     return add_months_anchored(first,(count-1)*months)
@@ -36,6 +39,8 @@ def last_occurrence_on_or_before(first_due_date,recurrence,end_date):
     first=_as_date(first_due_date); end=_as_date(end_date)
     if end<first: return None
     if recurrence=="once": return first
+    if recurrence=="weekly":
+        return first+timedelta(days=((end-first).days//WEEKLY_DAYS)*WEEKLY_DAYS)
     months=RECURRENCE_MONTHS.get(recurrence)
     if months is None: raise ValueError(f"Unbekannter Zahlungsrhythmus: {recurrence}")
     month_distance=(end.year-first.year)*12+end.month-first.month
@@ -72,6 +77,15 @@ def recurrence_dates(first_due_date,recurrence,start_exclusive,end_inclusive,
         occurrence_limit=int(max_occurrences)
         if occurrence_limit<1: return []
     if recurrence=="once": return [first] if effective(first) and occurrence_limit!=0 else []
+    if recurrence=="weekly":
+        result=[]; occurrence_number=0
+        while True:
+            if occurrence_limit is not None and occurrence_number>=occurrence_limit: break
+            due=first+timedelta(days=occurrence_number*WEEKLY_DAYS)
+            if due>end: break
+            if effective(due): result.append(due)
+            occurrence_number+=1
+        return result
     months=RECURRENCE_MONTHS.get(recurrence)
     if months is None: raise ValueError(f"Unbekannter Zahlungsrhythmus: {recurrence}")
     result=[]; offset=0; occurrence_number=0

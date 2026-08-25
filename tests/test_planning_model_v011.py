@@ -978,6 +978,92 @@ class PlanningModelV011Tests(unittest.TestCase):
                 archive.read("xl/worksheets/sheet7.xml").decode("utf-8"),
             )
 
+    def test_weekly_expense_repeats_every_seven_days_until_inclusive_end(self):
+        expense = self.repository.create_cash_flow(
+            self.flow(
+                name="Wöchentliche Ausgabe",
+                amount_cents=1_000,
+                recurrence="weekly",
+                due_date="2026-08-19",
+                end_date="2026-09-16",
+            )
+        )
+
+        august = self.repository.monthly_preview(
+            self.household_id, "2026-08", [self.giro_id]
+        )
+        september = self.repository.monthly_preview(
+            self.household_id, "2026-09", [self.giro_id]
+        )
+        october = self.repository.monthly_preview(
+            self.household_id, "2026-10", [self.giro_id]
+        )
+
+        self.assertEqual(
+            ["2026-08-19", "2026-08-26"],
+            [
+                item["date"]
+                for item in august["movements"]
+                if item["source_id"] == expense["id"]
+            ],
+        )
+        self.assertEqual(
+            ["2026-09-02", "2026-09-09", "2026-09-16"],
+            [
+                item["date"]
+                for item in september["movements"]
+                if item["source_id"] == expense["id"]
+            ],
+        )
+        self.assertFalse(
+            any(item["source_id"] == expense["id"] for item in october["movements"])
+        )
+        self.assertEqual(3_000, september["totals"]["expense_cents"])
+        dashboard = self.repository.dashboard(self.household_id, "2026-09-01")
+        self.assertEqual(3_000, dashboard["metrics"]["expenses_cents"])
+
+        on_end = next(
+            item
+            for item in self.repository.list_cash_flows(
+                self.household_id, "expense", "2026-09-16"
+            )
+            if item["id"] == expense["id"]
+        )
+        after_end = next(
+            item
+            for item in self.repository.list_cash_flows(
+                self.household_id, "expense", "2026-09-17"
+            )
+            if item["id"] == expense["id"]
+        )
+        self.assertEqual("current", on_end["lifecycle_status"])
+        self.assertEqual("ended", after_end["lifecycle_status"])
+
+        export_payload = self.repository.excel_export_payload(
+            self.household_id, "2026-08", "2026-09"
+        )
+        with ZipFile(BytesIO(build_forecast_workbook(export_payload))) as archive:
+            worksheet_xml="\n".join(
+                archive.read(name).decode("utf-8")
+                for name in archive.namelist()
+                if name.startswith("xl/worksheets/sheet")
+            )
+            self.assertIn(
+                "Wöchentlich",
+                worksheet_xml,
+            )
+
+    def test_weekly_recurrence_is_rejected_for_income(self):
+        with self.assertRaisesRegex(ValueError, "Ungültiger Zahlungsrhythmus"):
+            self.repository.create_cash_flow(
+                self.flow(
+                    kind="income",
+                    name="Nicht erlaubte wöchentliche Einnahme",
+                    category="other_income",
+                    recurrence="weekly",
+                )
+            )
+
     def test_dashboard_monthly_totals_use_due_occurrences_and_match_preview(self):
         self.repository.create_cash_flow(
             self.flow(
@@ -1083,6 +1169,8 @@ class PlanningModelV011Tests(unittest.TestCase):
         self.assertIn('id="transfer-filter"', page)
         self.assertIn("item?.recurrence==='once'?item?.due_date:null", script)
         self.assertIn("payload.recurrence==='once'?payload.due_date:''", script)
+        self.assertIn('<option value="weekly" data-expense-only>Wöchentlich</option>', page)
+        self.assertIn("weekly.hidden=!expense;weekly.disabled=!expense", script)
 
     def test_one_time_expense_is_archived_after_its_due_date(self):
         past = self.repository.create_cash_flow(
