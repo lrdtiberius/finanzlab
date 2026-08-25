@@ -1,6 +1,6 @@
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **0.13.3**
+Gültig für Version **0.13.4**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
@@ -72,13 +72,13 @@ Für eine Portainer-Installation kann entweder das Repository als Git-Stack verw
 
 Beim Portainer-Paket:
 
-1. unter **Images → Import** die enthaltene Datei `finanzlab-image-v0.13.3-amd64.tar` oder das gleichnamige GitHub-Release-Archiv mit der Endung `.tar.gz` importieren,
+1. unter **Images → Import** die enthaltene Datei `finanzlab-image-v0.13.4-amd64.tar` oder das gleichnamige GitHub-Release-Archiv mit der Endung `.tar.gz` importieren,
 2. beim bestehenden Stack den Inhalt durch die mitgelieferte Stack-YAML ersetzen,
 3. den Stack erneut bereitstellen,
 4. den Stack starten,
 5. Port `8798` im Browser öffnen.
 
-Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:0.13.3` für `linux/amd64`. Die zusätzlich enthaltene Build-TAR ist nur der Quell- und Buildkontext und darf nicht unter **Images → Import** verwendet werden.
+Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:0.13.4` für `linux/amd64`. Die zusätzlich enthaltene Build-TAR ist nur der Quell- und Buildkontext und darf nicht unter **Images → Import** verwendet werden.
 
 Das Volume wird im Container unter `/data` eingebunden. Dort liegt insbesondere die Datenbankdatei `planner.db`.
 
@@ -195,6 +195,8 @@ Im Kopf der Einnahmenkarte steht der positive Saldo aller angelegten Einnahmepos
 Unter **Ausgaben** werden regelmäßige und einmalige Zahlungen verwaltet. Für Kreditraten stehen die Arten **Konsumkredit**, **Kredit** und **Geliehen** zur Verfügung. Nach der Auswahl muss ein Kredit derselben Art zugeordnet werden.
 
 Erforderliche Angaben entsprechen grundsätzlich den Einnahmen. Zusätzlich können Ausgaben zeitlich begrenzt werden.
+
+Als zusätzlicher Rhythmus steht bei Ausgaben **Wöchentlich** zur Verfügung. Die erste Fälligkeit bildet den festen Startpunkt; jede weitere Ausgabe wird exakt sieben Tage später berücksichtigt. Beispiel: Bei erster Fälligkeit am `19.08.2026` folgen `26.08.2026`, `02.09.2026`, `09.09.2026` und so weiter. Der Rhythmus gilt für Dashboard, Vorschau, Kreditverlauf und Excel-Export. Bei Einnahmen wird **Wöchentlich** nicht angeboten.
 
 ### 7.1 Enddatum
 

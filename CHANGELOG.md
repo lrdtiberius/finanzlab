@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.4
+
+- Ausgaben unterstützen zusätzlich den Rhythmus „Wöchentlich“
+- ausgehend von der ersten Fälligkeit wird die Ausgabe exakt alle sieben Tage berücksichtigt
+- wöchentliche Ausgaben fließen vollständig in Dashboard, Monatsvorschau, Kreditverlauf und Excel-Export ein
+- ein gesetztes Enddatum bleibt einschließlich gültig; die letzte wöchentliche Fälligkeit am Enddatum wird noch gebucht
+- bei Einnahmen und Umbuchungen bleibt der wöchentliche Rhythmus bewusst ausgeschlossen
+- Regressionstests decken Monatswechsel, Enddatum, Archivierung, Dashboard-Summe, Excel-Export und die Ablehnung bei Einnahmen ab
+
 ## 0.13.3
 
 - einmalige Ausgaben werden nach Ablauf ihres Fälligkeitsdatums automatisch archiviert, auch wenn kein separates Enddatum hinterlegt ist

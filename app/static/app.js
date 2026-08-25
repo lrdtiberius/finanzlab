@@ -1,7 +1,7 @@
 const $=selector=>document.querySelector(selector);
 const $$=selector=>[...document.querySelectorAll(selector)];
 const state={households:[],currentId:null,asOf:null,dashboard:null,incomes:[],expenses:[],transfers:[],credits:[],expenseFilter:'active',transferFilter:'active',creditFilter:'all',diagnostics:null,preview:null,previewMonth:null,previewAccountIds:[],previewCreditIds:[],previewSelectedDay:null,editingFlowId:null,editingFlowKind:null,editingAccountId:null,editingAccountHistory:[],editingTransferId:null,editingCreditId:null,currentCreditId:null};
-const recurrenceLabels={monthly:'monatlich',quarterly:'vierteljährlich',semiannual:'halbjährlich',yearly:'jährlich',once:'einmalig'};
+const recurrenceLabels={weekly:'wöchentlich',monthly:'monatlich',quarterly:'vierteljährlich',semiannual:'halbjährlich',yearly:'jährlich',once:'einmalig'};
 const categoryLabels={salary:'Gehalt',pension:'Rente',benefit:'Leistung',family:'Familie',other_income:'Sonstige Einnahme',housing:'Wohnen',energy:'Energie',insurance:'Versicherung',food:'Lebensmittel',mobility:'Mobilität',consumer_credit:'Konsumkredit',credit:'Kredit',borrowed:'Geliehen',leisure:'Freizeit',other_expense:'Sonstige Ausgabe',other:'Sonstiges'};
 const creditTypeLabels={consumer_credit:'Konsumkredit',credit:'Kredit',borrowed:'Geliehen'};
 const movementLabels={income:'Einnahme',expense:'Ausgabe',transfer_in:'Umbuchung +',transfer_out:'Umbuchung −'};
@@ -92,13 +92,14 @@ $('#delete-account').addEventListener('click',async()=>{const account=accountByI
 $('#account-history').addEventListener('click',async event=>{const button=event.target.closest('[data-delete-balance]');if(!button||!state.editingAccountId)return;if(!confirm('Diesen historischen Kontostand wirklich löschen?'))return;try{await api(`/api/accounts/${encodeURIComponent(state.editingAccountId)}/balances/${encodeURIComponent(button.dataset.deleteBalance)}?household_id=${encodeURIComponent(state.currentId)}`,{method:'DELETE'});const account=accountById(state.editingAccountId);await loadAll();await openAccount(accountById(account.id));toast('Kontostand wurde aus der Historie entfernt.')}catch(err){toast(err.message)}});
 
 function flowById(kind,id){return (kind==='income'?state.incomes:state.expenses).find(item=>item.id===id)}
+function configureFlowRecurrences(kind){const select=$('#cash-flow-form').elements.recurrence,weekly=select.querySelector('option[value="weekly"]'),expense=kind==='expense';weekly.hidden=!expense;weekly.disabled=!expense;if(!expense&&select.value==='weekly')select.value='monthly'}
 function configureFlowEndFields(kind){const expense=kind==='expense';$('#cash-flow-end-date-field').hidden=!expense;$('#cash-flow-duration-field').hidden=!expense;const form=$('#cash-flow-form').elements;form.end_date.disabled=!expense;form.duration_months.disabled=!expense}
 function configureFlowCreditFields(){const form=$('#cash-flow-form').elements,isCredit=state.editingFlowKind==='expense'&&creditCategories.has(form.category.value),field=$('#cash-flow-credit-fields'),current=form.credit_id.value;field.hidden=!isCredit;form.credit_id.disabled=!isCredit;form.credit_reduction.disabled=!isCredit;if(!isCredit){form.credit_id.value='';form.credit_reduction.value='';return}const matches=state.credits.filter(credit=>credit.credit_type===form.category.value);$('#cash-flow-credit').innerHTML=matches.length?matches.map(credit=>`<option value="${escapeHtml(credit.id)}">${escapeHtml(credit.name)} · offen ${eur(credit.remaining_balance_cents)}</option>`).join(''):'<option value="">Zuerst passenden Kredit anlegen</option>';form.credit_id.value=matches.some(credit=>credit.id===current)?current:(matches[0]?.id||'')}
 function syncFlowEndFromDuration(){const form=$('#cash-flow-form').elements,duration=Number(form.duration_months.value);if(state.editingFlowKind==='expense'&&form.due_date.value&&Number.isInteger(duration)&&duration>0)form.end_date.value=addMonthsToDate(form.due_date.value,duration)}
 function syncFlowDurationFromEnd(){const form=$('#cash-flow-form').elements;if(state.editingFlowKind!=='expense')return;form.duration_months.value=durationBetweenDates(form.due_date.value,form.end_date.value)}
 function openFlow(kind,item=null){
   state.editingFlowKind=kind;state.editingFlowId=item?.id||null;
-  const form=$('#cash-flow-form');form.reset();configureFlowEndFields(kind);
+  const form=$('#cash-flow-form');form.reset();configureFlowRecurrences(kind);configureFlowEndFields(kind);
   const h=state.dashboard.household,categories=kind==='income'?incomeCategories:expenseCategories;
   $('#cash-flow-category').innerHTML=categories.map(([value,label])=>`<option value="${value}">${label}</option>`).join('');
   $('#cash-flow-owner').innerHTML=h.persons.map(person=>`<option value="${escapeHtml(person.slot)}">${escapeHtml(person.display_name)}</option>`).join('')+(h.mode==='couple'?'<option value="joint">Gemeinsam</option>':'');
