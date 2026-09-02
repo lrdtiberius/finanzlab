@@ -21,6 +21,11 @@ def install_repository_archive_support(Repository):
             self.ensure_column(con, "credits", "archived_at", "TEXT")
             self.ensure_column(con, "credits", "archive_reason", "TEXT")
             con.execute("CREATE INDEX IF NOT EXISTS credits_archive ON credits(household_id,archived,credit_type)")
+            con.execute("""CREATE TABLE IF NOT EXISTS credit_archive_flow_states(
+                credit_id TEXT NOT NULL REFERENCES credits(id) ON DELETE CASCADE,
+                version_id TEXT NOT NULL REFERENCES cash_flow_versions(id) ON DELETE CASCADE,
+                active INTEGER NOT NULL,
+                PRIMARY KEY(credit_id,version_id))""")
 
     def archive_states(self, hid):
         with self.connect() as con:
@@ -83,13 +88,11 @@ def install_repository_archive_support(Repository):
         groups = []
         for credit_type in ("consumer_credit", "credit", "borrowed"):
             matching = [item for item in active if item["credit_type"] == credit_type]
-            groups.append(
-                {
-                    "credit_type": credit_type,
-                    "count": len(matching),
-                    "balance_cents": sum(int(item.get("remaining_balance_cents") or 0) for item in matching),
-                }
-            )
+            groups.append({
+                "credit_type": credit_type,
+                "count": len(matching),
+                "balance_cents": sum(int(item.get("remaining_balance_cents") or 0) for item in matching),
+            })
         view = dict(result)
         view["items"] = active
         view["archived_items"] = archived
@@ -120,11 +123,31 @@ def install_repository_archive_support(Repository):
             if not row:
                 raise ValueError("Kredit nicht gefunden.")
             if archived:
+                linked = con.execute(
+                    "SELECT id,active FROM cash_flow_versions WHERE credit_id=?",
+                    (credit_id,),
+                ).fetchall()
+                for version in linked:
+                    con.execute(
+                        "INSERT OR IGNORE INTO credit_archive_flow_states(credit_id,version_id,active) VALUES(?,?,?)",
+                        (credit_id, version["id"], int(version["active"])),
+                    )
+                con.execute("UPDATE cash_flow_versions SET active=0 WHERE credit_id=?", (credit_id,))
                 con.execute(
                     "UPDATE credits SET archived=1,archived_at=?,archive_reason='manual' WHERE id=? AND household_id=?",
                     (_now(), credit_id, hid),
                 )
             else:
+                saved = con.execute(
+                    "SELECT version_id,active FROM credit_archive_flow_states WHERE credit_id=?",
+                    (credit_id,),
+                ).fetchall()
+                for version in saved:
+                    con.execute(
+                        "UPDATE cash_flow_versions SET active=? WHERE id=? AND credit_id=?",
+                        (int(version["active"]), version["version_id"], credit_id),
+                    )
+                con.execute("DELETE FROM credit_archive_flow_states WHERE credit_id=?", (credit_id,))
                 con.execute(
                     "UPDATE credits SET archived=0,archived_at=NULL,archive_reason=NULL WHERE id=? AND household_id=?",
                     (credit_id, hid),
@@ -172,6 +195,8 @@ def install_web_archive_support(Handler):
         parsed = urlparse(self.path)
         path, query = parsed.path, parse_qs(parsed.query)
         try:
+            if path == "/health":
+                return self.json_response({"status": "ok", "version": "0.13.5"})
             if path == "/api/credits":
                 hid = (query.get("household_id") or [""])[0]
                 as_of = (query.get("as_of") or [None])[0]
