@@ -230,7 +230,28 @@ Dieses Image wurde mit `docker save` erzeugt und anschließend komprimiert.
 
 #### Schritt 1: Release-Datei herunterladen
 
-Auf der GitHub-Seite des Projekts den gewünschten Release öffnen und das Docker-Image herunterladen.
+Auf der GitHub-Seite [Releases](https://github.com/lrdtiberius/finanzlab/releases/latest) den gewünschten Release öffnen und das Docker-Image herunterladen.
+
+Für Version 0.13.5 werden für die Portainer-Installation diese Dateien angeboten:
+
+```text
+finanzlab-image-v0.13.5-amd64.tar.gz
+finanzlab-image-v0.13.5-amd64.tar.gz.sha256
+```
+
+Die Datei `finanzlab-v0.13.5.tar.gz` enthält dagegen den Quellcode und ist **kein importierbares Docker-Image**.
+
+Optional kann die Prüfsumme vor dem Import kontrolliert werden:
+
+```bash
+# Linux
+sha256sum finanzlab-image-v0.13.5-amd64.tar.gz
+
+# macOS
+shasum -a 256 finanzlab-image-v0.13.5-amd64.tar.gz
+```
+
+Der ausgegebene Wert muss mit dem Wert in der heruntergeladenen `.sha256`-Datei übereinstimmen.
 
 #### Schritt 2: bei Bedarf entpacken
 
@@ -260,9 +281,11 @@ In Portainer:
 
 > **Nicht verwechseln:** Ein Docker-Image-TAR gehört zu **Images → Import**. Ein Quell-/Build-TAR mit Dockerfile gehört dagegen zu **Images → Build image → Upload**.
 
+Die Seite **Build a new image** darf für `finanzlab-image-v0.13.5-amd64.tar` nicht verwendet werden. Dort sucht Portainer nach einem Dockerfile und meldet deshalb bei einer Image-TAR `Cannot locate Dockerfile`.
+
 ### 5.2 Portainer-Stack für ein bereits vorhandenes Image
 
-Nachdem das Image `finanzlab:0.13.5` vorhanden ist, kann folgender Stack verwendet werden:
+Nachdem das Image `finanzlab:0.13.5` vorhanden ist, kann die fertige Datei **[`portainer-stack.yaml`](portainer-stack.yaml)** verwendet werden. Sie enthält folgenden Stack:
 
 ```yaml
 services:
@@ -308,6 +331,8 @@ In Portainer:
 4. die YAML einfügen.
 5. **Deploy the stack** ausführen.
 6. anschließend unter **Containers** prüfen, ob `finanzlab` läuft und `healthy` wird.
+
+Bei einer über einen Portainer Agent angebundenen Docker-Umgebung müssen Image und Stack in derselben Zielumgebung angelegt werden.
 
 ### 5.3 Variante B: Standalone-Image in Portainer bauen
 
@@ -400,7 +425,8 @@ Empfohlen sind:
 
 - eindeutiger Kontoname, zum Beispiel `Girokonto`,
 - aktueller Kontostand,
-- Datum, zu dem dieser Kontostand gilt.
+- Datum, zu dem dieser Kontostand gilt,
+- optional ein Disporahmen als positiver Betrag; `0` bedeutet kein hinterlegter Dispo.
 
 ### 7.3 Tagesbuchungen korrekt kennzeichnen
 
@@ -613,10 +639,15 @@ Das vorhandene Volume `finanzlab_data` wird erneut eingebunden. Die Nutzdaten bl
 
 1. neues Image importieren,
 2. prüfen, ob das neue Tag vorhanden ist, zum Beispiel `finanzlab:0.13.6`,
-3. im Stack die `image:`-Zeile auf die neue Version ändern,
-4. Stack neu deployen,
-5. prüfen, ob der neue Container korrekt läuft,
-6. erst danach das alte, nicht mehr verwendete Image löschen.
+3. den **bestehenden Stack unter demselben Namen** öffnen,
+4. im Stack die `image:`-Zeile auf die neue Version ändern,
+5. bei einem lokal importierten Image eine Portainer-Option zum erneuten Abrufen des Images nicht aktivieren,
+6. Stack neu deployen,
+7. prüfen, ob der neue Container korrekt läuft und `healthy` wird,
+8. die Versionsanzeige im Fußbereich der Anwendung kontrollieren,
+9. erst danach das alte, nicht mehr verwendete Image löschen.
+
+Den Stack beim Update nicht unter einem neuen Namen anlegen und das vorhandene Daten-Volume nicht entfernen. So wird weiterhin dieselbe Datenbank unter `/data` eingebunden.
 
 ### Warum lässt sich ein altes Image manchmal nicht löschen?
 
@@ -642,14 +673,18 @@ Das Docker-Volume sollte bei einem normalen Versionswechsel nicht gelöscht oder
 
 ### 12.1 Backup des Docker-Volumes
 
-Im folgenden Beispiel wird der gesamte Inhalt des Volumes in eine TAR.GZ-Datei geschrieben:
+Für eine konsistente Sicherung wird der Container zuerst gestoppt. Das folgende Beispiel übernimmt das tatsächlich am Container `finanzlab` eingebundene Volume. Dadurch funktioniert es auch, wenn Docker Compose oder Portainer dem Volume-Namen einen Projektpräfix vorangestellt hat.
 
 ```bash
+docker stop finanzlab
+
 docker run --rm \
-  -v finanzlab_data:/data:ro \
+  --volumes-from finanzlab \
   -v "$PWD":/backup \
   alpine \
   tar -czf /backup/finanzlab-backup.tar.gz -C /data .
+
+docker start finanzlab
 ```
 
 Die erzeugte Datei liegt anschließend im aktuellen Verzeichnis.
@@ -667,10 +702,10 @@ Darin sollte unter anderem `planner.db` sichtbar sein.
 Vor einer Wiederherstellung die Anwendung stoppen:
 
 ```bash
-docker compose down
+docker stop finanzlab
 ```
 
-Danach kann der gesicherte Inhalt wieder in das Volume geschrieben werden.
+Danach kann der gesicherte Inhalt wieder in genau das am Container eingebundene Volume geschrieben werden.
 
 > Eine Wiederherstellung überschreibt den vorhandenen Datenbestand. Vorher sollte deshalb nach Möglichkeit zusätzlich eine Sicherung des aktuellen Zustands erstellt werden.
 
@@ -678,16 +713,16 @@ Beispiel:
 
 ```bash
 docker run --rm \
-  -v finanzlab_data:/data \
+  --volumes-from finanzlab \
   -v "$PWD":/backup \
   alpine \
-  sh -c 'rm -rf /data/* && tar -xzf /backup/finanzlab-backup.tar.gz -C /data'
+  sh -c 'tar -xzf /backup/finanzlab-backup.tar.gz -C /data && chown -R 10001:10001 /data'
 ```
 
 Anschließend wieder starten:
 
 ```bash
-docker compose up -d
+docker start finanzlab
 ```
 
 ---
@@ -771,6 +806,10 @@ finanzlab:0.13.5
 ```
 
 In Portainer anschließend den Stack ausdrücklich neu deployen. Nur das Erstellen eines neuen Images ersetzt keinen bereits laufenden Container automatisch.
+
+### Nach dem Update sind die bisherigen Daten nicht sichtbar
+
+Keine neuen Daten eingeben. Zuerst prüfen, ob der Stack versehentlich unter einem anderen Namen neu angelegt oder ein neues Volume eingebunden wurde. Das ursprüngliche Volume ist häufig weiterhin unter **Volumes** vorhanden und kann wieder unter `/data` eingebunden werden.
 
 ---
 
