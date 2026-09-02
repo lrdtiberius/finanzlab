@@ -1,6 +1,6 @@
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **0.13.4**
+Gültig für Version **0.13.5**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
@@ -17,6 +17,8 @@ Die Anwendung unterscheidet zwischen:
 Ein gespeicherter Kontostand wird nicht durch eine Berechnung überschrieben. Neue Kontostände werden als weitere Einträge in der Historie gespeichert. Für eine Berechnung verwendet die Anwendung je Konto den jüngsten geeigneten Stand vor oder am gewählten Stichtag.
 
 ## 2. Installation
+
+Eine vollständige Schritt-für-Schritt-Anleitung für Portainer, Docker Compose, Ersteinrichtung, Sicherung, Wiederherstellung und Updates steht in **[INSTALLATION.md](INSTALLATION.md)**. Die folgenden Abschnitte fassen den Schnellstart zusammen.
 
 ### 2.1 Docker Compose
 
@@ -68,17 +70,17 @@ docker compose down
 
 ### 2.2 Portainer
 
-Für eine Portainer-Installation kann entweder das Repository als Git-Stack verwendet oder das bereitgestellte Portainer-Paket des Releases genutzt werden.
+Für eine Portainer-Installation wird das fertig gebaute Docker-Image aus dem GitHub-Release verwendet.
 
-Beim Portainer-Paket:
+Vorgehen:
 
-1. unter **Images → Import** die enthaltene Datei `finanzlab-image-v0.13.4-amd64.tar` oder das gleichnamige GitHub-Release-Archiv mit der Endung `.tar.gz` importieren,
-2. beim bestehenden Stack den Inhalt durch die mitgelieferte Stack-YAML ersetzen,
-3. den Stack erneut bereitstellen,
-4. den Stack starten,
+1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v0.13.5-amd64.tar.gz` importieren,
+2. unter **Stacks → Add stack** einen Stack mit dem Inhalt aus [`portainer-stack.yaml`](portainer-stack.yaml) anlegen,
+3. den Stack bereitstellen,
+4. den Zustand des Containers `finanzlab` kontrollieren,
 5. Port `8798` im Browser öffnen.
 
-Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:0.13.4` für `linux/amd64`. Die zusätzlich enthaltene Build-TAR ist nur der Quell- und Buildkontext und darf nicht unter **Images → Import** verwendet werden.
+Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:0.13.5` für `linux/amd64`. Das Quellarchiv `finanzlab-v0.13.5.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
 
 Das Volume wird im Container unter `/data` eingebunden. Dort liegt insbesondere die Datenbankdatei `planner.db`.
 

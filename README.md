@@ -7,6 +7,7 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 ## Dokumentation
 
 - **[Ausführliche Installations- und Einrichtungsanleitung](INSTALLATION.md)** – Docker Compose, Portainer, Standalone-Build, Ersteinrichtung, Updates, Backup/Restore und Fehlerbehebung
+- **[Fertige Portainer-Stack-Datei](portainer-stack.yaml)** – für das zuvor importierte Release-Image
 - **[Benutzerhandbuch](HANDBUCH.md)** – Bedienung, Kontostände, Einnahmen, Ausgaben, Kredite, Vorschau und Excel-Export
 - **[Changelog](CHANGELOG.md)** – Änderungen der einzelnen Versionen
 
