@@ -1,8 +1,9 @@
 
 // Credit archive extension (v0.13.5)
-const _baseRenderCredits=renderCredits;
+creditById=function(id){return [...(state.credits||[]),...(state.archivedCredits||[])].find(credit=>credit.id===id)};
+creditName=function(id){return creditById(id)?.name||'Kein Kredit'};
+
 renderCredits=function(){
-  const all=[...(state.credits||[]),...(state.archivedCredits||[])];
   const active=(state.credits||[]).filter(item=>!item.archived);
   const archived=(state.archivedCredits||[]).filter(item=>item.archived);
   const types=['consumer_credit','credit','borrowed'];
@@ -17,14 +18,12 @@ renderCredits=function(){
   $('#credit-list').innerHTML=filtered.length?filtered.map(item=>`<article class="credit-row ${item.archived?'inactive':''}" data-open-credit="${escapeHtml(item.id)}"><div><span class="credit-type-badge">${escapeHtml(creditTypeLabels[item.credit_type])}</span><h3>${escapeHtml(item.name)}</h3><small>Ausgang ${eur(item.opening_balance_cents)} · getilgt ${eur(item.paid_cents)}${item.archived?` · archiviert${item.archive_reason==='paid'?' (abbezahlt)':' (manuell)'}`:''}</small></div><strong>${eur(item.remaining_balance_cents)}</strong><small>${item.archived?'Saldo bei Archivierung':'offener Saldo'}</small><label class="account-choice" onclick="event.stopPropagation()"><input type="checkbox" data-credit-archive="${escapeHtml(item.id)}" ${item.archived?'checked':''}> Archiviert</label><button class="link-button" type="button" data-edit-credit="${escapeHtml(item.id)}">Bearbeiten</button></article>`).join(''):`<p class="empty">${state.creditFilter==='archive'?'Noch keine archivierten Kredite vorhanden.':state.creditFilter==='all'?'Noch kein aktiver Kredit angelegt.':`Keine aktiven Kredite der Art „${escapeHtml(activeLabel)}“ vorhanden.`}</p>`;
 };
 
-const _baseLoadAll=loadAll;
 loadAll=async function(){
   const query=`household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(state.asOf)}`,managementQuery=`household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(today())}`;
   const [dashboard,incomes,expenses,transfers,credits,diagnostics]=await Promise.all([api(`/api/dashboard?${query}`),api(`/api/cash-flows?${managementQuery}&kind=income`),api(`/api/cash-flows?${managementQuery}&kind=expense`),api(`/api/transfers?household_id=${encodeURIComponent(state.currentId)}`),api(`/api/credits?household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(today())}`),api(`/api/diagnostics?${query}`)]);
   state.dashboard=dashboard;state.incomes=incomes.items;state.expenses=expenses.items;state.transfers=transfers.items;state.credits=credits.items||[];state.archivedCredits=credits.archived_items||[];state.diagnostics=diagnostics;ensureSelections();renderAll();await loadPreview();
 };
 
-const _baseEnsureSelections=ensureSelections;
 ensureSelections=function(){
   const ids=state.dashboard.household.accounts.map(account=>account.id),valid=new Set(ids);state.previewAccountIds=state.previewAccountIds.filter(id=>valid.has(id));if(!state.previewAccountIds.length)state.previewAccountIds=[...ids];
   const creditIds=(state.credits||[]).filter(item=>!item.archived).map(credit=>credit.id),validCredits=new Set(creditIds);state.previewCreditIds=state.previewCreditIds.filter(id=>validCredits.has(id));
