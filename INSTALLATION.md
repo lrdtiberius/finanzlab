@@ -2,7 +2,7 @@
 
 Diese Anleitung beschreibt die vollständige Installation und Ersteinrichtung des **Haushaltsplaners / FinanzLab**.
 
-Gültig für Version **0.13.5**.
+Gültig für Version **1.0.0**.
 
 Die Anwendung ist für den lokalen Betrieb vorgesehen und speichert ihre Daten ausschließlich lokal in einer SQLite-Datenbank im Docker-Volume beziehungsweise unter dem konfigurierten `DATA_DIR`.
 
@@ -223,7 +223,7 @@ finanzlab-image-v<VERSION>-amd64.tar.gz
 Beispiel:
 
 ```text
-finanzlab-image-v0.13.5-amd64.tar.gz
+finanzlab-image-v1.0.0-amd64.tar.gz
 ```
 
 Dieses Image wurde mit `docker save` erzeugt und anschließend komprimiert.
@@ -232,23 +232,23 @@ Dieses Image wurde mit `docker save` erzeugt und anschließend komprimiert.
 
 Auf der GitHub-Seite [Releases](https://github.com/lrdtiberius/finanzlab/releases/latest) den gewünschten Release öffnen und das Docker-Image herunterladen.
 
-Für Version 0.13.5 werden für die Portainer-Installation diese Dateien angeboten:
+Für Version 1.0.0 werden für die Portainer-Installation diese Dateien angeboten:
 
 ```text
-finanzlab-image-v0.13.5-amd64.tar.gz
-finanzlab-image-v0.13.5-amd64.tar.gz.sha256
+finanzlab-image-v1.0.0-amd64.tar.gz
+finanzlab-image-v1.0.0-amd64.tar.gz.sha256
 ```
 
-Die Datei `finanzlab-v0.13.5.tar.gz` enthält dagegen den Quellcode und ist **kein importierbares Docker-Image**.
+Die Datei `finanzlab-v1.0.0.tar.gz` enthält dagegen den Quellcode und ist **kein importierbares Docker-Image**.
 
 Optional kann die Prüfsumme vor dem Import kontrolliert werden:
 
 ```bash
 # Linux
-sha256sum finanzlab-image-v0.13.5-amd64.tar.gz
+sha256sum finanzlab-image-v1.0.0-amd64.tar.gz
 
 # macOS
-shasum -a 256 finanzlab-image-v0.13.5-amd64.tar.gz
+shasum -a 256 finanzlab-image-v1.0.0-amd64.tar.gz
 ```
 
 Der ausgegebene Wert muss mit dem Wert in der heruntergeladenen `.sha256`-Datei übereinstimmen.
@@ -260,13 +260,13 @@ Einige Portainer-Versionen akzeptieren die komprimierte `.tar.gz`-Datei direkt. 
 Linux/macOS:
 
 ```bash
-gunzip finanzlab-image-v0.13.5-amd64.tar.gz
+gunzip finanzlab-image-v1.0.0-amd64.tar.gz
 ```
 
 Danach liegt vor:
 
 ```text
-finanzlab-image-v0.13.5-amd64.tar
+finanzlab-image-v1.0.0-amd64.tar
 ```
 
 #### Schritt 3: Image in Portainer importieren
@@ -277,20 +277,20 @@ In Portainer:
 2. **Import** wählen.
 3. die Image-TAR auswählen.
 4. Import starten.
-5. anschließend kontrollieren, ob `finanzlab:0.13.5` in der Image-Liste vorhanden ist.
+5. anschließend kontrollieren, ob `finanzlab:1.0.0` in der Image-Liste vorhanden ist.
 
 > **Nicht verwechseln:** Ein Docker-Image-TAR gehört zu **Images → Import**. Ein Quell-/Build-TAR mit Dockerfile gehört dagegen zu **Images → Build image → Upload**.
 
-Die Seite **Build a new image** darf für `finanzlab-image-v0.13.5-amd64.tar` nicht verwendet werden. Dort sucht Portainer nach einem Dockerfile und meldet deshalb bei einer Image-TAR `Cannot locate Dockerfile`.
+Die Seite **Build a new image** darf für `finanzlab-image-v1.0.0-amd64.tar` nicht verwendet werden. Dort sucht Portainer nach einem Dockerfile und meldet deshalb bei einer Image-TAR `Cannot locate Dockerfile`.
 
 ### 5.2 Portainer-Stack für ein bereits vorhandenes Image
 
-Nachdem das Image `finanzlab:0.13.5` vorhanden ist, kann die fertige Datei **[`portainer-stack.yaml`](portainer-stack.yaml)** verwendet werden. Sie enthält folgenden Stack:
+Nachdem das Image `finanzlab:1.0.0` vorhanden ist, kann die fertige Datei **[`portainer-stack.yaml`](portainer-stack.yaml)** verwendet werden. Sie enthält folgenden Stack:
 
 ```yaml
 services:
   haushaltsplaner:
-    image: finanzlab:0.13.5
+    image: finanzlab:1.0.0
     container_name: finanzlab
     ports:
       - "8798:8798"
@@ -353,7 +353,7 @@ app/
 Beim Build:
 
 ```text
-Name: finanzlab:0.13.5
+Name: finanzlab:1.0.0
 Dockerfile path: Dockerfile
 ```
 
@@ -368,7 +368,7 @@ Nach erfolgreichem Build kann derselbe Stack aus Abschnitt 5.2 verwendet werden.
 Wer das Image ohne Docker Compose erzeugen möchte, kann direkt im geklonten Repository bauen.
 
 ```bash
-docker build -t finanzlab:0.13.5 .
+docker build -t finanzlab:1.0.0 .
 ```
 
 Danach kann ein Container manuell gestartet werden:
@@ -383,7 +383,7 @@ docker run -d \
   -e DATA_DIR=/data \
   -e PORT=8798 \
   -v finanzlab_data:/data \
-  finanzlab:0.13.5
+  finanzlab:1.0.0
 ```
 
 Status prüfen:
@@ -802,7 +802,7 @@ Bei einem selbst gebauten Image sicherstellen, dass wirklich das neue Tag verwen
 Beispiel:
 
 ```text
-finanzlab:0.13.5
+finanzlab:1.0.0
 ```
 
 In Portainer anschließend den Stack ausdrücklich neu deployen. Nur das Erstellen eines neuen Images ersetzt keinen bereits laufenden Container automatisch.
@@ -836,7 +836,7 @@ Danach sind die Daten aus `finanzlab_data` gelöscht.
 Optional kann das Image entfernt werden:
 
 ```bash
-docker image rm finanzlab:0.13.5
+docker image rm finanzlab:1.0.0
 ```
 
 ### Portainer

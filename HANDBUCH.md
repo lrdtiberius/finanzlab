@@ -1,6 +1,6 @@
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **0.13.5**
+Gültig für Version **1.0.0**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
@@ -74,13 +74,13 @@ Für eine Portainer-Installation wird das fertig gebaute Docker-Image aus dem Gi
 
 Vorgehen:
 
-1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v0.13.5-amd64.tar.gz` importieren,
+1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v1.0.0-amd64.tar.gz` importieren,
 2. unter **Stacks → Add stack** einen Stack mit dem Inhalt aus [`portainer-stack.yaml`](portainer-stack.yaml) anlegen,
 3. den Stack bereitstellen,
 4. den Zustand des Containers `finanzlab` kontrollieren,
 5. Port `8798` im Browser öffnen.
 
-Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:0.13.5` für `linux/amd64`. Das Quellarchiv `finanzlab-v0.13.5.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
+Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:1.0.0` für `linux/amd64`. Das Quellarchiv `finanzlab-v1.0.0.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
 
 Das Volume wird im Container unter `/data` eingebunden. Dort liegt insbesondere die Datenbankdatei `planner.db`.
 
@@ -191,6 +191,10 @@ Verfügbare Rhythmen:
 Mit **In Berechnungen berücksichtigen** kann eine Einnahme vorübergehend deaktiviert werden, ohne sie zu löschen.
 
 Im Kopf der Einnahmenkarte steht der positive Saldo aller angelegten Einnahmepositionen. Deaktivierte Positionen werden in diesem Bestandssaldo mitgezählt; für Vorschauen werden sie nicht berücksichtigt.
+
+Über der Einnahmenliste stehen die Bereiche **Aktiv** und **Archiv**. Vergangene einmalige Einnahmen wechseln ab dem Tag nach ihrer Fälligkeit automatisch ins Archiv. Sie werden nicht gelöscht und können dort weiterhin geöffnet und bearbeitet werden.
+
+Bei wiederkehrenden Einnahmen steht zusätzlich **Betrag ändern** zur Verfügung. Dort werden nur **Neuer Betrag ab** und **Neue Höhe** eingetragen. FinanceLab legt damit eine neue Version derselben Einnahme an: Frühere Fälligkeiten behalten den bisherigen Betrag, ab dem gewählten Datum gilt die neue Höhe. Bereits vorgemerkte zukünftige Änderungen werden direkt in der Einnahmenliste angezeigt.
 
 ## 7. Ausgaben
 
@@ -370,6 +374,19 @@ Die Arbeitsmappe enthält:
 Alle eingegebenen Einnahmen, Ausgaben und Kredite werden unabhängig vom gewählten Vorschauzeitraum exportiert. Das umfasst auch deaktivierte, zukünftige und beendete Positionen. In den Vorschaublättern erscheinen dagegen nur Bewegungen, die nach den gespeicherten Regeln tatsächlich berücksichtigt werden dürfen.
 
 Die Arbeitsblätter besitzen Filter, fixierte Kopfzeilen sowie formatierte Datums- und Geldzellen. Dispoüberschreitungen werden farblich hervorgehoben.
+
+### 12.1 EnergyLab-Verbindung
+
+In den **Einstellungen** kann FinanceLab mit EnergyLab verbunden werden. Nach dem Speichern der Adresse und Aktivieren der automatischen Synchronisation übernimmt FinanceLab ausschließlich die vertraglich hinterlegten Strom-, Gas- und Wasserabschläge.
+
+Übernommen werden:
+
+- Abschlagshöhe und spätere Änderungen,
+- Vertragsbeginn und Vertragsende,
+- Zahlungstag,
+- das in EnergyLab beim Vertrag angegebene FinanceLab-Konto.
+
+Verbrauchskosten, Grundgebühr, Hochrechnung und Abrechnungssaldo werden nicht als zusätzliche Ausgaben gebucht. Eine erneute Synchronisation aktualisiert die vorhandenen EnergyLab-Positionen und legt keine Duplikate an. Kann ein Kontoname nicht gefunden werden, verwendet FinanceLab das konfigurierte Standardkonto und zeigt einen Hinweis an.
 
 ## 13. Datenprüfung
 

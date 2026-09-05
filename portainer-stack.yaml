@@ -1,12 +1,13 @@
 services:
   haushaltsplaner:
-    image: finanzlab:0.13.5
+    image: finanzlab:1.0.0
     container_name: finanzlab
     ports:
       - "8798:8798"
     environment:
       DATA_DIR: /data
       PORT: "8798"
+      ENERGYLAB_SYNC_INTERVAL_SECONDS: "21600"
     volumes:
       - finanzlab_data:/data
     init: true

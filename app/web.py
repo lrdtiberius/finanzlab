@@ -1,20 +1,25 @@
 import json
 import mimetypes
+import os
 import re
+import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from app.application.excel_export import build_forecast_workbook
+from app.application.energylab_service import EnergyLabService
 from app.infrastructure.repository import Repository
 
 ROOT = Path(__file__).resolve().parent
 REPOSITORY = None
+ENERGYLAB = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Haushaltsplaner/0.13.4"
+    server_version = "Haushaltsplaner/1.0.0"
 
     def json_response(self, data, status=HTTPStatus.OK):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -45,7 +50,7 @@ class Handler(BaseHTTPRequestHandler):
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "0.13.4"})
+                return self.json_response({"status": "ok", "version": "1.0.0"})
             if path == "/api/households":
                 return self.json_response({"items": REPOSITORY.list_households()})
             if path == "/api/dashboard":
@@ -57,6 +62,9 @@ class Handler(BaseHTTPRequestHandler):
                 kind = (query.get("kind") or [""])[0]
                 as_of = (query.get("as_of") or [None])[0]
                 return self.json_response({"items": REPOSITORY.list_cash_flows(hid, kind, as_of)})
+            if path == "/api/integrations/energylab":
+                hid = (query.get("household_id") or [""])[0]
+                return self.json_response(REPOSITORY.energylab_integration(hid))
             if path == "/api/diagnostics":
                 hid = (query.get("household_id") or [""])[0]
                 as_of = (query.get("as_of") or [None])[0]
@@ -121,6 +129,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_response(REPOSITORY.create_account(self.read_json()), 201)
             if path == "/api/cash-flows":
                 return self.json_response(REPOSITORY.create_cash_flow(self.read_json()), 201)
+            if path == "/api/integrations/energylab":
+                return self.json_response(REPOSITORY.save_energylab_integration(self.read_json()))
+            if path == "/api/integrations/energylab/sync":
+                payload = self.read_json()
+                return self.json_response(ENERGYLAB.sync(payload.get("household_id")))
             if path == "/api/transfers":
                 return self.json_response(REPOSITORY.create_transfer(self.read_json()), 201)
             if path == "/api/credits":
@@ -151,6 +164,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/movement-completion":
                 return self.json_response(REPOSITORY.set_movement_completion(self.read_json()))
+            if path.startswith("/api/integrations/energylab/flows/") and path.endswith("/account"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 6:
+                    return self.json_response({"error": "Nicht gefunden."}, 404)
+                return self.json_response(REPOSITORY.update_energylab_cash_flow_account(parts[4], self.read_json()))
             if path.startswith("/api/accounts/"):
                 account_id = path.removeprefix("/api/accounts/")
                 if not account_id or "/" in account_id:
@@ -227,8 +245,17 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def energylab_scheduler():
+    interval = max(300, int(os.getenv("ENERGYLAB_SYNC_INTERVAL_SECONDS", "21600")))
+    while True:
+        ENERGYLAB.sync_all()
+        time.sleep(interval)
+
+
 def run(port=8798):
-    global REPOSITORY
+    global REPOSITORY, ENERGYLAB
     REPOSITORY = Repository()
+    ENERGYLAB = EnergyLabService(REPOSITORY)
+    threading.Thread(target=energylab_scheduler, daemon=True, name="energylab-sync").start()
     print(f"Haushaltsplaner läuft auf http://0.0.0.0:{port}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

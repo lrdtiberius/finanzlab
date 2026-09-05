@@ -21,6 +21,8 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - zusätzlicher wöchentlicher Rhythmus für Ausgaben mit einer Fälligkeit alle sieben Tage
 - automatische Bereinigung unsichtbarer Zukunftsversionen aus älteren Programmständen
 - Saldo aller angelegten Positionen direkt auf den Einnahmen- und Ausgabenseiten
+- automatische Aufteilung von Einnahmen in Aktiv und Archiv
+- historisierte Betragsänderungen für wiederkehrende Einnahmen wie Gehalt und Rente
 - automatische Aufteilung von Ausgaben und Umbuchungen in Aktiv und Archiv
 - einmalige Positionen wechseln nach ihrem Fälligkeitsdatum automatisch ins Archiv
 - eigene Kreditverwaltung für Konsumkredit, Kredit und Geliehen
@@ -42,6 +44,7 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - taggenaue Monatsvorschau für Konten sowie separat auswählbare Kreditsimulation
 - dauerhaft gespeicherter Erledigt-Status je konkreter Bewegung; erledigte Vorgänge bleiben sichtbar und werden nicht erneut simuliert
 - strukturierter Excel-Export mit Monats-/Tagesvorschau, Krediten, Tilgungshistorie, Bewegungen und sämtlichen Eingaben
+- automatische EnergyLab-Synchronisation der vertraglichen Strom-, Gas- und Wasserabschläge einschließlich Laufzeit, Änderung, Konto und Zahlungstag
 - Warnung bei Überschreitung eines hinterlegten Disporahmens
 - Datenprüfung für nicht berücksichtigte oder unvollständige Positionen
 

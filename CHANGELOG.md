@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0
+
+- EnergyLab-Verträge für Strom, Gas und Wasser werden als monatliche Abschläge übernommen, ohne Verbrauchskosten, Grundgebühr, Hochrechnung oder Saldo doppelt zu buchen
+- Vertragswechsel, geänderte Abschlagshöhen, Laufzeiten, Zahlungstage und Kontozuordnungen bleiben historisch korrekt und werden bei erneuter Synchronisation ohne Dubletten aktualisiert
+- EnergyLab-Kontennamen und Zahlungstage werden je Vertrag übernommen; unbekannte Konten fallen mit einem sichtbaren Hinweis auf das Standardkonto zurück
+- Einnahmen besitzen wie Ausgaben die Bereiche „Aktiv“ und „Archiv“; vergangene einmalige Einnahmen werden automatisch archiviert
+- wiederkehrende Einnahmen wie Gehalt oder Rente können über „Betrag ändern“ ab einem frei wählbaren Datum aktualisiert werden, während frühere Zahlungen ihren alten Betrag behalten
+- der Excel-Export steht in den Einstellungen als eigene Kachel neben der EnergyLab-Verbindung und bleibt auf kleineren Bildschirmen responsiv
+- der Excel-Export enthält Vorschauen, Bewegungen, Konten, Einnahmen, Ausgaben, Kredite, Tilgungen, Umbuchungen und Kontostand-Historie
+- Docker-, Healthcheck- und Versionsangaben wurden für das stabile Release 1.0.0 vereinheitlicht
+
 ## 0.13.5
 
 - Kredite, Konsumkredite und Geliehen werden automatisch archiviert, sobald ihr aktueller Saldo 0,00 € erreicht

@@ -1,5 +1,5 @@
 
-// Credit archive extension (v0.13.5)
+// Credit archive extension (v1.0.0)
 creditById=function(id){return [...(state.credits||[]),...(state.archivedCredits||[])].find(credit=>credit.id===id)};
 creditName=function(id){return creditById(id)?.name||'Kein Kredit'};
 
@@ -20,8 +20,8 @@ renderCredits=function(){
 
 loadAll=async function(){
   const query=`household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(state.asOf)}`,managementQuery=`household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(today())}`;
-  const [dashboard,incomes,expenses,transfers,credits,diagnostics]=await Promise.all([api(`/api/dashboard?${query}`),api(`/api/cash-flows?${managementQuery}&kind=income`),api(`/api/cash-flows?${managementQuery}&kind=expense`),api(`/api/transfers?household_id=${encodeURIComponent(state.currentId)}`),api(`/api/credits?household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(today())}`),api(`/api/diagnostics?${query}`)]);
-  state.dashboard=dashboard;state.incomes=incomes.items;state.expenses=expenses.items;state.transfers=transfers.items;state.credits=credits.items||[];state.archivedCredits=credits.archived_items||[];state.diagnostics=diagnostics;ensureSelections();renderAll();await loadPreview();
+  const [dashboard,incomes,expenses,transfers,credits,diagnostics,energylab]=await Promise.all([api(`/api/dashboard?${query}`),api(`/api/cash-flows?${managementQuery}&kind=income`),api(`/api/cash-flows?${managementQuery}&kind=expense`),api(`/api/transfers?household_id=${encodeURIComponent(state.currentId)}`),api(`/api/credits?household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(today())}`),api(`/api/diagnostics?${query}`),api(`/api/integrations/energylab?household_id=${encodeURIComponent(state.currentId)}`)]);
+  state.dashboard=dashboard;state.incomes=incomes.items;state.expenses=expenses.items;state.transfers=transfers.items;state.credits=credits.items||[];state.archivedCredits=credits.archived_items||[];state.diagnostics=diagnostics;state.energylab=energylab;ensureSelections();renderAll();await loadPreview();
 };
 
 ensureSelections=function(){

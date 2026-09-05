@@ -1805,7 +1805,7 @@ class StaticUiTests(unittest.TestCase):
             script,
         )
         self.assertIn(
-            "$('#dashboard-new-income').addEventListener('click',()=>openFlow('income'))",
+            "$('#dashboard-new-income').addEventListener('click',()=>{state.incomeFilter='active';openFlow('income')})",
             script,
         )
 

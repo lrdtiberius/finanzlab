@@ -1,8 +1,9 @@
 import os
 import sqlite3
+from calendar import monthrange
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from threading import RLock
 from uuid import uuid4
@@ -67,6 +68,17 @@ CREATE TABLE IF NOT EXISTS cash_flow_versions(
  gross_amount_cents INTEGER, recurrence TEXT NOT NULL DEFAULT 'monthly', name TEXT, category TEXT,
  owner_scope TEXT, owner_person_id TEXT, account_id TEXT,
  credit_id TEXT, credit_reduction_cents INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS energylab_integrations(
+ household_id TEXT PRIMARY KEY REFERENCES households(id) ON DELETE CASCADE,
+ base_url TEXT NOT NULL, account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+ enabled INTEGER NOT NULL DEFAULT 1, last_sync_at TEXT, last_status TEXT,
+ last_message TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS energylab_account_overrides(
+ household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+ source_key TEXT NOT NULL, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+ payment_day INTEGER,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(household_id,source_key));
 CREATE TABLE IF NOT EXISTS transfers(
  id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
  name TEXT NOT NULL, source_account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -181,6 +193,7 @@ class Repository:
             self.ensure_column(con,"balance_anchors","bookings_applied","INTEGER NOT NULL DEFAULT 1")
             self.ensure_column(con,"transfers","end_date","TEXT")
             self.ensure_column(con,"transfers","occurrence_count","INTEGER")
+            self.ensure_column(con,"energylab_account_overrides","payment_day","INTEGER")
             con.execute("UPDATE balance_anchors SET created_at=COALESCE(created_at,CURRENT_TIMESTAMP)")
             con.execute("CREATE INDEX IF NOT EXISTS cash_flow_versions_dates ON cash_flow_versions(cash_flow_id,version_from,version_to)")
             migration=con.execute("SELECT 1 FROM schema_migrations WHERE name='v0.11-remove-loans-and-validity'").fetchone()
@@ -596,6 +609,121 @@ class Repository:
         credit=next((item for item in result["items"] if item["id"]==credit_id),None)
         if not credit: raise ValueError("Kredit nicht gefunden.")
         return credit
+    def energylab_integration(self,hid):
+        with self.connect() as con:
+            if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone(): raise ValueError("Haushalt nicht gefunden.")
+            row=con.execute("SELECT * FROM energylab_integrations WHERE household_id=?",(hid,)).fetchone()
+        return dict(row) if row else {"household_id":hid,"base_url":"http://energylab:8090","account_id":None,"enabled":0,"last_sync_at":None,"last_status":None,"last_message":None}
+    def save_energylab_integration(self,payload):
+        hid=payload.get("household_id"); base_url=str(payload.get("base_url") or "").strip().rstrip("/")
+        account_id=payload.get("account_id") or None; enabled=0 if payload.get("enabled") in (False,0,"0") else 1
+        if not hid or not base_url.startswith(("http://","https://")): raise ValueError("Haushalt und eine gültige EnergyLab-Adresse sind erforderlich.")
+        with self.lock,self.connect() as con:
+            if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone(): raise ValueError("Haushalt nicht gefunden.")
+            if account_id and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone(): raise ValueError("Das gewählte Konto gehört nicht zum Haushalt.")
+            con.execute("""INSERT INTO energylab_integrations(household_id,base_url,account_id,enabled)
+                VALUES(?,?,?,?) ON CONFLICT(household_id) DO UPDATE SET
+                base_url=excluded.base_url,account_id=excluded.account_id,enabled=excluded.enabled,updated_at=CURRENT_TIMESTAMP""",(hid,base_url,account_id,enabled))
+        return self.energylab_integration(hid)
+    def enabled_energylab_integrations(self):
+        with self.connect() as con: return [dict(row) for row in con.execute("SELECT * FROM energylab_integrations WHERE enabled=1")]
+    def record_energylab_sync(self,hid,status,message):
+        with self.lock,self.connect() as con:
+            con.execute("UPDATE energylab_integrations SET last_sync_at=?,last_status=?,last_message=? WHERE household_id=?",(timestamp(),status,str(message)[:500],hid))
+    @staticmethod
+    def _energylab_cents(value):
+        try: return int((Decimal(str(value or 0))*100).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
+        except (InvalidOperation,ValueError): return 0
+    def sync_energylab_contracts(self,hid,payload):
+        if not isinstance(payload,dict) or payload.get("source",{}).get("app") not in ("EnergieLab","EnergyLab"): raise ValueError("Die Gegenstelle liefert keine gültigen EnergyLab-Daten.")
+        segments=payload.get("segments")
+        if not isinstance(segments,list): raise ValueError("Die EnergyLab-Vertragsdaten fehlen.")
+        labels={"electricity":"Strom","gas":"Gas","water":"Wasser"}; seen=set(); created=0; updated=0; unmatched_accounts=[]
+        with self.lock,self.connect() as con:
+            config=con.execute("SELECT * FROM energylab_integrations WHERE household_id=?",(hid,)).fetchone()
+            household=con.execute("SELECT * FROM households WHERE id=?",(hid,)).fetchone()
+            if not config or not household: raise ValueError("Die EnergyLab-Verbindung ist nicht eingerichtet.")
+            account_id=config["account_id"]
+            if account_id and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone(): account_id=None
+            person=con.execute("SELECT id FROM persons WHERE household_id=? AND slot='A'",(hid,)).fetchone()
+            owner_scope="joint" if household["mode"]=="couple" else "person"; owner_person_id=None if owner_scope=="joint" else person["id"]
+            for segment in segments:
+                segment_id=str(segment.get("id") or "")
+                if segment_id not in labels: continue
+                for contract in segment.get("contracts") or []:
+                    remote_id=str(contract.get("id") or "").strip(); start=str(contract.get("validFrom") or ""); end=str(contract.get("validTo") or "") or None
+                    try:
+                        start_date=date.fromisoformat(start)
+                        if end: date.fromisoformat(end)
+                    except (TypeError,ValueError): continue
+                    if not remote_id or (end and end<start): continue
+                    provider=str(contract.get("provider") or "").strip(); name=f"EnergyLab · {labels[segment_id]}"+(f" · {provider}" if provider else "")
+                    source_key=f"energylab:advance:{segment_id}:{remote_id}"; seen.add(source_key)
+                    override=con.execute("SELECT account_id,payment_day FROM energylab_account_overrides WHERE household_id=? AND source_key=?",(hid,source_key)).fetchone()
+                    source_account_name=str(contract.get("paymentAccountName") or "").strip()
+                    source_account=con.execute("SELECT id FROM accounts WHERE household_id=? AND lower(name)=lower(?)",(hid,source_account_name)).fetchone() if source_account_name else None
+                    if source_account_name and not source_account: unmatched_accounts.append(f"{name}: {source_account_name}")
+                    flow_account_id=source_account["id"] if source_account else (override["account_id"] if override else account_id)
+                    try: source_payment_day=int(contract.get("paymentDay"))
+                    except (TypeError,ValueError): source_payment_day=None
+                    if source_payment_day not in range(1,32): source_payment_day=None
+                    payment_day=source_payment_day or (int(override["payment_day"]) if override and override["payment_day"] else None)
+                    flow=con.execute("SELECT * FROM cash_flows WHERE household_id=? AND source_key=?",(hid,source_key)).fetchone()
+                    if flow: flow_id=flow["id"]; updated+=1
+                    else:
+                        flow_id=uid(); created+=1
+                        con.execute("""INSERT INTO cash_flows(id,household_id,kind,name,owner_scope,owner_person_id,account_id,source_key,category)
+                            VALUES(?,?,?,?,?,?,?,?,?)""",(flow_id,hid,"expense",name,owner_scope,owner_person_id,flow_account_id,source_key,"energy"))
+                    con.execute("UPDATE cash_flows SET name=?,owner_scope=?,owner_person_id=?,account_id=?,category='energy' WHERE id=?",(name,owner_scope,owner_person_id,flow_account_id,flow_id))
+                    values={start[:7]:(start,self._energylab_cents(contract.get("advanceMonthly")))}
+                    for change in contract.get("advanceChanges") or []:
+                        change_from=str(change.get("validFrom") or "")
+                        try: change_date=date.fromisoformat(change_from)
+                        except (TypeError,ValueError): continue
+                        if change_date<start_date or (end and change_from>end): continue
+                        effective=start if change_date.strftime("%Y-%m")==start_date.strftime("%Y-%m") else change_date.replace(day=1).isoformat()
+                        values[effective[:7]]=(effective,self._energylab_cents(change.get("advanceMonthly")))
+                    schedule=sorted(values.values()); con.execute("DELETE FROM cash_flow_versions WHERE cash_flow_id=?",(flow_id,)); due_day=payment_day or start_date.day
+                    for index,(effective,amount) in enumerate(schedule):
+                        effective_date=date.fromisoformat(effective); anchor=max(effective_date,start_date) if index==0 else effective_date
+                        due_date=date(anchor.year,anchor.month,min(due_day,monthrange(anchor.year,anchor.month)[1]))
+                        if payment_day and due_date<anchor:
+                            next_month=add_months_anchored(date(anchor.year,anchor.month,1),1)
+                            due_date=date(next_month.year,next_month.month,min(due_day,monthrange(next_month.year,next_month.month)[1]))
+                        due=start if index==0 and not payment_day else due_date.isoformat()
+                        version_to=schedule[index+1][0] if index+1<len(schedule) else None
+                        con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,owner_scope,owner_person_id,account_id,credit_id,credit_reduction_cents)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,amount,1 if amount>0 else 0,effective,version_to,start,end,due,f"EnergyLab-Vertrag {remote_id}",None,"monthly",name,"energy",owner_scope,owner_person_id,flow_account_id,None,0))
+            stale=[row for row in con.execute("SELECT id,source_key FROM cash_flows WHERE household_id=? AND source_key LIKE 'energylab:advance:%'",(hid,)).fetchall() if row["source_key"] not in seen]
+            for row in stale: con.execute("UPDATE cash_flow_versions SET active=0 WHERE cash_flow_id=?",(row["id"],))
+        return {"created":created,"updated":updated,"deactivated":len(stale),"contracts":len(seen),"unmatched_accounts":unmatched_accounts}
+
+    def update_energylab_cash_flow_account(self,flow_id,payload):
+        hid=payload.get("household_id"); account_id=payload.get("account_id")
+        try: payment_day=int(payload.get("payment_day"))
+        except (TypeError,ValueError): raise ValueError("Der Zahlungstag muss zwischen 1 und 31 liegen.")
+        if not hid or not account_id: raise ValueError("Haushalt und Konto sind erforderlich.")
+        if not 1<=payment_day<=31: raise ValueError("Der Zahlungstag muss zwischen 1 und 31 liegen.")
+        with self.lock,self.connect() as con:
+            flow=con.execute("SELECT * FROM cash_flows WHERE id=? AND household_id=?",(flow_id,hid)).fetchone()
+            if not flow or not str(flow["source_key"] or "").startswith("energylab:advance:"): raise ValueError("EnergyLab-Ausgabe nicht gefunden.")
+            if not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone(): raise ValueError("Das gewählte Konto gehört nicht zum Haushalt.")
+            con.execute("""INSERT INTO energylab_account_overrides(household_id,source_key,account_id,payment_day)
+                VALUES(?,?,?,?) ON CONFLICT(household_id,source_key) DO UPDATE SET
+                account_id=excluded.account_id,payment_day=excluded.payment_day,updated_at=CURRENT_TIMESTAMP""",(hid,flow["source_key"],account_id,payment_day))
+            con.execute("UPDATE cash_flows SET account_id=? WHERE id=?",(account_id,flow_id))
+            con.execute("UPDATE cash_flow_versions SET account_id=? WHERE cash_flow_id=?",(account_id,flow_id))
+            versions=con.execute("SELECT id,version_from,stream_start FROM cash_flow_versions WHERE cash_flow_id=? ORDER BY version_from,rowid",(flow_id,)).fetchall()
+            for version in versions:
+                effective_date=date.fromisoformat(version["version_from"]); stream_start=date.fromisoformat(version["stream_start"]) if version["stream_start"] else effective_date
+                anchor=max(effective_date,stream_start)
+                due_date=date(anchor.year,anchor.month,min(payment_day,monthrange(anchor.year,anchor.month)[1]))
+                if due_date<anchor:
+                    next_month=add_months_anchored(date(anchor.year,anchor.month,1),1)
+                    due_date=date(next_month.year,next_month.month,min(payment_day,monthrange(next_month.year,next_month.month)[1]))
+                con.execute("UPDATE cash_flow_versions SET due_date=? WHERE id=?",(due_date.isoformat(),version["id"]))
+        return next(item for item in self.list_cash_flows(hid,"expense",date.today().isoformat()) if item["id"]==flow_id)
+
     def list_cash_flows(self,hid,kind,as_of=None):
         if kind not in ("income","expense"): raise ValueError("Ungültige Zahlungsart.")
         selected_date=as_of_date(as_of)
@@ -622,7 +750,12 @@ class Repository:
                 item["archive_date"]=lifecycle_end
                 item["end_date"]=item.get("stream_end") if kind=="expense" else None
                 item["duration_months"]=duration_months_between(item.get("due_date"),item.get("stream_end")) if kind=="expense" else None
-                item["is_imported"]=str(flow["source_key"] or "").startswith("excel:household-planning:")
+                source_key=str(flow["source_key"] or "")
+                item["is_imported"]=source_key.startswith("excel:household-planning:")
+                item["managed_by"]="energylab" if source_key.startswith("energylab:advance:") else None
+                if item["managed_by"]=="energylab":
+                    override=con.execute("SELECT payment_day FROM energylab_account_overrides WHERE household_id=? AND source_key=?",(hid,source_key)).fetchone()
+                    item["payment_day"]=int(override["payment_day"]) if override and override["payment_day"] else int(str(item.get("due_date") or "1").split("-")[-1])
                 item["versions"]=versions
                 item["next_version"]=upcoming[0] if upcoming else None
                 result.append(item)
@@ -771,6 +904,7 @@ class Repository:
         with self.lock,self.connect() as con:
             flow=con.execute("SELECT * FROM cash_flows WHERE id=? AND household_id=?",(flow_id,payload.get("household_id"))).fetchone()
             if not flow: raise ValueError("Zahlungsstrom nicht gefunden.")
+            if str(flow["source_key"] or "").startswith("energylab:advance:"): raise ValueError("Diese Ausgabe wird von EnergyLab verwaltet. Änderungen bitte dort vornehmen und anschließend synchronisieren.")
             if kind and kind!=flow["kind"]: raise ValueError("Die Zahlungsart kann nicht geändert werden.")
             kind=flow["kind"]; values=self.cash_flow_values(con,payload,kind); effective=values["effective_from"]
             replace_future=payload.get("effective_from") in (None,"")
@@ -800,8 +934,9 @@ class Repository:
         return next(item for item in self.list_cash_flows(values["household_id"],kind,effective) if item["id"]==flow_id)
     def delete_cash_flow(self,hid,flow_id):
         with self.lock,self.connect() as con:
-            flow=con.execute("SELECT id,name FROM cash_flows WHERE id=? AND household_id=?",(flow_id,hid)).fetchone()
+            flow=con.execute("SELECT id,name,source_key FROM cash_flows WHERE id=? AND household_id=?",(flow_id,hid)).fetchone()
             if not flow: raise ValueError("Zahlungsstrom nicht gefunden.")
+            if str(flow["source_key"] or "").startswith("energylab:advance:"): raise ValueError("Diese Ausgabe wird von EnergyLab verwaltet und kann nur dort entfernt werden.")
             con.execute("DELETE FROM movement_completions WHERE household_id=? AND source_type='cash_flow' AND source_id=?",(hid,flow_id))
             con.execute("DELETE FROM cash_flows WHERE id=?",(flow_id,))
         return {"id":flow_id,"name":flow["name"],"deleted":True}
