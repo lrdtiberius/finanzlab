@@ -6,9 +6,9 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 
 ## Dokumentation
 
-- **[Ausführliche Installations- und Einrichtungsanleitung](INSTALLATION.md)** – Docker Compose, Portainer, Standalone-Build, Ersteinrichtung, Updates, Backup/Restore und Fehlerbehebung
+- **[Ausführliche Installations- und Einrichtungsanleitung](INSTALLATION.md)** – Docker Compose, Portainer, Standalone-Build, EnergyLab-Verbindung, Updates, Backup/Restore und Fehlerbehebung
 - **[Fertige Portainer-Stack-Datei](portainer-stack.yaml)** – für das zuvor importierte Release-Image
-- **[Benutzerhandbuch](HANDBUCH.md)** – Bedienung, Kontostände, Einnahmen, Ausgaben, Kredite, Vorschau und Excel-Export
+- **[Benutzerhandbuch](HANDBUCH.md)** – Bedienung, Einnahmen-Archiv, historische Betragsänderungen, EnergyLab-Synchronisation, Vorschau und Excel-Export
 - **[Changelog](CHANGELOG.md)** – Änderungen der einzelnen Versionen
 
 ## Funktionen
@@ -103,7 +103,7 @@ node --check app/static/app.js
 
 ## Handbuch
 
-Das vollständige Benutzerhandbuch mit Kontostand-Logik, Krediten, Vorschau, Excel-Export und Fehlerbehebung steht in [HANDBUCH.md](HANDBUCH.md).
+Das vollständige Benutzerhandbuch mit Kontostand-Logik, Einnahmen- und Ausgabenhistorie, EnergyLab-Verbindung, Krediten, Vorschau, Excel-Export und Fehlerbehebung steht in [HANDBUCH.md](HANDBUCH.md).
 
 ## Datenschutz
 

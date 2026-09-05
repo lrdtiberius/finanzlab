@@ -297,6 +297,7 @@ services:
     environment:
       DATA_DIR: /data
       PORT: "8798"
+      ENERGYLAB_SYNC_INTERVAL_SECONDS: "21600"
     volumes:
       - finanzlab_data:/data
     init: true
@@ -544,6 +545,29 @@ Dort werden Positionen angezeigt, die beispielsweise wegen fehlender oder ungül
 
 Nach der Ersteinrichtung sollte die Datenprüfung möglichst keine offenen Fehler mehr anzeigen.
 
+### 8.9 EnergyLab verbinden
+
+Dieser Schritt ist nur erforderlich, wenn die in EnergyLab gepflegten Strom-, Gas- und Wasserabschläge automatisch als Ausgaben übernommen werden sollen. EnergyLab muss dafür die FinanzLab-Schnittstelle `/api/personallab` bereitstellen.
+
+1. Zuerst in FinanzLab unter **Konten** alle Konten anlegen, von denen Energieabschläge abgebucht werden.
+2. In EnergyLab bei jedem Vertrag unter **Zahlung** den Zahlungstag und den FinanzLab-Kontonamen eintragen. Der Kontoname muss mit FinanzLab übereinstimmen; Groß- und Kleinschreibung spielen keine Rolle.
+3. In FinanzLab **Einstellungen → EnergyLab verbinden** öffnen.
+4. Die vom FinanzLab-Container erreichbare EnergyLab-Adresse eintragen.
+5. Ein Konto als Rückfallkonto auswählen.
+6. **Beim Start und danach regelmäßig automatisch synchronisieren** aktivieren.
+7. **Verbindung speichern** und anschließend **Jetzt synchronisieren** wählen.
+
+Geeignete Adressen sind abhängig von der Docker-Konfiguration:
+
+- `http://energylab:8090`, wenn beide Container über ein gemeinsames Docker-Netzwerk unter dem Namen `energylab` erreichbar sind;
+- `http://<SERVER-IP>:8090`, wenn FinanzLab EnergyLab über den veröffentlichten Port des Docker-Hosts erreicht.
+
+`localhost` darf nur verwendet werden, wenn EnergyLab im selben Container läuft. In einer normalen Docker-Installation würde `http://localhost:8090` auf den FinanzLab-Container selbst zeigen.
+
+Standardmäßig synchronisiert FinanzLab direkt nach dem Start und danach alle sechs Stunden. Das Intervall kann über `ENERGYLAB_SYNC_INTERVAL_SECONDS` geändert werden; Werte unter 300 Sekunden werden auf fünf Minuten begrenzt.
+
+Nach dem ersten Lauf unter **Ausgaben** und **Vorschau** prüfen, ob Betrag, Vertragszeitraum, Konto und Zahlungstag stimmen. Weitere Einzelheiten stehen im [Benutzerhandbuch](HANDBUCH.md#13-energylab-verbindung).
+
 ---
 
 ## 9. Port und Netzwerk anpassen
@@ -638,7 +662,7 @@ Das vorhandene Volume `finanzlab_data` wird erneut eingebunden. Die Nutzdaten bl
 ### 11.2 Portainer mit neuem fertigem Image
 
 1. neues Image importieren,
-2. prüfen, ob das neue Tag vorhanden ist, zum Beispiel `finanzlab:0.13.6`,
+2. prüfen, ob das neue Tag vorhanden ist, zum Beispiel `finanzlab:1.0.0`,
 3. den **bestehenden Stack unter demselben Namen** öffnen,
 4. im Stack die `image:`-Zeile auf die neue Version ändern,
 5. bei einem lokal importierten Image eine Portainer-Option zum erneuten Abrufen des Images nicht aktivieren,
@@ -666,6 +690,20 @@ Deshalb immer zuerst:
 Notwendige Schemaerweiterungen werden von der Anwendung beim Start automatisch durchgeführt.
 
 Das Docker-Volume sollte bei einem normalen Versionswechsel nicht gelöscht oder neu angelegt werden.
+
+### 11.3 Besonderheiten beim Update auf 1.0.0
+
+Beim ersten Start von 1.0.0 erweitert FinanzLab die vorhandene Datenbank automatisch. Bestehende Haushalte, Konten, Kontostände, Einnahmen, Ausgaben, Kredite und Umbuchungen bleiben erhalten.
+
+Nach dem Update:
+
+1. im Fußbereich **Version 1.0.0** kontrollieren,
+2. unter **Einnahmen** die neuen Bereiche **Aktiv** und **Archiv** prüfen,
+3. unter **Einstellungen** die EnergyLab-Verbindung einrichten,
+4. einmal manuell synchronisieren,
+5. die importierten Abschläge in **Ausgaben** und **Vorschau** kontrollieren.
+
+Bereits manuell in FinanzLab angelegte Strom-, Gas- oder Wasserabschläge werden absichtlich nicht automatisch gelöscht oder mit EnergyLab-Positionen zusammengeführt. Dadurch gehen keine eigenen Daten verloren. Falls derselbe Abschlag nach der ersten Synchronisation doppelt erscheint, die bisherige manuelle Position nach der Kontrolle deaktivieren, beenden oder löschen. Die mit **EnergyLab** gekennzeichnete Position bleibt bestehen.
 
 ---
 
@@ -811,6 +849,32 @@ In Portainer anschließend den Stack ausdrücklich neu deployen. Nur das Erstell
 
 Keine neuen Daten eingeben. Zuerst prüfen, ob der Stack versehentlich unter einem anderen Namen neu angelegt oder ein neues Volume eingebunden wurde. Das ursprüngliche Volume ist häufig weiterhin unter **Volumes** vorhanden und kann wieder unter `/data` eingebunden werden.
 
+### EnergyLab ist nicht erreichbar
+
+Unter **Einstellungen → EnergyLab verbinden** muss eine Adresse stehen, die aus dem FinanzLab-Container erreichbar ist. Besonders häufige Ursachen sind:
+
+- `localhost` wurde verwendet, obwohl EnergyLab in einem anderen Container läuft;
+- beide Container befinden sich in getrennten Docker-Netzwerken;
+- der EnergyLab-Port `8090` ist am Docker-Host nicht veröffentlicht;
+- die Server-IP oder der Port ist falsch;
+- eine Firewall verhindert die Verbindung.
+
+Zum Prüfen kann auf dem Docker-Host aufgerufen werden:
+
+```bash
+curl http://<ENERGYLAB-ADRESSE>:8090/api/personallab
+```
+
+Die Antwort muss JSON-Daten aus EnergyLab enthalten. Bei getrennten Portainer-Stacks ist meist die veröffentlichte Serveradresse wie `http://<SERVER-IP>:8090` am einfachsten.
+
+### EnergyLab meldet einen unbekannten Kontonamen
+
+FinanzLab ordnet das Konto über dessen Bezeichnung zu. Den Kontonamen in EnergyLab und FinanzLab identisch schreiben oder bei der mit **EnergyLab** markierten Ausgabe **Konto & Zahlungstag** öffnen. Eine dort gespeicherte manuelle Kontozuordnung bleibt bei späteren Synchronisationen erhalten, solange EnergyLab nicht selbst einen passenden Kontonamen liefert. Der manuelle Zahlungstag bleibt entsprechend erhalten, solange im EnergyLab-Vertrag kein gültiger Zahlungstag hinterlegt ist.
+
+### Abschläge erscheinen nach der Synchronisation doppelt
+
+Die Synchronisation erkennt ihre eigenen EnergyLab-Positionen wieder und erzeugt bei späteren Läufen keine Duplikate. Bereits vorher manuell angelegte Ausgaben kann sie jedoch nicht sicher als dieselbe Zahlung erkennen. Diese manuellen Positionen nach einer Kontrolle deaktivieren, beenden oder löschen.
+
 ---
 
 ## 14. Deinstallation
@@ -878,6 +942,8 @@ Nach Abschluss der Installation sollten folgende Punkte geprüft werden:
 - [ ] Tagesbuchungen beim Kontostand sind korrekt gekennzeichnet.
 - [ ] regelmäßige Einnahmen sind angelegt.
 - [ ] regelmäßige und einmalige Ausgaben sind angelegt.
+- [ ] falls EnergyLab verwendet wird: Verbindung gespeichert und manuelle Synchronisation erfolgreich.
+- [ ] EnergyLab-Abschläge erscheinen nur einmal und verwenden Konto sowie Zahlungstag korrekt.
 - [ ] vorhandene Kredite und Tilgungsanteile sind korrekt verknüpft.
 - [ ] Umbuchungen zwischen eigenen Konten sind erfasst.
 - [ ] die Monatsvorschau wurde kontrolliert.

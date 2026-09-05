@@ -106,11 +106,11 @@ Die Anwendung enthält folgende Seiten:
 | Dashboard | Gesamtüberblick zum gewählten Stichtag |
 | Vorschau | Tagesliste und Kontostände eines vollständigen Monats |
 | Konten | Konten, Disporahmen und Kontostand-Historie |
-| Einnahmen | Alle regelmäßigen und einmaligen Einnahmen |
-| Ausgaben | Alle Ausgaben, optional mit einem Kredit und Tilgungsanteil verknüpft |
+| Einnahmen | Regelmäßige und einmalige Einnahmen, Archiv und historische Betragsänderungen |
+| Ausgaben | Manuelle und aus EnergyLab synchronisierte Ausgaben, optional mit einem Kredit und Tilgungsanteil verknüpft |
 | Kredite | Kreditstammdaten, offene Salden und vollständige Tilgungshistorie |
 | Umbuchungen | Geldbewegungen zwischen eigenen Konten |
-| Einstellungen | Haushalte, Personen, Datenprüfung und Excel-Export |
+| Einstellungen | Haushalte, Personen, EnergyLab-Verbindung, Excel-Export und Datenprüfung |
 
 ## 5. Konten und Kontostände
 
@@ -194,7 +194,17 @@ Im Kopf der Einnahmenkarte steht der positive Saldo aller angelegten Einnahmepos
 
 Über der Einnahmenliste stehen die Bereiche **Aktiv** und **Archiv**. Vergangene einmalige Einnahmen wechseln ab dem Tag nach ihrer Fälligkeit automatisch ins Archiv. Sie werden nicht gelöscht und können dort weiterhin geöffnet und bearbeitet werden.
 
-Bei wiederkehrenden Einnahmen steht zusätzlich **Betrag ändern** zur Verfügung. Dort werden nur **Neuer Betrag ab** und **Neue Höhe** eingetragen. FinanceLab legt damit eine neue Version derselben Einnahme an: Frühere Fälligkeiten behalten den bisherigen Betrag, ab dem gewählten Datum gilt die neue Höhe. Bereits vorgemerkte zukünftige Änderungen werden direkt in der Einnahmenliste angezeigt.
+Bei wiederkehrenden Einnahmen steht zusätzlich **Betrag ändern** zur Verfügung. Dort werden nur **Neuer Betrag ab** und **Neue Höhe** eingetragen. FinanzLab legt damit eine neue Version derselben Einnahme an: Frühere Fälligkeiten behalten den bisherigen Betrag, ab dem gewählten Datum gilt die neue Höhe. Bereits vorgemerkte zukünftige Änderungen werden direkt in der Einnahmenliste angezeigt.
+
+Beispiel für eine Gehaltserhöhung:
+
+- bisherige Einnahme: `2.500,00 €`, fällig jeweils am 25. des Monats;
+- neuer Betrag ab: `01.10.2026`;
+- neue Höhe: `2.650,00 €`.
+
+Die Fälligkeiten bis September bleiben mit `2.500,00 €` gespeichert. Ab der Oktober-Fälligkeit verwendet Dashboard, Vorschau und Excel-Export `2.650,00 €`. Als Änderungsdatum sollte ein Datum gewählt werden, das spätestens auf der ersten Fälligkeit mit dem neuen Betrag liegt.
+
+Für reine Betragsänderungen immer **Betrag ändern** verwenden. **Bearbeiten** ist für Bezeichnung, Art, Rhythmus, Fälligkeit, Konto, Zuordnung und Aktivstatus vorgesehen. Eine bereits eingetragene zukünftige Betragsänderung wird in der Zeile der Einnahme mit Datum und neuer Höhe angekündigt.
 
 ## 7. Ausgaben
 
@@ -375,20 +385,73 @@ Alle eingegebenen Einnahmen, Ausgaben und Kredite werden unabhängig vom gewähl
 
 Die Arbeitsblätter besitzen Filter, fixierte Kopfzeilen sowie formatierte Datums- und Geldzellen. Dispoüberschreitungen werden farblich hervorgehoben.
 
-### 12.1 EnergyLab-Verbindung
+## 13. EnergyLab-Verbindung
 
-In den **Einstellungen** kann FinanceLab mit EnergyLab verbunden werden. Nach dem Speichern der Adresse und Aktivieren der automatischen Synchronisation übernimmt FinanceLab ausschließlich die vertraglich hinterlegten Strom-, Gas- und Wasserabschläge.
+FinanzLab kann die in EnergyLab gepflegten Strom-, Gas- und Wasserverträge automatisch als geplante Ausgaben übernehmen. Dabei wird ausschließlich der tatsächlich zu zahlende monatliche Abschlag synchronisiert.
 
-Übernommen werden:
+Nicht als FinanzLab-Ausgaben übernommen werden:
 
-- Abschlagshöhe und spätere Änderungen,
+- Verbrauchskosten,
+- Grundgebühr,
+- hochgerechnete Kosten,
+- Guthaben, Erstattung oder Nachzahlung,
+- Zählerstände und Verbrauchswerte.
+
+Diese Werte bleiben Bestandteil der Energieberechnung in EnergyLab. Dadurch wird der Energievertrag in FinanzLab nicht doppelt belastet.
+
+### 13.1 Verbindung einrichten
+
+1. In EnergyLab beim jeweiligen Vertrag unter **Zahlung** den Zahlungstag und den Namen des FinanzLab-Kontos hinterlegen.
+2. In FinanzLab **Einstellungen → EnergyLab verbinden** öffnen.
+3. Die EnergyLab-Adresse eintragen, beispielsweise `http://<SERVER-IP>:8090`.
+4. Ein **Konto für die Abschläge** als Rückfallkonto auswählen.
+5. Die automatische Synchronisation aktivieren.
+6. **Verbindung speichern** wählen.
+7. Mit **Jetzt synchronisieren** den ersten Lauf sofort ausführen.
+
+`http://energylab:8090` funktioniert, wenn beide Container in einem gemeinsamen Docker-Netzwerk liegen und der EnergyLab-Container dort `energylab` heißt. Bei getrennten Portainer-Stacks wird gewöhnlich die IP-Adresse des Docker-Hosts mit dem veröffentlichten EnergyLab-Port verwendet. `localhost` ist für einen anderen Container nicht geeignet.
+
+Der Status unter den Schaltflächen zeigt, wie viele Verträge geprüft, neu angelegt oder aktualisiert wurden. Bei aktivierter Verbindung erfolgt ein Abgleich direkt nach dem Start von FinanzLab und anschließend standardmäßig alle sechs Stunden.
+
+### 13.2 Welche Daten übernommen werden
+
+Für jeden Strom-, Gas- und Wasservertrag entsteht eine mit **EnergyLab** gekennzeichnete monatliche Ausgabe. Übernommen werden:
+
+- Energieart und Anbieter,
 - Vertragsbeginn und Vertragsende,
+- monatlicher Abschlag,
+- jede spätere Abschlagsänderung mit ihrem Gültigkeitsbeginn,
 - Zahlungstag,
-- das in EnergyLab beim Vertrag angegebene FinanceLab-Konto.
+- Kontoname.
 
-Verbrauchskosten, Grundgebühr, Hochrechnung und Abrechnungssaldo werden nicht als zusätzliche Ausgaben gebucht. Eine erneute Synchronisation aktualisiert die vorhandenen EnergyLab-Positionen und legt keine Duplikate an. Kann ein Kontoname nicht gefunden werden, verwendet FinanceLab das konfigurierte Standardkonto und zeigt einen Hinweis an.
+Vertragswechsel bleiben getrennte Positionen mit ihren jeweiligen Laufzeiten. Ändert sich beispielsweise der Abschlag ab Juli, bleiben die Fälligkeiten bis Juni mit dem alten Betrag erhalten; ab Juli wird der neue Betrag verwendet. Vergangene Zeiträume werden bei einer erneuten Synchronisation nicht mit dem aktuellen Betrag überschrieben.
 
-## 13. Datenprüfung
+Ein Zahlungstag von 29, 30 oder 31 wird in einem kürzeren Monat automatisch auf dessen letzten Kalendertag gesetzt. Beginnt ein Vertrag erst nach dem vorgesehenen Zahlungstag, liegt die erste Zahlung im folgenden passenden Monat.
+
+### 13.3 Konto und Zahlungstag korrigieren
+
+Stimmt der in EnergyLab hinterlegte Kontoname exakt mit einem FinanzLab-Konto überein, wird dieses Konto automatisch verwendet; Groß- und Kleinschreibung sind unerheblich. Andernfalls verwendet FinanzLab das in den Verbindungseinstellungen gewählte Rückfallkonto und zeigt nach der Synchronisation einen Hinweis.
+
+Unter **Ausgaben** besitzt jede synchronisierte Position die Schaltfläche **Konto & Zahlungstag**. Dort können Konto und Buchungstag für diesen Vertrag korrigiert werden. Die Änderung wird unmittelbar auf alle historischen und zukünftigen Versionen der Position angewendet.
+
+Beim nächsten Abgleich bleibt das manuell gewählte Konto erhalten, wenn EnergyLab keinen passenden Kontonamen liefert. Enthält der EnergyLab-Vertrag einen passenden Kontonamen, ist diese Angabe maßgeblich. Entsprechend bleibt ein manuell gewählter Zahlungstag erhalten, solange EnergyLab keinen gültigen Zahlungstag zwischen 1 und 31 liefert. Damit können Konto und Zahlungstag dauerhaft zentral in EnergyLab gepflegt oder ersatzweise in FinanzLab korrigiert werden.
+
+Abschlagsbetrag, Laufzeit und Anbieter werden weiterhin in EnergyLab gepflegt. Eine synchronisierte Position kann deshalb in FinanzLab nicht über den normalen Ausgabendialog geändert oder gelöscht werden.
+
+### 13.4 Bestehende manuelle Abschläge
+
+Vor der Verbindung bereits manuell angelegte Energieausgaben bleiben unverändert erhalten. FinanzLab löscht oder verbindet sie nicht automatisch, weil eine sichere Zuordnung ohne gemeinsame Vertragskennung nicht möglich ist.
+
+Nach der ersten Synchronisation:
+
+1. Betrag, Laufzeit, Konto und Zahlungstag der neuen EnergyLab-Position kontrollieren.
+2. In der Monatsvorschau prüfen, ob der Abschlag doppelt erscheint.
+3. Die bisherige manuelle Ausgabe gegebenenfalls deaktivieren, beenden oder löschen.
+4. Die mit **EnergyLab** gekennzeichnete Position beibehalten.
+
+Spätere Synchronisationen erkennen bereits übernommene Verträge und erzeugen keine weiteren Duplikate. Verträge, die EnergyLab nicht mehr liefert, werden in FinanzLab deaktiviert; abgeschlossene Vertragszeiträume bleiben historisch erhalten.
+
+## 14. Datenprüfung
 
 Unter **Einstellungen** zeigt die Datenprüfung Einnahmen und Ausgaben, die nicht oder nicht vollständig berücksichtigt werden können.
 
@@ -402,7 +465,7 @@ Typische Hinweise:
 
 Über **Bearbeiten** kann die betroffene Position direkt geöffnet werden.
 
-## 14. Datensicherung
+## 15. Datensicherung
 
 Alle Anwendungsdaten liegen im konfigurierten Docker-Volume unter `/data`. Die zentrale Datei ist:
 
@@ -426,7 +489,7 @@ docker compose start haushaltsplaner
 
 Das GitHub-Repository und die Release-Pakete enthalten keine persönlichen Haushaltsdaten.
 
-## 15. Aktualisierung
+## 16. Aktualisierung
 
 Vor einer Aktualisierung wird eine Sicherung der Datenbank empfohlen.
 
@@ -439,7 +502,9 @@ docker compose up --build -d
 
 Die Anwendung führt notwendige Schemaanpassungen beim Start aus. Das persistente Daten-Volume darf beim Update nicht gelöscht werden.
 
-## 16. Fehlerbehebung
+Bei Portainer wird das neue Image zuerst unter **Images → Import** eingespielt. Anschließend im bestehenden Stack die Zeile `image: finanzlab:1.0.0` setzen und den Stack neu bereitstellen. Der bestehende Stackname und das Volume müssen erhalten bleiben. Eine ausführliche Schrittfolge einschließlich Sicherung und Wiederherstellung steht in [INSTALLATION.md](INSTALLATION.md#11-aktualisieren-auf-eine-neue-version).
+
+## 17. Fehlerbehebung
 
 ### Anwendung ist nicht erreichbar
 
@@ -472,9 +537,24 @@ Prüfen:
 - Der Zeitraum darf höchstens 24 Monate umfassen.
 - Bei sehr großen Datenbeständen kann die Erstellung einige Sekunden dauern.
 
-## 17. Datenschutz und Funktionsumfang
+### EnergyLab ist nicht erreichbar
 
-Die Anwendung arbeitet lokal und benötigt für die Haushaltsplanung keine externe Finanzschnittstelle. Es gibt in dieser Version keinen Excel-, CSV-, PDF- oder Bankimport.
+- prüfen, ob die eingetragene Adresse aus dem FinanzLab-Container erreichbar ist;
+- bei getrennten Containern nicht `localhost` verwenden;
+- Server-IP, Port `8090`, Docker-Netzwerk und Firewall kontrollieren;
+- sicherstellen, dass EnergyLab unter `/api/personallab` Daten bereitstellt.
+
+### EnergyLab-Abschlag verwendet das falsche Konto oder Datum
+
+Unter **Ausgaben** bei der betreffenden, mit **EnergyLab** gekennzeichneten Position **Konto & Zahlungstag** öffnen. Die Korrektur bleibt beim nächsten Abgleich erhalten, wenn EnergyLab für das jeweilige Feld keinen eigenen gültigen Wert liefert. Für eine dauerhaft zentrale Vorgabe Kontoname und Zahlungstag direkt im EnergyLab-Vertrag anpassen.
+
+### EnergyLab-Abschlag erscheint doppelt
+
+Prüfen, ob zusätzlich noch eine ältere, manuell angelegte Energieausgabe aktiv ist. Diese nach der Kontrolle deaktivieren, beenden oder löschen. Die automatisch verwaltete Position ist am **EnergyLab**-Hinweis erkennbar.
+
+## 18. Datenschutz und Funktionsumfang
+
+Die Anwendung arbeitet lokal und benötigt keine Online-Banking- oder Cloud-Schnittstelle. Die optionale EnergyLab-Verbindung kommuniziert ausschließlich mit der vom Benutzer eingetragenen Adresse. Es gibt in dieser Version keinen Excel-, CSV-, PDF- oder Bankimport; der Excel-Export ist davon unabhängig verfügbar.
 
 Nicht enthalten sind insbesondere:
 
@@ -483,7 +563,7 @@ Nicht enthalten sind insbesondere:
 - Zins- oder Dispozinsberechnungen
 - Cloud-Synchronisierung persönlicher Haushaltsdaten
 
-## 18. Autor und Unterstützung
+## 19. Autor und Unterstützung
 
 Entwickelt von **Lrd.Tiberius**.
 
