@@ -1,6 +1,6 @@
 FROM python:3.13-slim
 LABEL org.opencontainers.image.title="FinanzLab" \
-      org.opencontainers.image.version="1.0.0"
+      org.opencontainers.image.version="1.0.2"
 RUN useradd --create-home --uid 10001 appuser
 WORKDIR /app
 COPY requirements.txt ./requirements.txt

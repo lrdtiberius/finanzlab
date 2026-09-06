@@ -2,7 +2,7 @@
 
 Diese Anleitung beschreibt die vollständige Installation und Ersteinrichtung des **Haushaltsplaners / FinanzLab**.
 
-Gültig für Version **1.0.0**.
+Gültig für Version **1.0.2**.
 
 Die Anwendung ist für den lokalen Betrieb vorgesehen und speichert ihre Daten ausschließlich lokal in einer SQLite-Datenbank im Docker-Volume beziehungsweise unter dem konfigurierten `DATA_DIR`.
 
@@ -223,7 +223,7 @@ finanzlab-image-v<VERSION>-amd64.tar.gz
 Beispiel:
 
 ```text
-finanzlab-image-v1.0.0-amd64.tar.gz
+finanzlab-image-v1.0.2-amd64.tar.gz
 ```
 
 Dieses Image wurde mit `docker save` erzeugt und anschließend komprimiert.
@@ -232,23 +232,23 @@ Dieses Image wurde mit `docker save` erzeugt und anschließend komprimiert.
 
 Auf der GitHub-Seite [Releases](https://github.com/lrdtiberius/finanzlab/releases/latest) den gewünschten Release öffnen und das Docker-Image herunterladen.
 
-Für Version 1.0.0 werden für die Portainer-Installation diese Dateien angeboten:
+Für Version 1.0.2 werden für die Portainer-Installation diese Dateien angeboten:
 
 ```text
-finanzlab-image-v1.0.0-amd64.tar.gz
-finanzlab-image-v1.0.0-amd64.tar.gz.sha256
+finanzlab-image-v1.0.2-amd64.tar.gz
+finanzlab-image-v1.0.2-amd64.tar.gz.sha256
 ```
 
-Die Datei `finanzlab-v1.0.0.tar.gz` enthält dagegen den Quellcode und ist **kein importierbares Docker-Image**.
+Die Datei `finanzlab-v1.0.2.tar.gz` enthält dagegen den Quellcode und ist **kein importierbares Docker-Image**.
 
 Optional kann die Prüfsumme vor dem Import kontrolliert werden:
 
 ```bash
 # Linux
-sha256sum finanzlab-image-v1.0.0-amd64.tar.gz
+sha256sum finanzlab-image-v1.0.2-amd64.tar.gz
 
 # macOS
-shasum -a 256 finanzlab-image-v1.0.0-amd64.tar.gz
+shasum -a 256 finanzlab-image-v1.0.2-amd64.tar.gz
 ```
 
 Der ausgegebene Wert muss mit dem Wert in der heruntergeladenen `.sha256`-Datei übereinstimmen.
@@ -260,13 +260,13 @@ Einige Portainer-Versionen akzeptieren die komprimierte `.tar.gz`-Datei direkt. 
 Linux/macOS:
 
 ```bash
-gunzip finanzlab-image-v1.0.0-amd64.tar.gz
+gunzip finanzlab-image-v1.0.2-amd64.tar.gz
 ```
 
 Danach liegt vor:
 
 ```text
-finanzlab-image-v1.0.0-amd64.tar
+finanzlab-image-v1.0.2-amd64.tar
 ```
 
 #### Schritt 3: Image in Portainer importieren
@@ -277,20 +277,20 @@ In Portainer:
 2. **Import** wählen.
 3. die Image-TAR auswählen.
 4. Import starten.
-5. anschließend kontrollieren, ob `finanzlab:1.0.0` in der Image-Liste vorhanden ist.
+5. anschließend kontrollieren, ob `finanzlab:1.0.2` in der Image-Liste vorhanden ist.
 
 > **Nicht verwechseln:** Ein Docker-Image-TAR gehört zu **Images → Import**. Ein Quell-/Build-TAR mit Dockerfile gehört dagegen zu **Images → Build image → Upload**.
 
-Die Seite **Build a new image** darf für `finanzlab-image-v1.0.0-amd64.tar` nicht verwendet werden. Dort sucht Portainer nach einem Dockerfile und meldet deshalb bei einer Image-TAR `Cannot locate Dockerfile`.
+Die Seite **Build a new image** darf für `finanzlab-image-v1.0.2-amd64.tar` nicht verwendet werden. Dort sucht Portainer nach einem Dockerfile und meldet deshalb bei einer Image-TAR `Cannot locate Dockerfile`.
 
 ### 5.2 Portainer-Stack für ein bereits vorhandenes Image
 
-Nachdem das Image `finanzlab:1.0.0` vorhanden ist, kann die fertige Datei **[`portainer-stack.yaml`](portainer-stack.yaml)** verwendet werden. Sie enthält folgenden Stack:
+Nachdem das Image `finanzlab:1.0.2` vorhanden ist, kann die fertige Datei **[`portainer-stack.yaml`](portainer-stack.yaml)** verwendet werden. Sie enthält folgenden Stack:
 
 ```yaml
 services:
   haushaltsplaner:
-    image: finanzlab:1.0.0
+    image: finanzlab:1.0.2
     container_name: finanzlab
     ports:
       - "8798:8798"
@@ -354,7 +354,7 @@ app/
 Beim Build:
 
 ```text
-Name: finanzlab:1.0.0
+Name: finanzlab:1.0.2
 Dockerfile path: Dockerfile
 ```
 
@@ -369,7 +369,7 @@ Nach erfolgreichem Build kann derselbe Stack aus Abschnitt 5.2 verwendet werden.
 Wer das Image ohne Docker Compose erzeugen möchte, kann direkt im geklonten Repository bauen.
 
 ```bash
-docker build -t finanzlab:1.0.0 .
+docker build -t finanzlab:1.0.2 .
 ```
 
 Danach kann ein Container manuell gestartet werden:
@@ -384,7 +384,7 @@ docker run -d \
   -e DATA_DIR=/data \
   -e PORT=8798 \
   -v finanzlab_data:/data \
-  finanzlab:1.0.0
+  finanzlab:1.0.2
 ```
 
 Status prüfen:
@@ -547,10 +547,10 @@ Nach der Ersteinrichtung sollte die Datenprüfung möglichst keine offenen Fehle
 
 ### 8.9 EnergyLab verbinden
 
-Dieser Schritt ist nur erforderlich, wenn die in EnergyLab gepflegten Strom-, Gas- und Wasserabschläge automatisch als Ausgaben übernommen werden sollen. EnergyLab muss dafür die FinanzLab-Schnittstelle `/api/personallab` bereitstellen.
+Dieser Schritt ist nur erforderlich, wenn die in EnergyLab gepflegten Strom-, Gas-, Wasser- und Abwasserzahlungen automatisch als Ausgaben übernommen werden sollen. EnergyLab muss dafür die FinanzLab-Schnittstelle `/api/personallab` bereitstellen.
 
 1. Zuerst in FinanzLab unter **Konten** alle Konten anlegen, von denen Energieabschläge abgebucht werden.
-2. In EnergyLab bei jedem Vertrag unter **Zahlung** den Zahlungstag und den FinanzLab-Kontonamen eintragen. Der Kontoname muss mit FinanzLab übereinstimmen; Groß- und Kleinschreibung spielen keine Rolle.
+2. In EnergyLab bei jedem Vertrag unter **Zahlung** Zahlungsrhythmus, Zahlungstag, optional **Erste Zahlung** und den FinanzLab-Kontonamen eintragen. Der Kontoname muss mit FinanzLab übereinstimmen; Groß- und Kleinschreibung spielen keine Rolle.
 3. In FinanzLab **Einstellungen → EnergyLab verbinden** öffnen.
 4. Die vom FinanzLab-Container erreichbare EnergyLab-Adresse eintragen.
 5. Ein Konto als Rückfallkonto auswählen.
@@ -566,7 +566,7 @@ Geeignete Adressen sind abhängig von der Docker-Konfiguration:
 
 Standardmäßig synchronisiert FinanzLab direkt nach dem Start und danach alle sechs Stunden. Das Intervall kann über `ENERGYLAB_SYNC_INTERVAL_SECONDS` geändert werden; Werte unter 300 Sekunden werden auf fünf Minuten begrenzt.
 
-Nach dem ersten Lauf unter **Ausgaben** und **Vorschau** prüfen, ob Betrag, Vertragszeitraum, Konto und Zahlungstag stimmen. Weitere Einzelheiten stehen im [Benutzerhandbuch](HANDBUCH.md#13-energylab-verbindung).
+Nach dem ersten Lauf unter **Ausgaben** und **Vorschau** prüfen, ob Betrag, Vertragszeitraum, Zahlungsrhythmus, erste Zahlung, Konto und Zahlungstag stimmen. Weitere Einzelheiten stehen im [Benutzerhandbuch](HANDBUCH.md#13-energylab-verbindung).
 
 ---
 
@@ -662,7 +662,7 @@ Das vorhandene Volume `finanzlab_data` wird erneut eingebunden. Die Nutzdaten bl
 ### 11.2 Portainer mit neuem fertigem Image
 
 1. neues Image importieren,
-2. prüfen, ob das neue Tag vorhanden ist, zum Beispiel `finanzlab:1.0.0`,
+2. prüfen, ob das neue Tag vorhanden ist, zum Beispiel `finanzlab:1.0.2`,
 3. den **bestehenden Stack unter demselben Namen** öffnen,
 4. im Stack die `image:`-Zeile auf die neue Version ändern,
 5. bei einem lokal importierten Image eine Portainer-Option zum erneuten Abrufen des Images nicht aktivieren,
@@ -691,19 +691,19 @@ Notwendige Schemaerweiterungen werden von der Anwendung beim Start automatisch d
 
 Das Docker-Volume sollte bei einem normalen Versionswechsel nicht gelöscht oder neu angelegt werden.
 
-### 11.3 Besonderheiten beim Update auf 1.0.0
+### 11.3 Besonderheiten beim Update auf 1.0.2
 
-Beim ersten Start von 1.0.0 erweitert FinanzLab die vorhandene Datenbank automatisch. Bestehende Haushalte, Konten, Kontostände, Einnahmen, Ausgaben, Kredite und Umbuchungen bleiben erhalten.
+Beim ersten Start von 1.0.2 erweitert FinanzLab die vorhandene Datenbank automatisch. Bestehende Haushalte, Konten, Kontostände, Einnahmen, Ausgaben, Kredite und Umbuchungen bleiben erhalten.
 
 Nach dem Update:
 
-1. im Fußbereich **Version 1.0.0** kontrollieren,
+1. im Fußbereich **Version 1.0.2** kontrollieren,
 2. unter **Einnahmen** die neuen Bereiche **Aktiv** und **Archiv** prüfen,
 3. unter **Einstellungen** die EnergyLab-Verbindung einrichten,
 4. einmal manuell synchronisieren,
-5. die importierten Abschläge in **Ausgaben** und **Vorschau** kontrollieren.
+5. die importierten Zahlungen in **Ausgaben** und **Vorschau** kontrollieren.
 
-Bereits manuell in FinanzLab angelegte Strom-, Gas- oder Wasserabschläge werden absichtlich nicht automatisch gelöscht oder mit EnergyLab-Positionen zusammengeführt. Dadurch gehen keine eigenen Daten verloren. Falls derselbe Abschlag nach der ersten Synchronisation doppelt erscheint, die bisherige manuelle Position nach der Kontrolle deaktivieren, beenden oder löschen. Die mit **EnergyLab** gekennzeichnete Position bleibt bestehen.
+Bereits manuell in FinanzLab angelegte Strom-, Gas-, Wasser- oder Abwasserzahlungen werden absichtlich nicht automatisch gelöscht oder mit EnergyLab-Positionen zusammengeführt. Dadurch gehen keine eigenen Daten verloren. Falls dieselbe Zahlung nach der ersten Synchronisation doppelt erscheint, die bisherige manuelle Position nach der Kontrolle deaktivieren, beenden oder löschen. Die mit **EnergyLab** gekennzeichnete Position bleibt bestehen.
 
 ---
 
@@ -840,7 +840,7 @@ Bei einem selbst gebauten Image sicherstellen, dass wirklich das neue Tag verwen
 Beispiel:
 
 ```text
-finanzlab:1.0.0
+finanzlab:1.0.2
 ```
 
 In Portainer anschließend den Stack ausdrücklich neu deployen. Nur das Erstellen eines neuen Images ersetzt keinen bereits laufenden Container automatisch.
@@ -900,7 +900,7 @@ Danach sind die Daten aus `finanzlab_data` gelöscht.
 Optional kann das Image entfernt werden:
 
 ```bash
-docker image rm finanzlab:1.0.0
+docker image rm finanzlab:1.0.2
 ```
 
 ### Portainer

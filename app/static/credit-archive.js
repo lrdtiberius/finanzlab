@@ -1,5 +1,5 @@
 
-// Credit archive extension (v1.0.0)
+// Credit archive extension (v1.0.2)
 creditById=function(id){return [...(state.credits||[]),...(state.archivedCredits||[])].find(credit=>credit.id===id)};
 creditName=function(id){return creditById(id)?.name||'Kein Kredit'};
 

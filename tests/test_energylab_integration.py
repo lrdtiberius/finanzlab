@@ -97,6 +97,44 @@ class EnergyLabIntegrationTests(unittest.TestCase):
         self.assertEqual(25, item["payment_day"])
         self.assertEqual("2025-01-25", item["versions"][0]["due_date"])
 
+    def test_wastewater_quarterly_payments_keep_their_cadence(self):
+        payload = self.payload()
+        payload["segments"].append({"id": "wastewater", "contracts": [{
+            "id": 12, "provider": "Abwasserverband", "validFrom": "2025-01-01",
+            "validTo": "2025-12-31", "paymentAmount": 90,
+            "paymentRecurrence": "quarterly", "paymentDay": 15,
+            "advanceChanges": [{"validFrom": "2025-02-01", "advanceMonthly": 120}],
+        }]})
+        self.repo.sync_energylab_contracts(self.household["id"], payload)
+        expenses = self.repo.list_cash_flows(self.household["id"], "expense", "2025-04-15")
+        wastewater = next(item for item in expenses if "Abwasser" in item["name"])
+        self.assertEqual("quarterly", wastewater["recurrence"])
+        self.assertEqual(12000, wastewater["amount_cents"])
+        january = self.repo.monthly_preview(self.household["id"], "2025-01", [self.account["id"]], [])
+        february = self.repo.monthly_preview(self.household["id"], "2025-02", [self.account["id"]], [])
+        april = self.repo.monthly_preview(self.household["id"], "2025-04", [self.account["id"]], [])
+        self.assertEqual(1, len([m for m in january["movements"] if "Abwasser" in m["label"]]))
+        self.assertEqual(0, len([m for m in february["movements"] if "Abwasser" in m["label"]]))
+        payment = next(m for m in april["movements"] if "Abwasser" in m["label"])
+        self.assertEqual(-12000, payment["amount_cents"])
+        self.assertEqual("2025-04-15", payment["date"])
+
+    def test_explicit_first_payment_date_is_used_instead_of_calculated_date(self):
+        payload = self.payload()
+        payload["segments"].append({"id": "wastewater", "contracts": [{
+            "id": 13, "provider": "Abwasserverband", "validFrom": "2025-01-01",
+            "validTo": "2025-12-31", "paymentAmount": 90,
+            "paymentRecurrence": "quarterly", "paymentDay": 15,
+            "firstPaymentDate": "2025-02-15", "advanceChanges": [],
+        }]})
+        self.repo.sync_energylab_contracts(self.household["id"], payload)
+        january = self.repo.monthly_preview(self.household["id"], "2025-01", [self.account["id"]], [])
+        february = self.repo.monthly_preview(self.household["id"], "2025-02", [self.account["id"]], [])
+        may = self.repo.monthly_preview(self.household["id"], "2025-05", [self.account["id"]], [])
+        self.assertFalse(any("Abwasser" in movement["label"] for movement in january["movements"]))
+        self.assertEqual("2025-02-15", next(m for m in february["movements"] if "Abwasser" in m["label"])["date"])
+        self.assertEqual("2025-05-15", next(m for m in may["movements"] if "Abwasser" in m["label"])["date"])
+
 
 if __name__ == "__main__":
     unittest.main()

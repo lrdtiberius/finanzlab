@@ -9,6 +9,7 @@ from threading import RLock
 from uuid import uuid4
 
 from app.domain.recurrence import (
+    RECURRENCE_MONTHS,
     add_months_anchored,
     last_occurrence_date,
     last_occurrence_on_or_before,
@@ -136,6 +137,18 @@ CREATE INDEX IF NOT EXISTS account_reconciliations_active ON account_reconciliat
 
 def uid(): return str(uuid4())
 def timestamp(): return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+def energylab_first_due(start_date,payment_day,recurrence,active_from=None,explicit_first=None):
+    """Find the first effective due date without changing the contract cadence."""
+    interval=RECURRENCE_MONTHS.get(recurrence,1)
+    if explicit_first:
+        due=explicit_first
+    else:
+        due=date(start_date.year,start_date.month,min(payment_day,monthrange(start_date.year,start_date.month)[1]))
+        if due<start_date: due=add_months_anchored(due,interval)
+    active=active_from or start_date
+    while due<active: due=add_months_anchored(due,interval)
+    return due
 
 def as_of_date(value=None):
     value=str(value or date.today().isoformat())
@@ -638,7 +651,7 @@ class Repository:
         if not isinstance(payload,dict) or payload.get("source",{}).get("app") not in ("EnergieLab","EnergyLab"): raise ValueError("Die Gegenstelle liefert keine gültigen EnergyLab-Daten.")
         segments=payload.get("segments")
         if not isinstance(segments,list): raise ValueError("Die EnergyLab-Vertragsdaten fehlen.")
-        labels={"electricity":"Strom","gas":"Gas","water":"Wasser"}; seen=set(); created=0; updated=0; unmatched_accounts=[]
+        labels={"electricity":"Strom","gas":"Gas","water":"Wasser","wastewater":"Abwasser"}; seen=set(); created=0; updated=0; unmatched_accounts=[]
         with self.lock,self.connect() as con:
             config=con.execute("SELECT * FROM energylab_integrations WHERE household_id=?",(hid,)).fetchone()
             household=con.execute("SELECT * FROM households WHERE id=?",(hid,)).fetchone()
@@ -657,6 +670,11 @@ class Repository:
                         if end: date.fromisoformat(end)
                     except (TypeError,ValueError): continue
                     if not remote_id or (end and end<start): continue
+                    recurrence=str(contract.get("paymentRecurrence") or "monthly")
+                    if recurrence not in RECURRENCE_MONTHS: recurrence="monthly"
+                    try: explicit_first=date.fromisoformat(str(contract.get("firstPaymentDate") or ""))
+                    except ValueError: explicit_first=None
+                    if explicit_first and (explicit_first<start_date or (end and explicit_first>date.fromisoformat(end))): explicit_first=None
                     provider=str(contract.get("provider") or "").strip(); name=f"EnergyLab · {labels[segment_id]}"+(f" · {provider}" if provider else "")
                     source_key=f"energylab:advance:{segment_id}:{remote_id}"; seen.add(source_key)
                     override=con.execute("SELECT account_id,payment_day FROM energylab_account_overrides WHERE household_id=? AND source_key=?",(hid,source_key)).fetchone()
@@ -675,7 +693,9 @@ class Repository:
                         con.execute("""INSERT INTO cash_flows(id,household_id,kind,name,owner_scope,owner_person_id,account_id,source_key,category)
                             VALUES(?,?,?,?,?,?,?,?,?)""",(flow_id,hid,"expense",name,owner_scope,owner_person_id,flow_account_id,source_key,"energy"))
                     con.execute("UPDATE cash_flows SET name=?,owner_scope=?,owner_person_id=?,account_id=?,category='energy' WHERE id=?",(name,owner_scope,owner_person_id,flow_account_id,flow_id))
-                    values={start[:7]:(start,self._energylab_cents(contract.get("advanceMonthly")))}
+                    payment_amount=contract.get("paymentAmount")
+                    if payment_amount is None: payment_amount=contract.get("advanceMonthly")
+                    values={start[:7]:(start,self._energylab_cents(payment_amount))}
                     for change in contract.get("advanceChanges") or []:
                         change_from=str(change.get("validFrom") or "")
                         try: change_date=date.fromisoformat(change_from)
@@ -685,15 +705,12 @@ class Repository:
                         values[effective[:7]]=(effective,self._energylab_cents(change.get("advanceMonthly")))
                     schedule=sorted(values.values()); con.execute("DELETE FROM cash_flow_versions WHERE cash_flow_id=?",(flow_id,)); due_day=payment_day or start_date.day
                     for index,(effective,amount) in enumerate(schedule):
-                        effective_date=date.fromisoformat(effective); anchor=max(effective_date,start_date) if index==0 else effective_date
-                        due_date=date(anchor.year,anchor.month,min(due_day,monthrange(anchor.year,anchor.month)[1]))
-                        if payment_day and due_date<anchor:
-                            next_month=add_months_anchored(date(anchor.year,anchor.month,1),1)
-                            due_date=date(next_month.year,next_month.month,min(due_day,monthrange(next_month.year,next_month.month)[1]))
-                        due=start if index==0 and not payment_day else due_date.isoformat()
+                        effective_date=date.fromisoformat(effective)
+                        first_due=energylab_first_due(start_date,due_day,recurrence,effective_date,explicit_first)
+                        due=start if index==0 and not payment_day else first_due.isoformat()
                         version_to=schedule[index+1][0] if index+1<len(schedule) else None
                         con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,owner_scope,owner_person_id,account_id,credit_id,credit_reduction_cents)
-                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,amount,1 if amount>0 else 0,effective,version_to,start,end,due,f"EnergyLab-Vertrag {remote_id}",None,"monthly",name,"energy",owner_scope,owner_person_id,flow_account_id,None,0))
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,amount,1 if amount>0 else 0,effective,version_to,start,end,due,f"EnergyLab-Vertrag {remote_id}",None,recurrence,name,"energy",owner_scope,owner_person_id,flow_account_id,None,0))
             stale=[row for row in con.execute("SELECT id,source_key FROM cash_flows WHERE household_id=? AND source_key LIKE 'energylab:advance:%'",(hid,)).fetchall() if row["source_key"] not in seen]
             for row in stale: con.execute("UPDATE cash_flow_versions SET active=0 WHERE cash_flow_id=?",(row["id"],))
         return {"created":created,"updated":updated,"deactivated":len(stale),"contracts":len(seen),"unmatched_accounts":unmatched_accounts}
@@ -713,14 +730,12 @@ class Repository:
                 account_id=excluded.account_id,payment_day=excluded.payment_day,updated_at=CURRENT_TIMESTAMP""",(hid,flow["source_key"],account_id,payment_day))
             con.execute("UPDATE cash_flows SET account_id=? WHERE id=?",(account_id,flow_id))
             con.execute("UPDATE cash_flow_versions SET account_id=? WHERE cash_flow_id=?",(account_id,flow_id))
-            versions=con.execute("SELECT id,version_from,stream_start FROM cash_flow_versions WHERE cash_flow_id=? ORDER BY version_from,rowid",(flow_id,)).fetchall()
+            versions=con.execute("SELECT id,version_from,stream_start,due_date,recurrence FROM cash_flow_versions WHERE cash_flow_id=? ORDER BY version_from,rowid",(flow_id,)).fetchall()
+            original_first=date.fromisoformat(versions[0]["due_date"]) if versions and versions[0]["due_date"] else None
+            adjusted_first=(date(original_first.year,original_first.month,min(payment_day,monthrange(original_first.year,original_first.month)[1])) if original_first else None)
             for version in versions:
                 effective_date=date.fromisoformat(version["version_from"]); stream_start=date.fromisoformat(version["stream_start"]) if version["stream_start"] else effective_date
-                anchor=max(effective_date,stream_start)
-                due_date=date(anchor.year,anchor.month,min(payment_day,monthrange(anchor.year,anchor.month)[1]))
-                if due_date<anchor:
-                    next_month=add_months_anchored(date(anchor.year,anchor.month,1),1)
-                    due_date=date(next_month.year,next_month.month,min(payment_day,monthrange(next_month.year,next_month.month)[1]))
+                due_date=energylab_first_due(stream_start,payment_day,version["recurrence"] or "monthly",effective_date,adjusted_first)
                 con.execute("UPDATE cash_flow_versions SET due_date=? WHERE id=?",(due_date.isoformat(),version["id"]))
         return next(item for item in self.list_cash_flows(hid,"expense",date.today().isoformat()) if item["id"]==flow_id)
 

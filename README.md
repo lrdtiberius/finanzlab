@@ -44,7 +44,7 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - taggenaue Monatsvorschau für Konten sowie separat auswählbare Kreditsimulation
 - dauerhaft gespeicherter Erledigt-Status je konkreter Bewegung; erledigte Vorgänge bleiben sichtbar und werden nicht erneut simuliert
 - strukturierter Excel-Export mit Monats-/Tagesvorschau, Krediten, Tilgungshistorie, Bewegungen und sämtlichen Eingaben
-- automatische EnergyLab-Synchronisation der vertraglichen Strom-, Gas- und Wasserabschläge einschließlich Laufzeit, Änderung, Konto und Zahlungstag
+- automatische EnergyLab-Synchronisation der vertraglichen Strom-, Gas-, Wasser- und Abwasserzahlungen einschließlich Laufzeit, Zahlungsrhythmus, Änderung, Konto und Zahlungstag
 - Warnung bei Überschreitung eines hinterlegten Disporahmens
 - Datenprüfung für nicht berücksichtigte oder unvollständige Positionen
 

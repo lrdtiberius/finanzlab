@@ -1,6 +1,6 @@
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **1.0.0**
+Gültig für Version **1.0.2**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
@@ -74,13 +74,13 @@ Für eine Portainer-Installation wird das fertig gebaute Docker-Image aus dem Gi
 
 Vorgehen:
 
-1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v1.0.0-amd64.tar.gz` importieren,
+1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v1.0.2-amd64.tar.gz` importieren,
 2. unter **Stacks → Add stack** einen Stack mit dem Inhalt aus [`portainer-stack.yaml`](portainer-stack.yaml) anlegen,
 3. den Stack bereitstellen,
 4. den Zustand des Containers `finanzlab` kontrollieren,
 5. Port `8798` im Browser öffnen.
 
-Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:1.0.0` für `linux/amd64`. Das Quellarchiv `finanzlab-v1.0.0.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
+Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:1.0.2` für `linux/amd64`. Das Quellarchiv `finanzlab-v1.0.2.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
 
 Das Volume wird im Container unter `/data` eingebunden. Dort liegt insbesondere die Datenbankdatei `planner.db`.
 
@@ -387,7 +387,7 @@ Die Arbeitsblätter besitzen Filter, fixierte Kopfzeilen sowie formatierte Datum
 
 ## 13. EnergyLab-Verbindung
 
-FinanzLab kann die in EnergyLab gepflegten Strom-, Gas- und Wasserverträge automatisch als geplante Ausgaben übernehmen. Dabei wird ausschließlich der tatsächlich zu zahlende monatliche Abschlag synchronisiert.
+FinanzLab kann die in EnergyLab gepflegten Strom-, Gas-, Wasser- und Abwasserverträge automatisch als geplante Ausgaben übernehmen. Dabei werden ausschließlich die tatsächlich geplanten Zahlungen synchronisiert.
 
 Nicht als FinanzLab-Ausgaben übernommen werden:
 
@@ -401,7 +401,7 @@ Diese Werte bleiben Bestandteil der Energieberechnung in EnergyLab. Dadurch wird
 
 ### 13.1 Verbindung einrichten
 
-1. In EnergyLab beim jeweiligen Vertrag unter **Zahlung** den Zahlungstag und den Namen des FinanzLab-Kontos hinterlegen.
+1. In EnergyLab beim jeweiligen Vertrag unter **Zahlung** Zahlungsrhythmus, Zahlungstag, optional **Erste Zahlung** und den Namen des FinanzLab-Kontos hinterlegen.
 2. In FinanzLab **Einstellungen → EnergyLab verbinden** öffnen.
 3. Die EnergyLab-Adresse eintragen, beispielsweise `http://<SERVER-IP>:8090`.
 4. Ein **Konto für die Abschläge** als Rückfallkonto auswählen.
@@ -415,22 +415,24 @@ Der Status unter den Schaltflächen zeigt, wie viele Verträge geprüft, neu ang
 
 ### 13.2 Welche Daten übernommen werden
 
-Für jeden Strom-, Gas- und Wasservertrag entsteht eine mit **EnergyLab** gekennzeichnete monatliche Ausgabe. Übernommen werden:
+Für jeden Strom-, Gas-, Wasser- und Abwasservertrag entsteht eine mit **EnergyLab** gekennzeichnete Ausgabe. Übernommen werden:
 
 - Energieart und Anbieter,
 - Vertragsbeginn und Vertragsende,
-- monatlicher Abschlag,
+- Betrag je Zahlung,
+- Zahlungsrhythmus (monatlich, quartalsweise, halbjährlich oder jährlich),
+- optionales Datum der ersten Zahlung als Rhythmusanker,
 - jede spätere Abschlagsänderung mit ihrem Gültigkeitsbeginn,
 - Zahlungstag,
 - Kontoname.
 
 Vertragswechsel bleiben getrennte Positionen mit ihren jeweiligen Laufzeiten. Ändert sich beispielsweise der Abschlag ab Juli, bleiben die Fälligkeiten bis Juni mit dem alten Betrag erhalten; ab Juli wird der neue Betrag verwendet. Vergangene Zeiträume werden bei einer erneuten Synchronisation nicht mit dem aktuellen Betrag überschrieben.
 
-Ein Zahlungstag von 29, 30 oder 31 wird in einem kürzeren Monat automatisch auf dessen letzten Kalendertag gesetzt. Beginnt ein Vertrag erst nach dem vorgesehenen Zahlungstag, liegt die erste Zahlung im folgenden passenden Monat.
+Ein Zahlungstag von 29, 30 oder 31 wird in einem kürzeren Monat automatisch auf dessen letzten Kalendertag gesetzt. Beginnt ein Vertrag erst nach dem vorgesehenen Zahlungstag, liegt die erste Zahlung im folgenden passenden Monat. Ist in EnergyLab eine erste Zahlung eingetragen, beginnt der Rhythmus exakt mit diesem Datum.
 
 ### 13.3 Konto und Zahlungstag korrigieren
 
-Stimmt der in EnergyLab hinterlegte Kontoname exakt mit einem FinanzLab-Konto überein, wird dieses Konto automatisch verwendet; Groß- und Kleinschreibung sind unerheblich. Andernfalls verwendet FinanzLab das in den Verbindungseinstellungen gewählte Rückfallkonto und zeigt nach der Synchronisation einen Hinweis.
+Stimmt der in EnergyLab hinterlegte Kontoname exakt mit einem FinanzLab-Konto überein, wird dieses Konto automatisch verwendet; Groß- und Kleinschreibung sind unerheblich. Andernfalls verwendet FinanzLab das in den Verbindungseinstellungen gewählte Rückfallkonto und zeigt nach der Synchronisation einen Hinweis. Zahlungsrhythmus und ein ausdrücklich gesetztes Datum **Erste Zahlung** bestimmen gemeinsam die tatsächlichen Fälligkeiten.
 
 Unter **Ausgaben** besitzt jede synchronisierte Position die Schaltfläche **Konto & Zahlungstag**. Dort können Konto und Buchungstag für diesen Vertrag korrigiert werden. Die Änderung wird unmittelbar auf alle historischen und zukünftigen Versionen der Position angewendet.
 
@@ -502,7 +504,7 @@ docker compose up --build -d
 
 Die Anwendung führt notwendige Schemaanpassungen beim Start aus. Das persistente Daten-Volume darf beim Update nicht gelöscht werden.
 
-Bei Portainer wird das neue Image zuerst unter **Images → Import** eingespielt. Anschließend im bestehenden Stack die Zeile `image: finanzlab:1.0.0` setzen und den Stack neu bereitstellen. Der bestehende Stackname und das Volume müssen erhalten bleiben. Eine ausführliche Schrittfolge einschließlich Sicherung und Wiederherstellung steht in [INSTALLATION.md](INSTALLATION.md#11-aktualisieren-auf-eine-neue-version).
+Bei Portainer wird das neue Image zuerst unter **Images → Import** eingespielt. Anschließend im bestehenden Stack die Zeile `image: finanzlab:1.0.2` setzen und den Stack neu bereitstellen. Der bestehende Stackname und das Volume müssen erhalten bleiben. Eine ausführliche Schrittfolge einschließlich Sicherung und Wiederherstellung steht in [INSTALLATION.md](INSTALLATION.md#11-aktualisieren-auf-eine-neue-version).
 
 ## 17. Fehlerbehebung
 

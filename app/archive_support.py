@@ -196,7 +196,7 @@ def install_web_archive_support(Handler):
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "1.0.0"})
+                return self.json_response({"status": "ok", "version": "1.0.2"})
             if path == "/api/credits":
                 hid = (query.get("household_id") or [""])[0]
                 as_of = (query.get("as_of") or [None])[0]

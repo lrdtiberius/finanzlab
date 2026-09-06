@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.2
+
+- ein in EnergyLab ausdrücklich gesetztes Datum „Erste Zahlung“ wird als tatsächlicher Beginn des Zahlungsrhythmus übernommen
+
+## 1.0.1
+
+- EnergyLab-Abwasserverträge werden als eigene Ausgaben übernommen
+- monatliche, quartalsweise, halbjährliche und jährliche Zahlungsrhythmen aus EnergyLab bleiben bei der Synchronisation erhalten
+- Betragsänderungen behalten auch bei nicht monatlichen Zahlungen den ursprünglichen Vertragstakt bei
+
 ## 1.0.0
 
 - EnergyLab-Verträge für Strom, Gas und Wasser werden als monatliche Abschläge übernommen, ohne Verbrauchskosten, Grundgebühr, Hochrechnung oder Saldo doppelt zu buchen

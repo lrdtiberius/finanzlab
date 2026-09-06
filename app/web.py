@@ -19,7 +19,7 @@ ENERGYLAB = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Haushaltsplaner/1.0.0"
+    server_version = "Haushaltsplaner/1.0.2"
 
     def json_response(self, data, status=HTTPStatus.OK):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -50,7 +50,7 @@ class Handler(BaseHTTPRequestHandler):
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "1.0.0"})
+                return self.json_response({"status": "ok", "version": "1.0.2"})
             if path == "/api/households":
                 return self.json_response({"items": REPOSITORY.list_households()})
             if path == "/api/dashboard":
