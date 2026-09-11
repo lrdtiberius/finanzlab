@@ -11,6 +11,14 @@ def _as_date(value):
     return date.fromisoformat(str(value))
 
 
+def previous_friday_for_weekend(day):
+    """Move Saturday and Sunday dates to the preceding Friday."""
+    day=_as_date(day)
+    if day.weekday()==5: return day-timedelta(days=1)
+    if day.weekday()==6: return day-timedelta(days=2)
+    return day
+
+
 def add_months_anchored(first_due_date,offset):
     first=_as_date(first_due_date)
     month_index=first.month-1+int(offset)
@@ -54,7 +62,7 @@ def last_occurrence_on_or_before(first_due_date,recurrence,end_date):
 
 def recurrence_dates(first_due_date,recurrence,start_exclusive,end_inclusive,
                      active_from=None,active_to_exclusive=None,stream_start=None,stream_end=None,
-                     max_occurrences=None):
+                     max_occurrences=None,move_weekends_to_friday=False):
     """Materialize contractual due dates in a bounded interval.
 
     The cadence always remains anchored to the original due date.  Version and
@@ -68,22 +76,29 @@ def recurrence_dates(first_due_date,recurrence,start_exclusive,end_inclusive,
     stream_from=_as_date(stream_start) if stream_start else valid_from
     stream_until=_as_date(stream_end) if stream_end else None
 
-    def effective(day):
-        return (start<day<=end and day>=valid_from and (valid_to is None or day<valid_to)
-                and day>=stream_from and (stream_until is None or day<=stream_until))
+    def effective(contractual_day):
+        effective_day=(previous_friday_for_weekend(contractual_day)
+                       if move_weekends_to_friday else contractual_day)
+        return (effective_day if start<effective_day<=end
+                and contractual_day>=valid_from and (valid_to is None or contractual_day<valid_to)
+                and contractual_day>=stream_from and (stream_until is None or contractual_day<=stream_until)
+                else None)
 
     occurrence_limit=None
     if max_occurrences not in (None,""):
         occurrence_limit=int(max_occurrences)
         if occurrence_limit<1: return []
-    if recurrence=="once": return [first] if effective(first) and occurrence_limit!=0 else []
+    if recurrence=="once":
+        due=effective(first)
+        return [due] if due is not None and occurrence_limit!=0 else []
     if recurrence=="weekly":
         result=[]; occurrence_number=0
         while True:
             if occurrence_limit is not None and occurrence_number>=occurrence_limit: break
             due=first+timedelta(days=occurrence_number*WEEKLY_DAYS)
-            if due>end: break
-            if effective(due): result.append(due)
+            if due>end+timedelta(days=2): break
+            effective_due=effective(due)
+            if effective_due is not None: result.append(effective_due)
             occurrence_number+=1
         return result
     months=RECURRENCE_MONTHS.get(recurrence)
@@ -92,7 +107,8 @@ def recurrence_dates(first_due_date,recurrence,start_exclusive,end_inclusive,
     while True:
         if occurrence_limit is not None and occurrence_number>=occurrence_limit: break
         due=add_months_anchored(first,offset)
-        if due>end: break
-        if effective(due): result.append(due)
+        if due>end+timedelta(days=2): break
+        effective_due=effective(due)
+        if effective_due is not None: result.append(effective_due)
         offset+=months; occurrence_number+=1
     return result

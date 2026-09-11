@@ -8,9 +8,51 @@ from zipfile import ZipFile
 
 from app.application.excel_export import build_forecast_workbook
 from app.infrastructure.repository import Repository
+from app.domain.recurrence import recurrence_dates
 
 
 class PlanningModelV011Tests(unittest.TestCase):
+    def test_cash_flow_weekend_dates_move_to_previous_friday_without_drifting(self):
+        dates=recurrence_dates(
+            "2026-08-01", "monthly", "2026-07-01", "2026-11-30",
+            move_weekends_to_friday=True,
+        )
+        self.assertEqual(
+            [date(2026,7,31),date(2026,9,1),date(2026,10,1),date(2026,10,30)],
+            dates,
+        )
+
+    def test_weekend_adjustment_includes_saturday_and_sunday_on_prior_friday(self):
+        saturday=recurrence_dates(
+            "2026-08-15", "once", "2026-08-13", "2026-08-14",
+            move_weekends_to_friday=True,
+        )
+        sunday=recurrence_dates(
+            "2026-08-16", "once", "2026-08-13", "2026-08-14",
+            move_weekends_to_friday=True,
+        )
+        self.assertEqual([date(2026,8,14)],saturday)
+        self.assertEqual([date(2026,8,14)],sunday)
+
+    def test_planned_income_and_expense_use_the_previous_friday(self):
+        self.repository.update_account(
+            self.giro_id,self.account_update(anchor_date="2026-08-13")
+        )
+        income=self.repository.create_cash_flow(self.flow(
+            kind="income",name="Samstagseinnahme",category="other_income",
+            due_date="2026-08-15",
+        ))
+        expense=self.repository.create_cash_flow(self.flow(
+            name="Sonntagsausgabe",due_date="2026-08-16",
+        ))
+
+        dashboard=self.repository.dashboard(self.household_id,"2026-08-14")
+        preview=self.repository.monthly_preview(self.household_id,"2026-08",[self.giro_id])
+        events={item["source_id"]:item for item in preview["movements"]}
+        self.assertEqual("2026-08-14",events[income["id"]]["date"])
+        self.assertEqual("2026-08-14",events[expense["id"]]["date"])
+        self.assertEqual(100_000,dashboard["metrics"]["balance_cents"])
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.repository = Repository(Path(self.temp_dir.name) / "planner.db")
@@ -67,14 +109,15 @@ class PlanningModelV011Tests(unittest.TestCase):
         return payload
 
     def test_same_day_checkbox_controls_projection_and_history_is_retained(self):
-        self.repository.create_cash_flow(self.flow())
-        open_day = self.repository.dashboard(self.household_id, "2026-08-15")
+        self.repository.create_cash_flow(self.flow(due_date="2026-08-17"))
+        self.repository.update_account(self.giro_id,self.account_update(anchor_date="2026-08-17"))
+        open_day = self.repository.dashboard(self.household_id, "2026-08-17")
         self.assertEqual(90_000, open_day["household"]["accounts"][0]["projected_balance_cents"])
 
         self.repository.update_account(
-            self.giro_id, self.account_update(bookings_applied=True)
+            self.giro_id, self.account_update(anchor_date="2026-08-17",bookings_applied=True)
         )
-        closed_day = self.repository.dashboard(self.household_id, "2026-08-15")
+        closed_day = self.repository.dashboard(self.household_id, "2026-08-17")
         self.assertEqual(100_000, closed_day["household"]["accounts"][0]["projected_balance_cents"])
 
         self.repository.update_account(
@@ -88,8 +131,8 @@ class PlanningModelV011Tests(unittest.TestCase):
         history = self.repository.list_balance_history(
             self.household_id, self.giro_id
         )
-        self.assertEqual(["2026-08-16", "2026-08-15"], [row["anchor_date"] for row in history])
-        self.assertEqual([0, 1], [row["bookings_applied"] for row in history])
+        self.assertEqual(["2026-08-17", "2026-08-16", "2026-08-15"], [row["anchor_date"] for row in history])
+        self.assertEqual([1, 0, 0], [row["bookings_applied"] for row in history])
 
     def test_account_can_be_deleted_without_deleting_linked_cash_flows(self):
         detail = self.repository.create_account(
@@ -167,36 +210,36 @@ class PlanningModelV011Tests(unittest.TestCase):
         self.assertTrue(recreated["accounts"][0]["is_default"])
 
     def test_balance_and_same_day_checkbox_survive_a_repository_restart(self):
-        self.repository.create_cash_flow(self.flow())
+        self.repository.create_cash_flow(self.flow(due_date="2026-08-17"))
         self.repository.update_account(
             self.giro_id,
-            self.account_update(balance_cents=123_456, bookings_applied=True),
+            self.account_update(balance_cents=123_456, anchor_date="2026-08-17", bookings_applied=True),
         )
 
         reopened = Repository(Path(self.temp_dir.name) / "planner.db")
         history = reopened.list_balance_history(self.household_id, self.giro_id)
-        same_day = [row for row in history if row["anchor_date"] == "2026-08-15"]
+        same_day = [row for row in history if row["anchor_date"] == "2026-08-17"]
         self.assertEqual(1, len(same_day))
         self.assertEqual(123_456, same_day[0]["balance_cents"])
         self.assertEqual(1, same_day[0]["bookings_applied"])
         self.assertEqual(
             123_456,
-            reopened.dashboard(self.household_id, "2026-08-15")["household"]["accounts"][0]["projected_balance_cents"],
+            reopened.dashboard(self.household_id, "2026-08-17")["household"]["accounts"][0]["projected_balance_cents"],
         )
 
         reopened.update_account(
             self.giro_id,
-            self.account_update(balance_cents=130_000, bookings_applied=False),
+            self.account_update(balance_cents=130_000, anchor_date="2026-08-17", bookings_applied=False),
         )
         reopened_again = Repository(Path(self.temp_dir.name) / "planner.db")
         history = reopened_again.list_balance_history(self.household_id, self.giro_id)
-        same_day = [row for row in history if row["anchor_date"] == "2026-08-15"]
+        same_day = [row for row in history if row["anchor_date"] == "2026-08-17"]
         self.assertEqual(1, len(same_day))
         self.assertEqual(130_000, same_day[0]["balance_cents"])
         self.assertEqual(0, same_day[0]["bookings_applied"])
         self.assertEqual(
             120_000,
-            reopened_again.dashboard(self.household_id, "2026-08-15")["household"]["accounts"][0]["projected_balance_cents"],
+            reopened_again.dashboard(self.household_id, "2026-08-17")["household"]["accounts"][0]["projected_balance_cents"],
         )
 
     def test_first_account_rejects_an_invalid_balance_date_before_saving(self):
@@ -538,7 +581,7 @@ class PlanningModelV011Tests(unittest.TestCase):
         skipped = next(
             item
             for item in september["movements"]
-            if item["source_id"] == expense["id"] and item["date"] == "2026-09-20"
+            if item["source_id"] == expense["id"] and item["date"] == "2026-09-18"
         )
         self.assertEqual(0, skipped["amount_cents"])
         self.assertEqual("credit_repaid", skipped["skip_reason"])
@@ -549,7 +592,7 @@ class PlanningModelV011Tests(unittest.TestCase):
         self.assertEqual(0, september["totals"]["expense_cents"])
         self.assertEqual(0, september["credit_totals"]["closing_balance_cents"])
 
-        dashboard = self.repository.dashboard(self.household_id, "2026-09-20")
+        dashboard = self.repository.dashboard(self.household_id, "2026-09-18")
         self.assertEqual(0, dashboard["metrics"]["expenses_cents"])
         self.assertEqual(60_000, dashboard["metrics"]["balance_cents"])
 
@@ -558,7 +601,7 @@ class PlanningModelV011Tests(unittest.TestCase):
         )["items"][0]
         later_rates = [
             item for item in projected_credit["payments"]
-            if item["source"] == "expense" and item["date"] >= "2026-09-20"
+            if item["source"] == "expense" and item["date"] >= "2026-09-18"
         ]
         self.assertEqual(2, len(later_rates))
         self.assertTrue(all(item["skipped"] for item in later_rates))
@@ -592,7 +635,7 @@ class PlanningModelV011Tests(unittest.TestCase):
         final_rate = next(
             item
             for item in september["movements"]
-            if item["source_id"] == expense["id"] and item["date"] == "2026-09-20"
+            if item["source_id"] == expense["id"] and item["date"] == "2026-09-18"
         )
         self.assertEqual(-18_000, final_rate["amount_cents"])
         self.assertEqual(40_000, final_rate["planned_amount_cents"])
@@ -603,7 +646,7 @@ class PlanningModelV011Tests(unittest.TestCase):
         self.assertEqual(18_000, september["totals"]["expense_cents"])
         self.assertEqual(0, september["credit_totals"]["closing_balance_cents"])
 
-        dashboard = self.repository.dashboard(self.household_id, "2026-09-20")
+        dashboard = self.repository.dashboard(self.household_id, "2026-09-18")
         self.assertEqual(18_000, dashboard["metrics"]["expenses_cents"])
         self.assertEqual(42_000, dashboard["metrics"]["balance_cents"])
 
@@ -625,7 +668,7 @@ class PlanningModelV011Tests(unittest.TestCase):
         exported_final = next(
             item
             for item in export_payload["movements"]
-            if item["source_id"] == expense["id"] and item["date"] == "2026-09-20"
+            if item["source_id"] == expense["id"] and item["date"] == "2026-09-18"
         )
         exported_skipped = next(
             item
@@ -698,11 +741,11 @@ class PlanningModelV011Tests(unittest.TestCase):
         november=self.repository.monthly_preview(
             self.household_id,"2026-11",[self.giro_id],[item["id"] for item in credits]
         )
-        november_day=next(day for day in november["days"] if day["date"]=="2026-11-21")
+        november_day=next(day for day in november["days"] if day["date"]=="2026-11-20")
         self.assertEqual([0,0,0],sorted(item["amount_cents"] for item in november_day["movements"]))
         self.assertTrue(all(item["skip_reason"]=="credit_repaid" for item in november_day["movements"]))
 
-        future_dashboard=self.repository.dashboard(self.household_id,"2026-11-21")
+        future_dashboard=self.repository.dashboard(self.household_id,"2026-11-20")
         balances={group["credit_type"]:group["balance_cents"]
             for group in future_dashboard["credit_summary"]["groups"]}
         self.assertEqual({"consumer_credit":0,"credit":0,"borrowed":0},balances)
@@ -1200,10 +1243,10 @@ class PlanningModelV011Tests(unittest.TestCase):
             self.flow(
                 name="Erledigbare Ausgabe",
                 amount_cents=10_000,
-                due_date="2026-08-16",
+                due_date="2026-08-17",
             )
         )
-        occurrence_key=f"cash-flow:{expense['id']}:2026-08-16"
+        occurrence_key=f"cash-flow:{expense['id']}:2026-08-17"
 
         before = self.repository.monthly_preview(
             self.household_id, "2026-08", [self.giro_id]
@@ -1515,9 +1558,9 @@ class PlanningModelV011Tests(unittest.TestCase):
             ),
         )
         self.repository.create_cash_flow(
-            self.flow(amount_cents=20_000, due_date="2026-08-16")
+            self.flow(amount_cents=20_000, due_date="2026-08-17")
         )
-        dashboard = self.repository.dashboard(self.household_id, "2026-08-16")
+        dashboard = self.repository.dashboard(self.household_id, "2026-08-17")
         account = dashboard["household"]["accounts"][0]
         self.assertEqual(-60_000, account["projected_balance_cents"])
         self.assertTrue(account["overdraft_exceeded"])

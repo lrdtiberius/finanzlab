@@ -13,6 +13,7 @@ from app.domain.recurrence import (
     add_months_anchored,
     last_occurrence_date,
     last_occurrence_on_or_before,
+    previous_friday_for_weekend,
     recurrence_dates,
 )
 
@@ -499,10 +500,12 @@ class Repository:
                     final_date=last_occurrence_on_or_before(
                         version["due_date"],version["recurrence"] or "monthly",version["stream_end"]
                     )
-                    final_due=final_date.isoformat() if final_date else None
+                    final_due=(previous_friday_for_weekend(final_date).isoformat()
+                               if final_date else None)
                 due_dates=recurrence_dates(
                     version["due_date"],version["recurrence"] or "monthly",start,through_date,
-                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"])
+                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"],
+                    move_weekends_to_friday=True)
             except (TypeError,ValueError):
                 continue
             for due in due_dates:
@@ -1181,7 +1184,8 @@ class Repository:
                 except (TypeError,ValueError): continue
             try:
                 due_dates=recurrence_dates(version["due_date"],version["recurrence"] or "monthly",start,selected_date,
-                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"])
+                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"],
+                    move_weekends_to_friday=True)
             except (TypeError,ValueError):
                 # Legacy or otherwise malformed rows remain visible in the
                 # data check, but must not break the complete forecast.
@@ -1570,7 +1574,8 @@ class Repository:
             (hid,account_id,end,end)).fetchall()
         for version in versions:
             for due in recurrence_dates(version["due_date"],version["recurrence"] or "monthly",start,end,
-                                        version["version_from"],version["version_to"],version["stream_start"],version["stream_end"]):
+                                        version["version_from"],version["version_to"],version["stream_start"],version["stream_end"],
+                                        move_weekends_to_friday=True):
                 due_text=due.isoformat()
                 occurrences.append({
                     "target_type":"cash_flow","target_id":version["flow_id"],
@@ -1770,7 +1775,8 @@ class Repository:
                         due_dates=recurrence_dates(
                             row["due_date"],row["recurrence"] or "monthly",
                             (month_start-timedelta(days=1)).isoformat(),month_end.isoformat(),
-                            row["version_from"],row["version_to"],row["stream_start"],row["stream_end"])
+                            row["version_from"],row["version_to"],row["stream_start"],row["stream_end"],
+                            move_weekends_to_friday=True)
                     except (TypeError,ValueError):
                         continue
                     if not due_dates: continue

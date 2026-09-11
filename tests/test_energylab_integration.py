@@ -51,7 +51,7 @@ class EnergyLabIntegrationTests(unittest.TestCase):
         self.repo.sync_energylab_contracts(self.household["id"], self.payload())
         june = self.repo.monthly_preview(self.household["id"], "2025-06", [self.account["id"]], [])
         july = self.repo.monthly_preview(self.household["id"], "2025-07", [self.account["id"]], [])
-        self.assertEqual(18000, june["totals"]["expense_cents"])
+        self.assertEqual(10000, june["totals"]["expense_cents"])
         self.assertEqual(23000, july["totals"]["expense_cents"])
 
     def test_managed_expense_cannot_be_changed_in_finanzlab(self):
@@ -132,7 +132,7 @@ class EnergyLabIntegrationTests(unittest.TestCase):
         february = self.repo.monthly_preview(self.household["id"], "2025-02", [self.account["id"]], [])
         may = self.repo.monthly_preview(self.household["id"], "2025-05", [self.account["id"]], [])
         self.assertFalse(any("Abwasser" in movement["label"] for movement in january["movements"]))
-        self.assertEqual("2025-02-15", next(m for m in february["movements"] if "Abwasser" in m["label"])["date"])
+        self.assertEqual("2025-02-14", next(m for m in february["movements"] if "Abwasser" in m["label"])["date"])
         self.assertEqual("2025-05-15", next(m for m in may["movements"] if "Abwasser" in m["label"])["date"])
 
 
