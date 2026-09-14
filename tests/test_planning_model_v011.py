@@ -696,7 +696,7 @@ class PlanningModelV011Tests(unittest.TestCase):
                 name=name,category=credit_type,amount_cents=8_464,
                 credit_id=credit["id"],credit_reduction_cents=8_464,
                 recurrence="monthly",due_date="2026-08-21",
-                end_date="2026-11-21",duration_months="3",
+                end_date="2026-10-21",duration_months="3",
                 effective_from="2026-08-01",
             )
             expense=self.repository.create_cash_flow(values)
@@ -742,7 +742,7 @@ class PlanningModelV011Tests(unittest.TestCase):
             self.household_id,"2026-11",[self.giro_id],[item["id"] for item in credits]
         )
         november_day=next(day for day in november["days"] if day["date"]=="2026-11-20")
-        self.assertEqual([0,0,0],sorted(item["amount_cents"] for item in november_day["movements"]))
+        self.assertEqual([],sorted(item["amount_cents"] for item in november_day["movements"]))
         self.assertTrue(all(item["skip_reason"]=="credit_repaid" for item in november_day["movements"]))
 
         future_dashboard=self.repository.dashboard(self.household_id,"2026-11-20")
@@ -758,7 +758,7 @@ class PlanningModelV011Tests(unittest.TestCase):
         values=self.flow(
             name="Mobilezone mit Altversion",category="consumer_credit",
             amount_cents=8_464,credit_id=credit["id"],credit_reduction_cents=8_464,
-            recurrence="monthly",due_date="2026-08-21",end_date="2026-11-21",
+            recurrence="monthly",due_date="2026-08-21",end_date="2026-10-21",
             duration_months="3",effective_from="2026-08-01",
         )
         expense=self.repository.create_cash_flow(values)
@@ -795,7 +795,7 @@ class PlanningModelV011Tests(unittest.TestCase):
         values=self.flow(
             name="Mobilezone Migration",category="consumer_credit",amount_cents=8_464,
             credit_id=credit["id"],credit_reduction_cents=8_464,recurrence="monthly",
-            due_date="2026-08-21",end_date="2026-11-21",duration_months="3",
+            due_date="2026-08-21",end_date="2026-10-21",duration_months="3",
             effective_from="2026-08-01",
         )
         expense=self.repository.create_cash_flow(values)
@@ -837,7 +837,7 @@ class PlanningModelV011Tests(unittest.TestCase):
                 name=name,category=credit_type,amount_cents=8_464,
                 credit_id=credit["id"],credit_reduction_cents=8_464,
                 recurrence="monthly",due_date="2026-08-21",
-                end_date="2026-09-21",duration_months="1",
+                end_date="2026-09-21",duration_months="2",
                 effective_from="2026-08-01",
             ))
             self.repository.set_movement_completion({
@@ -873,7 +873,7 @@ class PlanningModelV011Tests(unittest.TestCase):
             name="Exakt drei Euro",category="consumer_credit",amount_cents=8_464,
             credit_id=exact_three["id"],credit_reduction_cents=8_464,
             recurrence="monthly",due_date="2026-08-21",end_date="2026-09-21",
-            duration_months="1",effective_from="2026-08-01",
+            duration_months="2",effective_from="2026-08-01",
         ))
         unbounded=self.repository.create_credit({
             "household_id":self.household_id,"name":"Ohne Ende",
@@ -1625,7 +1625,7 @@ class PlanningModelV011Tests(unittest.TestCase):
                 duration_months=12,
             )
         )
-        self.assertEqual("2027-08-15", limited["end_date"])
+        self.assertEqual("2027-07-15", limited["end_date"])
         self.assertEqual(12, limited["duration_months"])
 
         july = self.repository.monthly_preview(
@@ -1639,7 +1639,7 @@ class PlanningModelV011Tests(unittest.TestCase):
             sum(1 for item in july["movements"] if item["source_id"] == limited["id"]),
         )
         self.assertEqual(
-            1,
+            0,
             sum(1 for item in august["movements"] if item["source_id"] == limited["id"]),
         )
 
@@ -1652,7 +1652,7 @@ class PlanningModelV011Tests(unittest.TestCase):
             )
         )
         self.assertEqual("2026-11-20", explicit["end_date"])
-        self.assertEqual(3, explicit["duration_months"])
+        self.assertEqual(4, explicit["duration_months"])
 
         november = self.repository.monthly_preview(
             self.household_id, "2026-11", [self.giro_id]

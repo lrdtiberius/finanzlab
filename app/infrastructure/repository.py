@@ -1,4 +1,7 @@
+import hashlib
+import json
 import os
+import secrets
 import sqlite3
 from calendar import monthrange
 from contextlib import contextmanager
@@ -13,9 +16,11 @@ from app.domain.recurrence import (
     add_months_anchored,
     last_occurrence_date,
     last_occurrence_on_or_before,
-    previous_friday_for_weekend,
+    planned_booking_dates,
     recurrence_dates,
 )
+
+APP_VERSION = "1.6.0"
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -49,7 +54,10 @@ CREATE TABLE IF NOT EXISTS balance_anchors(
 CREATE TABLE IF NOT EXISTS credits(
  id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
  name TEXT NOT NULL, credit_type TEXT NOT NULL CHECK(credit_type IN('consumer_credit','credit','borrowed')),
- opening_balance_cents INTEGER NOT NULL, note TEXT,
+ opening_balance_cents INTEGER NOT NULL, interest_rate TEXT,
+ automatic_interest INTEGER NOT NULL DEFAULT 0, balloon_payment_cents INTEGER NOT NULL DEFAULT 0, note TEXT,
+ provider TEXT, product_price_cents INTEGER, financing_price_cents INTEGER, installment_surcharge_cents INTEGER,
+ payment_count INTEGER,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  UNIQUE(household_id,name));
 CREATE TABLE IF NOT EXISTS credit_payments(
@@ -58,11 +66,20 @@ CREATE TABLE IF NOT EXISTS credit_payments(
  payment_date TEXT NOT NULL, amount_cents INTEGER NOT NULL, note TEXT,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE INDEX IF NOT EXISTS credit_payments_dates ON credit_payments(credit_id,payment_date);
+CREATE TABLE IF NOT EXISTS credit_interest_bookings(
+ id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+ credit_id TEXT NOT NULL REFERENCES credits(id) ON DELETE CASCADE,
+ booking_date TEXT NOT NULL, amount_cents INTEGER NOT NULL,
+ account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+ cash_flow_id TEXT REFERENCES cash_flows(id) ON DELETE SET NULL,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS credit_interest_bookings_dates ON credit_interest_bookings(household_id,booking_date);
 CREATE TABLE IF NOT EXISTS cash_flows(
  id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
  kind TEXT NOT NULL, name TEXT NOT NULL, owner_scope TEXT NOT NULL,
  owner_person_id TEXT REFERENCES persons(id), account_id TEXT REFERENCES accounts(id),
- source_key TEXT, category TEXT NOT NULL DEFAULT 'other', UNIQUE(household_id,source_key));
+ source_key TEXT, source_provider TEXT, source_segment_id TEXT, source_contract_id TEXT,
+ category TEXT NOT NULL DEFAULT 'other', UNIQUE(household_id,source_key));
 CREATE TABLE IF NOT EXISTS cash_flow_versions(
  id TEXT PRIMARY KEY, cash_flow_id TEXT NOT NULL REFERENCES cash_flows(id) ON DELETE CASCADE,
  amount_cents INTEGER NOT NULL, active INTEGER NOT NULL, version_from TEXT NOT NULL, version_to TEXT,
@@ -81,6 +98,58 @@ CREATE TABLE IF NOT EXISTS energylab_account_overrides(
  payment_day INTEGER,
  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  PRIMARY KEY(household_id,source_key));
+CREATE TABLE IF NOT EXISTS energylab_sync_runs(
+ id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+ status TEXT NOT NULL CHECK(status IN('preview','ok','error')), source_version TEXT,
+ payload_sha256 TEXT, contracts INTEGER NOT NULL DEFAULT 0,
+ created INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0,
+ unchanged INTEGER NOT NULL DEFAULT 0, deactivated INTEGER NOT NULL DEFAULT 0,
+ message TEXT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+ UNIQUE(household_id,status,payload_sha256,finished_at));
+CREATE INDEX IF NOT EXISTS energylab_sync_runs_history
+ ON energylab_sync_runs(household_id,finished_at DESC);
+CREATE TABLE IF NOT EXISTS energylab_sync_items(
+ id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES energylab_sync_runs(id) ON DELETE CASCADE,
+ household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+ source_key TEXT NOT NULL, action TEXT NOT NULL,
+ before_payload TEXT, after_payload TEXT, created_at TEXT NOT NULL,
+ UNIQUE(run_id,source_key));
+CREATE INDEX IF NOT EXISTS energylab_sync_items_source
+ ON energylab_sync_items(household_id,source_key,created_at DESC);
+CREATE TABLE IF NOT EXISTS energylab_payment_events(
+ id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+ source_key TEXT NOT NULL, occurrence_date TEXT NOT NULL, booking_date TEXT,
+ planned_amount_cents INTEGER, actual_amount_cents INTEGER NOT NULL,
+ event_type TEXT NOT NULL CHECK(event_type IN('payment','refund','chargeback','correction','skipped')),
+ canonical_event_type TEXT,
+ status TEXT NOT NULL CHECK(status IN('pending','confirmed','reversed','ignored')),
+ bank_transaction_id TEXT REFERENCES bank_transactions(id) ON DELETE SET NULL,
+ external_id TEXT, note TEXT, confirmed INTEGER NOT NULL DEFAULT 0,
+ created_at TEXT NOT NULL, supersedes_event_id TEXT REFERENCES energylab_payment_events(id),
+ UNIQUE(household_id,external_id));
+CREATE INDEX IF NOT EXISTS energylab_payment_events_contract
+ ON energylab_payment_events(household_id,source_key,occurrence_date,created_at);
+CREATE TABLE IF NOT EXISTS energylab_billing_snapshots(
+ id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+ segment_id TEXT NOT NULL, contract_id TEXT NOT NULL,
+ period_from TEXT NOT NULL, period_to TEXT NOT NULL, revision INTEGER NOT NULL,
+ status TEXT NOT NULL DEFAULT 'final', payload_sha256 TEXT NOT NULL,
+ statement_payload TEXT NOT NULL, planned_total_cents INTEGER NOT NULL DEFAULT 0,
+ actual_total_cents INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+ supersedes_snapshot_id TEXT REFERENCES energylab_billing_snapshots(id),
+ UNIQUE(household_id,segment_id,contract_id,period_from,period_to,revision));
+CREATE INDEX IF NOT EXISTS energylab_billing_snapshot_lookup
+ ON energylab_billing_snapshots(household_id,segment_id,contract_id,period_from,period_to,revision DESC);
+CREATE TABLE IF NOT EXISTS energylab_billing_snapshot_items(
+ id TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL REFERENCES energylab_billing_snapshots(id) ON DELETE CASCADE,
+ payment_event_id TEXT, occurrence_date TEXT NOT NULL,
+ planned_amount_cents INTEGER, actual_amount_cents INTEGER NOT NULL,
+ event_type TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL,
+ UNIQUE(snapshot_id,id));
+CREATE TABLE IF NOT EXISTS app_backups(
+ id TEXT PRIMARY KEY, file_name TEXT NOT NULL UNIQUE, reason TEXT,
+ database_sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+ created_at TEXT NOT NULL, restored_at TEXT);
 CREATE TABLE IF NOT EXISTS transfers(
  id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
  name TEXT NOT NULL, source_account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -96,6 +165,14 @@ CREATE TABLE IF NOT EXISTS movement_completions(
  UNIQUE(household_id,occurrence_key));
 CREATE INDEX IF NOT EXISTS movement_completions_source
  ON movement_completions(household_id,source_type,source_id,occurrence_date);
+CREATE TABLE IF NOT EXISTS movement_amount_overrides(
+ id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+ occurrence_key TEXT NOT NULL, cash_flow_id TEXT NOT NULL REFERENCES cash_flows(id) ON DELETE CASCADE,
+ occurrence_date TEXT NOT NULL, amount_cents INTEGER NOT NULL CHECK(amount_cents >= 0),
+ updated_at TEXT NOT NULL,
+ UNIQUE(household_id,occurrence_key));
+CREATE INDEX IF NOT EXISTS movement_amount_overrides_source
+ ON movement_amount_overrides(household_id,cash_flow_id,occurrence_date);
 CREATE TABLE IF NOT EXISTS schema_migrations(
  name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS bank_statement_previews(
@@ -165,6 +242,43 @@ def duration_months_between(start_value,end_value):
     months=(end.year-start.year)*12+end.month-start.month
     return months if months>0 and add_months_anchored(start,months)==end else None
 
+def inferred_nominal_apr(principal_cents,payment_cents,occurrence_count,balloon_cents=0):
+    """Infer a nominal annual rate from a bounded monthly instalment plan."""
+    try:
+        principal=Decimal(int(principal_cents)); payment=Decimal(int(payment_cents))
+        count=int(occurrence_count); balloon=Decimal(int(balloon_cents or 0))
+    except (TypeError,ValueError,InvalidOperation):
+        return None
+    if principal<=0 or payment<=0 or count<1 or balloon<0 or balloon>principal:
+        return None
+    total=payment*count+balloon
+    if total<principal:
+        return None
+    if total==principal:
+        return "0"
+
+    def present_value(monthly_rate):
+        factor=Decimal(1)+monthly_rate
+        discount=Decimal(1); value=Decimal(0)
+        for _ in range(count):
+            discount*=factor
+            value+=payment/discount
+        return value+balloon/discount
+
+    low=Decimal(0); high=Decimal("0.01")
+    while present_value(high)>principal and high<Decimal(10):
+        high*=2
+    if present_value(high)>principal:
+        return None
+    for _ in range(96):
+        middle=(low+high)/2
+        if present_value(middle)>principal:
+            low=middle
+        else:
+            high=middle
+    annual_percent=((low+high)/2*Decimal(1200)).quantize(Decimal("0.0001"),rounding=ROUND_HALF_UP)
+    return format(annual_percent.normalize(),"f")
+
 def overdraft_values(payload):
     try:
         limit=Decimal(str(payload.get("overdraft_limit_cents") if payload.get("overdraft_limit_cents") not in (None,"") else "0"))
@@ -177,12 +291,61 @@ def overdraft_values(payload):
     # but interest is no longer part of the planning model.
     return int(limit),"0"
 
+def normalized_match_tokens(*values):
+    """Return conservative, provider-friendly tokens used for bank matching."""
+    text=" ".join(str(value or "") for value in values).casefold()
+    token=""; result=set()
+    for character in text:
+        if character.isalnum():
+            token+=character
+        elif token:
+            if len(token)>=3: result.add(token)
+            token=""
+    if token and len(token)>=3: result.add(token)
+    ignored={"gmbh","ag","kg","se","energie","energylab","zahlung","abschlag","rechnung"}
+    return result-ignored
+
 class Repository:
     def __init__(self, path=None):
         if path is None:
             data_dir=Path(os.environ.get("DATA_DIR","data")); data_dir.mkdir(parents=True,exist_ok=True); path=data_dir/"planner.db"
         else: Path(path).parent.mkdir(parents=True,exist_ok=True)
-        self.path=str(path); self.lock=RLock(); self.initialize()
+        self.path=str(path); self.lock=RLock()
+        upgrade_backup=self._prepare_upgrade_backup()
+        self.initialize()
+        if upgrade_backup:
+            with self.lock,self.connect() as con:
+                con.execute("""INSERT OR IGNORE INTO app_backups(
+                    id,file_name,reason,database_sha256,size_bytes,created_at
+                ) VALUES(?,?,?,?,?,?)""",(
+                    upgrade_backup["id"],upgrade_backup["file_name"],upgrade_backup["reason"],
+                    upgrade_backup["database_sha256"],upgrade_backup["size_bytes"],upgrade_backup["created_at"],
+                ))
+        marker=self._upgrade_marker(); marker.parent.mkdir(parents=True,exist_ok=True)
+        marker.write_text(APP_VERSION+"\n",encoding="utf-8")
+
+    def _upgrade_marker(self):
+        return Path(self.path).resolve().parent/"backups"/f".finanzlab-upgrade-{APP_VERSION}.done"
+
+    def _prepare_upgrade_backup(self):
+        """Create one consistent safety copy before this release migrates an existing database."""
+        database=Path(self.path)
+        marker=self._upgrade_marker()
+        if marker.exists() or not database.is_file() or database.stat().st_size<=0:
+            return None
+        backup_dir=marker.parent; backup_dir.mkdir(parents=True,exist_ok=True)
+        backup_id=uid(); compact=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        file_name=f"finanzlab-before-{APP_VERSION}-{compact}-{backup_id[:8]}.sqlite3"
+        target=backup_dir/file_name
+        source=sqlite3.connect(database); destination=sqlite3.connect(target)
+        try: source.backup(destination)
+        finally: destination.close(); source.close()
+        return {
+            "id":backup_id,"file_name":file_name,
+            "reason":f"automatisch vor Update auf {APP_VERSION}",
+            "database_sha256":hashlib.sha256(target.read_bytes()).hexdigest(),
+            "size_bytes":target.stat().st_size,"created_at":timestamp(),
+        }
     @contextmanager
     def connect(self):
         con=sqlite3.connect(self.path); con.row_factory=sqlite3.Row; con.execute("PRAGMA foreign_keys=ON")
@@ -193,6 +356,9 @@ class Repository:
         with self.lock,self.connect() as con:
             con.executescript(SCHEMA)
             self.ensure_column(con,"cash_flows","category","TEXT NOT NULL DEFAULT 'other'")
+            self.ensure_column(con,"cash_flows","source_provider","TEXT")
+            self.ensure_column(con,"cash_flows","source_segment_id","TEXT")
+            self.ensure_column(con,"cash_flows","source_contract_id","TEXT")
             self.ensure_column(con,"cash_flow_versions","gross_amount_cents","INTEGER")
             self.ensure_column(con,"cash_flow_versions","recurrence","TEXT NOT NULL DEFAULT 'monthly'")
             self.ensure_column(con,"cash_flow_versions","name","TEXT")
@@ -202,12 +368,56 @@ class Repository:
             self.ensure_column(con,"cash_flow_versions","account_id","TEXT")
             self.ensure_column(con,"cash_flow_versions","credit_id","TEXT")
             self.ensure_column(con,"cash_flow_versions","credit_reduction_cents","INTEGER NOT NULL DEFAULT 0")
+            self.ensure_column(con,"credits","interest_rate","TEXT")
+            self.ensure_column(con,"credits","automatic_interest","INTEGER NOT NULL DEFAULT 0")
+            self.ensure_column(con,"credits","balloon_payment_cents","INTEGER NOT NULL DEFAULT 0")
+            self.ensure_column(con,"credits","provider","TEXT")
+            self.ensure_column(con,"credits","product_price_cents","INTEGER")
+            self.ensure_column(con,"credits","financing_price_cents","INTEGER")
+            self.ensure_column(con,"credits","installment_surcharge_cents","INTEGER")
+            self.ensure_column(con,"credits","payment_count","INTEGER")
+            con.execute("""CREATE TABLE IF NOT EXISTS credit_interest_bookings(
+                id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+                credit_id TEXT NOT NULL REFERENCES credits(id) ON DELETE CASCADE,
+                booking_date TEXT NOT NULL, amount_cents INTEGER NOT NULL,
+                account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+                cash_flow_id TEXT REFERENCES cash_flows(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+            con.execute("CREATE INDEX IF NOT EXISTS credit_interest_bookings_dates ON credit_interest_bookings(household_id,booking_date)")
             self.ensure_column(con,"accounts","is_default","INTEGER NOT NULL DEFAULT 0")
             self.ensure_column(con,"balance_anchors","created_at","TEXT")
             self.ensure_column(con,"balance_anchors","bookings_applied","INTEGER NOT NULL DEFAULT 1")
             self.ensure_column(con,"transfers","end_date","TEXT")
             self.ensure_column(con,"transfers","occurrence_count","INTEGER")
             self.ensure_column(con,"energylab_account_overrides","payment_day","INTEGER")
+            self.ensure_column(con,"energylab_integrations","callback_token","TEXT")
+            self.ensure_column(con,"energylab_integrations","last_payload_sha256","TEXT")
+            self.ensure_column(con,"energylab_payment_events","booking_date","TEXT")
+            self.ensure_column(con,"energylab_payment_events","canonical_event_type","TEXT")
+            self.ensure_column(con,"bank_transaction_matches","confirmed","INTEGER NOT NULL DEFAULT 0")
+            self.ensure_column(con,"bank_transaction_matches","status","TEXT NOT NULL DEFAULT 'confirmed'")
+            self.ensure_column(con,"bank_transaction_matches","reversal_of_transaction_id","TEXT")
+            con.execute("""UPDATE energylab_payment_events SET
+                booking_date=COALESCE(booking_date,occurrence_date),
+                canonical_event_type=COALESCE(canonical_event_type,CASE event_type
+                    WHEN 'payment' THEN 'regular_payment'
+                    WHEN 'refund' THEN 'credit_payout'
+                    WHEN 'chargeback' THEN 'chargeback'
+                    WHEN 'correction' THEN 'correction'
+                    WHEN 'skipped' THEN 'suspension' END)""")
+            legacy_match_confirmation=con.execute(
+                "SELECT 1 FROM schema_migrations WHERE name='v1.3-confirm-legacy-bank-matches'"
+            ).fetchone()
+            if not legacy_match_confirmation:
+                # In 1.1.2 a persisted match was already the result of the
+                # account-statement import decision.  The new column must not
+                # turn those accepted matches into unconfirmed suggestions.
+                con.execute("""UPDATE bank_transaction_matches
+                    SET confirmed=1,status='confirmed'
+                    WHERE confirmed=0 AND status='confirmed'""")
+                con.execute(
+                    "INSERT INTO schema_migrations(name) VALUES('v1.3-confirm-legacy-bank-matches')"
+                )
             con.execute("UPDATE balance_anchors SET created_at=COALESCE(created_at,CURRENT_TIMESTAMP)")
             con.execute("CREATE INDEX IF NOT EXISTS cash_flow_versions_dates ON cash_flow_versions(cash_flow_id,version_from,version_to)")
             migration=con.execute("SELECT 1 FROM schema_migrations WHERE name='v0.11-remove-loans-and-validity'").fetchone()
@@ -260,6 +470,26 @@ class Repository:
                     first=con.execute("SELECT id FROM accounts WHERE household_id=? ORDER BY created_at,id LIMIT 1",(household["id"],)).fetchone()
                     if first: con.execute("UPDATE accounts SET is_default=1 WHERE id=?",(first["id"],))
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS accounts_one_default ON accounts(household_id) WHERE is_default=1")
+            con.execute("CREATE UNIQUE INDEX IF NOT EXISTS energylab_payment_event_external ON energylab_payment_events(household_id,external_id) WHERE external_id IS NOT NULL")
+            # Import history, payment events and billing revisions are append-only.
+            # Cascading household deletion remains possible because the parent row
+            # no longer exists when SQLite executes its child cascades.
+            for table in ("energylab_sync_runs","energylab_sync_items","energylab_payment_events","energylab_billing_snapshots"):
+                con.execute(f"""CREATE TRIGGER IF NOT EXISTS {table}_no_update
+                    BEFORE UPDATE ON {table} BEGIN
+                    SELECT RAISE(ABORT,'Historieneinträge sind unveränderlich'); END""")
+                con.execute(f"""CREATE TRIGGER IF NOT EXISTS {table}_no_delete
+                    BEFORE DELETE ON {table}
+                    WHEN EXISTS(SELECT 1 FROM households WHERE id=OLD.household_id)
+                    BEGIN SELECT RAISE(ABORT,'Historieneinträge sind unveränderlich'); END""")
+            con.execute("""CREATE TRIGGER IF NOT EXISTS energylab_billing_snapshot_items_no_update
+                BEFORE UPDATE ON energylab_billing_snapshot_items BEGIN
+                SELECT RAISE(ABORT,'Abrechnungssnapshots sind unveränderlich'); END""")
+            con.execute("""CREATE TRIGGER IF NOT EXISTS energylab_billing_snapshot_items_no_delete
+                BEFORE DELETE ON energylab_billing_snapshot_items
+                WHEN EXISTS(SELECT 1 FROM energylab_billing_snapshots s
+                    JOIN households h ON h.id=s.household_id WHERE s.id=OLD.snapshot_id)
+                BEGIN SELECT RAISE(ABORT,'Abrechnungssnapshots sind unveränderlich'); END""")
     @staticmethod
     def ensure_column(con,table,column,declaration):
         if column not in {row["name"] for row in con.execute(f"PRAGMA table_info({table})").fetchall()}:
@@ -407,31 +637,174 @@ class Repository:
         try: opening_balance_cents=int(payload.get("opening_balance_cents") or 0)
         except (TypeError,ValueError): raise ValueError("Der Anfangssaldo muss ein gültiger Geldwert sein.")
         if opening_balance_cents<0: raise ValueError("Der Anfangssaldo darf nicht negativ sein.")
+        interest_raw=payload.get("interest_rate")
+        if interest_raw in (None,""):
+            interest_rate=None
+        else:
+            try: interest=Decimal(str(interest_raw).replace(",","."))
+            except (InvalidOperation,ValueError): raise ValueError("Der Sollzinssatz muss eine gültige Zahl sein.")
+            if not interest.is_finite() or interest<0:
+                raise ValueError("Der Sollzinssatz darf nicht negativ sein.")
+            interest_rate=format(interest.normalize(),"f")
+        automatic_interest=0 if payload.get("automatic_interest") in (False,0,"0",None,"") else 1
+        try: balloon_payment_cents=int(payload.get("balloon_payment_cents") or 0)
+        except (TypeError,ValueError): raise ValueError("Die vertragliche Restschuld muss ein gültiger Geldwert sein.")
+        if balloon_payment_cents<0 or balloon_payment_cents>opening_balance_cents:
+            raise ValueError("Die vertragliche Restschuld muss zwischen 0,00 € und dem Anfangssaldo liegen.")
+        provider=str(payload.get("provider") or "").strip() or None
+        if credit_type!="consumer_credit": provider=None
+        def optional_money(key):
+            raw=payload.get(key)
+            if raw in (None,""): return None
+            try: value=int(raw)
+            except (TypeError,ValueError): raise ValueError("Produkt- und Finanzierungspreise müssen gültige Geldwerte sein.")
+            if value<0: raise ValueError("Produkt- und Finanzierungspreise dürfen nicht negativ sein.")
+            return value
+        product_price_cents=optional_money("product_price_cents")
+        financing_price_cents=optional_money("financing_price_cents")
+        installment_surcharge_cents=optional_money("installment_surcharge_cents")
+        plan=payload.get("payment_plan") if isinstance(payload.get("payment_plan"),dict) else {}
+        payment_count_raw=(plan.get("occurrence_count") if plan else payload.get("payment_count"))
+        payment_count=None
+        if payment_count_raw not in (None,""):
+            try: payment_count=int(payment_count_raw)
+            except (TypeError,ValueError): raise ValueError("Die Zahlungsanzahl muss eine ganze Zahl sein.")
+            if str(payment_count_raw).strip()!=str(payment_count) or not 1<=payment_count<=1200:
+                raise ValueError("Die Zahlungsanzahl muss zwischen 1 und 1.200 liegen.")
+        if financing_price_cents is None and plan.get("amount_cents") not in (None,"") and plan.get("occurrence_count") not in (None,""):
+            try:
+                financing_price_cents=int(plan["amount_cents"])*int(plan["occurrence_count"])+balloon_payment_cents
+            except (TypeError,ValueError):
+                raise ValueError("Rate und Zahlungsanzahl müssen gültige Zahlen sein.")
+        if installment_surcharge_cents is None and product_price_cents is not None and financing_price_cents is not None:
+            installment_surcharge_cents=max(0,financing_price_cents-product_price_cents)
+        elif financing_price_cents is None and product_price_cents is not None and installment_surcharge_cents is not None:
+            financing_price_cents=product_price_cents+installment_surcharge_cents
+        elif product_price_cents is None and financing_price_cents is not None and installment_surcharge_cents is not None:
+            product_price_cents=max(0,financing_price_cents-installment_surcharge_cents)
+        # The product price is the financed principal. The financing price
+        # already includes all financing costs and must not be financed again.
+        # Preserve explicitly different balances and repair only the old default.
+        if (credit_type=="consumer_credit" and automatic_interest and product_price_cents is not None
+                and (opening_balance_cents==0 or opening_balance_cents==financing_price_cents)):
+            opening_balance_cents=product_price_cents
+            if balloon_payment_cents>opening_balance_cents:
+                raise ValueError("Die vertragliche Restschuld darf den Produktpreis nicht übersteigen.")
+        if (credit_type=="consumer_credit" and financing_price_cents is not None
+                and plan.get("amount_cents") not in (None,"") and payment_count is not None):
+            try: contractual_total=int(plan["amount_cents"])*payment_count+balloon_payment_cents
+            except (TypeError,ValueError): raise ValueError("Rate und Zahlungsanzahl müssen gültige Zahlen sein.")
+            rounding_tolerance=max(5,payment_count)
+            if abs(contractual_total-financing_price_cents)>rounding_tolerance:
+                raise ValueError(
+                    "Monatsrate, Zahlungsanzahl und Schlussrate passen nicht zum Finanzierungspreis."
+                )
         note=str(payload.get("note") or "").strip() or None
         return {"household_id":hid,"name":name,"credit_type":credit_type,
-            "opening_balance_cents":opening_balance_cents,"note":note}
+            "opening_balance_cents":opening_balance_cents,"interest_rate":interest_rate,
+            "automatic_interest":automatic_interest,"balloon_payment_cents":balloon_payment_cents,"note":note,
+            "provider":provider,"product_price_cents":product_price_cents,
+            "financing_price_cents":financing_price_cents,"installment_surcharge_cents":installment_surcharge_cents,
+            "payment_count":payment_count}
     def create_credit(self,payload):
         with self.lock,self.connect() as con:
             values=self.credit_values(con,payload)
             if con.execute("SELECT 1 FROM credits WHERE household_id=? AND name=?",(values["household_id"],values["name"])).fetchone():
                 raise ValueError("Ein Kredit mit diesem Namen existiert bereits.")
             credit_id=uid()
-            con.execute("INSERT INTO credits(id,household_id,name,credit_type,opening_balance_cents,note) VALUES(?,?,?,?,?,?)",
-                (credit_id,values["household_id"],values["name"],values["credit_type"],values["opening_balance_cents"],values["note"]))
+            con.execute("""INSERT INTO credits(id,household_id,name,credit_type,opening_balance_cents,
+                interest_rate,automatic_interest,balloon_payment_cents,note,provider,product_price_cents,
+                financing_price_cents,installment_surcharge_cents,payment_count) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (credit_id,values["household_id"],values["name"],values["credit_type"],values["opening_balance_cents"],
+                 values["interest_rate"],values["automatic_interest"],values["balloon_payment_cents"],values["note"],
+                 values["provider"],values["product_price_cents"],values["financing_price_cents"],values["installment_surcharge_cents"],
+                 values["payment_count"]))
+            plan=payload.get("payment_plan")
+            if plan:
+                plan_payload={
+                    "household_id":values["household_id"],"kind":"expense","name":values["name"],
+                    "category":values["credit_type"],"amount_cents":plan.get("amount_cents"),
+                    "recurrence":"monthly","due_date":plan.get("first_due_date"),
+                    "duration_months":plan.get("occurrence_count"),"account_id":plan.get("account_id"),
+                    "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner") or "A",
+                    "active":True,
+                }
+                plan_values=self.cash_flow_values(con,plan_payload,"expense")
+                flow_id=uid()
+                con.execute("""INSERT INTO cash_flows(id,household_id,kind,name,owner_scope,owner_person_id,account_id,source_key,category)
+                    VALUES(?,?,?,?,?,?,?,?,?)""",(flow_id,values["household_id"],"expense",values["name"],
+                    plan_values["owner_scope"],plan_values["owner_person_id"],plan_values["account_id"],
+                    f"credit-plan:{credit_id}",values["credit_type"]))
+                con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,
+                    stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,
+                    owner_scope,owner_person_id,account_id,credit_id,credit_reduction_cents)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,plan_values["amount_cents"],1,
+                    plan_values["effective_from"],None,plan_values["effective_from"],plan_values["stream_end"],
+                    plan_values["due_date"],"Automatisch aus Kredit",None,"monthly",values["name"],values["credit_type"],
+                    plan_values["owner_scope"],plan_values["owner_person_id"],plan_values["account_id"],credit_id,
+                    plan_values["credit_reduction_cents"]))
         return self.credit_detail(values["household_id"],credit_id)
     def update_credit(self,credit_id,payload):
         with self.lock,self.connect() as con:
-            values=self.credit_values(con,payload)
-            if not con.execute("SELECT 1 FROM credits WHERE id=? AND household_id=?",(credit_id,values["household_id"])).fetchone():
+            current=con.execute("SELECT * FROM credits WHERE id=? AND household_id=?",(credit_id,payload.get("household_id"))).fetchone()
+            if not current:
                 raise ValueError("Kredit nicht gefunden.")
+            merged=dict(payload)
+            merged.setdefault("interest_rate",current["interest_rate"])
+            merged.setdefault("automatic_interest",current["automatic_interest"])
+            merged.setdefault("balloon_payment_cents",current["balloon_payment_cents"])
+            merged.setdefault("provider",current["provider"])
+            merged.setdefault("product_price_cents",current["product_price_cents"])
+            merged.setdefault("financing_price_cents",current["financing_price_cents"])
+            merged.setdefault("installment_surcharge_cents",current["installment_surcharge_cents"])
+            merged.setdefault("payment_count",current["payment_count"])
+            values=self.credit_values(con,merged)
             if con.execute("SELECT 1 FROM credits WHERE household_id=? AND name=? AND id<>?",(values["household_id"],values["name"],credit_id)).fetchone():
                 raise ValueError("Ein Kredit mit diesem Namen existiert bereits.")
             linked_types={row["category"] for row in con.execute(
                 "SELECT DISTINCT category FROM cash_flow_versions WHERE credit_id=?",(credit_id,)).fetchall()}
             if linked_types and linked_types!={values["credit_type"]}:
                 raise ValueError("Die Kreditart kann wegen verknüpfter Ausgaben nicht geändert werden.")
-            con.execute("UPDATE credits SET name=?,credit_type=?,opening_balance_cents=?,note=? WHERE id=? AND household_id=?",
-                (values["name"],values["credit_type"],values["opening_balance_cents"],values["note"],credit_id,values["household_id"]))
+            con.execute("""UPDATE credits SET name=?,credit_type=?,opening_balance_cents=?,interest_rate=?,
+                automatic_interest=?,balloon_payment_cents=?,note=?,provider=?,product_price_cents=?,
+                financing_price_cents=?,installment_surcharge_cents=? WHERE id=? AND household_id=?""",
+                (values["name"],values["credit_type"],values["opening_balance_cents"],values["interest_rate"],
+                 values["automatic_interest"],values["balloon_payment_cents"],values["note"],values["provider"],
+                 values["product_price_cents"],values["financing_price_cents"],values["installment_surcharge_cents"],
+                 credit_id,values["household_id"]))
+        plan=payload.get("payment_plan")
+        if plan:
+            flow_id=plan.get("flow_id")
+            if not flow_id:
+                with self.connect() as con:
+                    linked=con.execute("""SELECT f.id FROM cash_flows f JOIN cash_flow_versions v ON v.cash_flow_id=f.id
+                        WHERE f.household_id=? AND v.credit_id=? AND v.recurrence='monthly'
+                        ORDER BY v.version_from DESC,v.rowid DESC LIMIT 1""",(values["household_id"],credit_id)).fetchone()
+                    flow_id=linked["id"] if linked else None
+            if flow_id:
+                saved_plan=self.update_cash_flow(flow_id,{
+                "household_id":values["household_id"],"kind":"expense","name":values["name"],
+                "category":values["credit_type"],"amount_cents":plan.get("amount_cents"),
+                "recurrence":"monthly","due_date":plan.get("first_due_date"),
+                "duration_months":plan.get("occurrence_count"),"account_id":plan.get("account_id"),
+                "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner") or "A",
+                "active":True,"effective_from":plan.get("effective_from") or date.today().isoformat(),
+                })
+            else:
+                saved_plan=self.create_cash_flow({
+                    "household_id":values["household_id"],"kind":"expense","name":values["name"],
+                    "category":values["credit_type"],"amount_cents":plan.get("amount_cents"),
+                    "recurrence":"monthly","due_date":plan.get("first_due_date"),
+                    "duration_months":plan.get("occurrence_count"),"account_id":plan.get("account_id"),
+                    "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner") or "A",
+                    "active":True,"effective_from":plan.get("effective_from") or date.today().isoformat(),
+                })
+            expected_count=values["payment_count"]
+            if expected_count is None or int(saved_plan.get("duration_months") or 0)!=expected_count:
+                raise RuntimeError("Die Zahlungsanzahl konnte nicht zuverlässig gespeichert werden.")
+            with self.lock,self.connect() as con:
+                con.execute("UPDATE credits SET payment_count=? WHERE id=? AND household_id=?",
+                    (expected_count,credit_id,values["household_id"]))
         return self.credit_detail(values["household_id"],credit_id)
     def delete_credit(self,hid,credit_id):
         with self.lock,self.connect() as con:
@@ -446,8 +819,10 @@ class Repository:
         except ValueError: raise ValueError("Das Zahlungsdatum muss ein gültiges Datum sein.")
         try: amount_cents=int(payload.get("amount_cents") or 0)
         except (TypeError,ValueError): raise ValueError("Die Tilgung muss ein gültiger Geldwert sein.")
-        if amount_cents<=0: raise ValueError("Die Tilgung muss größer als 0,00 € sein.")
-        note=str(payload.get("note") or "").strip() or "Manuelle Tilgung"
+        if amount_cents==0: raise ValueError("Tilgung oder Kreditaufstockung darf nicht 0,00 € sein.")
+        note=str(payload.get("note") or "").strip() or (
+            "Kreditaufstockung" if amount_cents<0 else "Manuelle Tilgung"
+        )
         with self.lock,self.connect() as con:
             if not con.execute("SELECT 1 FROM credits WHERE id=? AND household_id=?",(credit_id,hid)).fetchone():
                 raise ValueError("Kredit nicht gefunden.")
@@ -489,6 +864,13 @@ class Repository:
                 FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
                 WHERE f.household_id=? AND f.kind='expense' AND v.credit_id IS NOT NULL
                   AND v.active=1 AND v.version_from<=?""",(hid,through_date)).fetchall()
+        latest_monthly_plans={}
+        for version in versions:
+            if version["recurrence"]!="monthly" or not version["stream_end"] or not version["due_date"]:
+                continue
+            current=latest_monthly_plans.get(version["credit_id"])
+            if current is None or (version["version_from"],version["flow_id"])>(current["version_from"],current["flow_id"]):
+                latest_monthly_plans[version["credit_id"]]=version
         for version in versions:
             if not version["due_date"]: continue
             try:
@@ -500,12 +882,10 @@ class Repository:
                     final_date=last_occurrence_on_or_before(
                         version["due_date"],version["recurrence"] or "monthly",version["stream_end"]
                     )
-                    final_due=(previous_friday_for_weekend(final_date).isoformat()
-                               if final_date else None)
-                due_dates=recurrence_dates(
+                    final_due=final_date.isoformat() if final_date else None
+                due_dates=planned_booking_dates(
                     version["due_date"],version["recurrence"] or "monthly",start,through_date,
-                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"],
-                    move_weekends_to_friday=True)
+                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"])
             except (TypeError,ValueError):
                 continue
             for due in due_dates:
@@ -521,26 +901,70 @@ class Repository:
 
         timelines={}; occurrence_adjustments={}
         for credit in credits:
+            credit["calculated_interest_rate"]=None
+            credit["interest_rate_inferred"]=False
+            if bool(credit.get("automatic_interest")) and credit.get("interest_rate") is None:
+                plan=latest_monthly_plans.get(credit["id"])
+                if plan:
+                    try:
+                        payment_count=len(recurrence_dates(
+                            plan["due_date"],"monthly",
+                            date.fromisoformat(plan["due_date"])-timedelta(days=1),plan["stream_end"]))
+                    except (TypeError,ValueError):
+                        payment_count=0
+                    principal=(int(credit.get("product_price_cents") or 0)
+                        if credit.get("credit_type")=="consumer_credit" else 0)
+                    principal=principal or int(credit.get("opening_balance_cents") or 0)
+                    inferred=inferred_nominal_apr(principal,int(plan["amount_cents"] or 0),payment_count,
+                        int(credit.get("balloon_payment_cents") or 0))
+                    if inferred is not None:
+                        credit["calculated_interest_rate"]=inferred
+                        credit["interest_rate_inferred"]=True
             remaining=max(0,int(credit["opening_balance_cents"] or 0)); timeline=[]
             events=events_by_credit.get(credit["id"],[])
             events.sort(key=lambda item:(item["date"],0 if item["source"]=="manual" else 1,item["id"]))
             for raw in events:
                 item=dict(raw); before=remaining
-                requested=max(0,int(item["requested_reduction_cents"] or 0))
+                requested_raw=int(item["requested_reduction_cents"] or 0)
+                requested=(requested_raw if item["source"]=="manual" else max(0,requested_raw))
                 planned_account=max(0,int(item["planned_account_amount_cents"] or 0))
+                contractual_residual=max(0,int(credit.get("balloon_payment_cents") or 0))
+                effective_rate=(credit.get("interest_rate") if credit.get("interest_rate") is not None
+                    else credit.get("calculated_interest_rate"))
+                automatic=bool(credit.get("automatic_interest")) and effective_rate is not None
+                interest_cents=0
                 final_residual_added=0
                 if item["source"]=="manual":
-                    effective=min(requested,before)
+                    effective=(requested if requested<0 else min(requested,before))
                     account_amount=0; skipped=False; skip_reason=None
-                    overpaid=max(0,requested-effective)
+                    overpaid=max(0,requested-effective) if requested>0 else 0
                 elif before<=0:
                     effective=0; account_amount=0; skipped=True; skip_reason="credit_repaid"
                     overpaid=0
-                elif requested>0:
-                    effective=min(requested,before)
+                elif item["source"]=="expense" and before<=contractual_residual:
+                    effective=0; account_amount=0; skipped=True; skip_reason="contractual_residual_reached"
+                    overpaid=0
+                elif automatic:
+                    apr=Decimal(str(effective_rate))
+                    interest_cents=int((Decimal(before)*apr/Decimal(1200)).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
+                    scheduled_principal=max(0,planned_account-interest_cents)
+                    available_principal=max(0,before-contractual_residual)
+                    effective=min(scheduled_principal,available_principal)
                     residual_after_rate=max(0,before-effective)
-                    final_residual_added=(residual_after_rate
-                        if item.get("is_final_scheduled_occurrence") and 0<residual_after_rate<300
+                    residual_above_target=max(0,residual_after_rate-contractual_residual)
+                    final_residual_added=(residual_above_target
+                        if item.get("is_final_scheduled_occurrence") and 0<residual_above_target<300
+                        else 0)
+                    effective+=final_residual_added
+                    account_amount=min(planned_account,interest_cents+available_principal)+final_residual_added
+                    skipped=False; skip_reason=None; overpaid=0
+                elif requested>0:
+                    available_principal=max(0,before-contractual_residual)
+                    effective=min(requested,available_principal)
+                    residual_after_rate=max(0,before-effective)
+                    residual_above_target=max(0,residual_after_rate-contractual_residual)
+                    final_residual_added=(residual_above_target
+                        if item.get("is_final_scheduled_occurrence") and 0<residual_above_target<300
                         else 0)
                     if final_residual_added:
                         # A tiny residual at the explicitly bounded end of the
@@ -556,11 +980,18 @@ class Repository:
                 else:
                     effective=0; account_amount=planned_account
                     skipped=False; skip_reason=None; overpaid=0
+                if item["source"]=="expense" and not automatic and account_amount>effective:
+                    # Legacy/manual plans often contain both the bank amount
+                    # and the actual principal reduction.  Their difference is
+                    # the only reliable interest value available.
+                    interest_cents=account_amount-effective
                 remaining=max(0,before-effective)
                 item.update({
                     "amount_cents":requested if item["source"]=="manual" else effective,
                     "planned_amount_cents":requested,
                     "effective_reduction_cents":effective,
+                    "interest_cents":interest_cents,
+                    "automatic_calculation":automatic and item["source"]=="expense",
                     "account_amount_cents":account_amount,
                     "remaining_before_cents":before,"remaining_after_cents":remaining,
                     "adjusted":item["source"]=="expense" and (
@@ -597,7 +1028,8 @@ class Repository:
             for credit_id,timeline in schedule["credits"].items():
                 credit=dict(timeline["credit"])
                 payments=[dict(item) for item in timeline["events"]
-                    if item["source"]=="manual" or int(item["planned_amount_cents"] or 0)>0]
+                    if item["source"]=="manual" or int(item["planned_amount_cents"] or 0)>0
+                    or item.get("automatic_calculation")]
                 for payment in payments:
                     payment["future"]=payment["date"]>actual_today
                     payment["applied"]=payment["date"]<=cutoff and not payment["skipped"]
@@ -609,6 +1041,37 @@ class Repository:
                 credit["overpaid_cents"]=sum(item["overpaid_cents"] for item in payments if item["date"]<=cutoff)
                 credit["future_payment_cents"]=sum(
                     item["effective_reduction_cents"] for item in payments if item["date"]>cutoff)
+                credit["interest_cents"]=sum(
+                    int(item.get("interest_cents") or 0) for item in payments if item["date"]<=cutoff)
+                credit["future_interest_cents"]=sum(
+                    int(item.get("interest_cents") or 0) for item in payments if item["date"]>cutoff)
+                credit["interest_booked_cents"]=int(con.execute(
+                    "SELECT COALESCE(SUM(amount_cents),0) FROM credit_interest_bookings WHERE credit_id=? AND booking_date<=?",
+                    (credit_id,cutoff)).fetchone()[0] or 0)
+                contractual=con.execute("""SELECT MAX(stream_end) AS end_date
+                    FROM cash_flow_versions
+                    WHERE credit_id=? AND active=1 AND recurrence<>'once' AND stream_end IS NOT NULL""",
+                    (credit_id,)).fetchone()["end_date"]
+                repaid=next((item["date"] for item in reversed(payments)
+                    if item["date"]>=cutoff and item["remaining_after_cents"]<=0 and not item["skipped"]),None)
+                credit["contractual_end_date"]=contractual
+                credit["expected_repayment_date"]=repaid
+                plan_row=con.execute("""SELECT f.id AS flow_id,v.amount_cents,v.due_date,v.stream_end,
+                        v.account_id,v.version_from,v.owner_scope,v.owner_person_id
+                    FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
+                    WHERE v.credit_id=? AND v.active=1 AND v.recurrence='monthly'
+                    ORDER BY v.version_from DESC,v.rowid DESC LIMIT 1""",(credit_id,)).fetchone()
+                if plan_row:
+                    plan_data=dict(plan_row)
+                    derived_count=len(recurrence_dates(
+                        plan_data["due_date"],"monthly",date.fromisoformat(plan_data["due_date"])-timedelta(days=1),
+                        plan_data["stream_end"])) if plan_data.get("stream_end") else None
+                    plan_data["occurrence_count"]=(int(credit["payment_count"])
+                        if credit.get("payment_count") is not None else derived_count)
+                    plan_data["derived_occurrence_count"]=derived_count
+                    credit["payment_plan"]=plan_data
+                else:
+                    credit["payment_plan"]=None
                 credit["payments"]=payments
                 credit["as_of"]=cutoff
                 credit["through"]=through_date
@@ -620,6 +1083,129 @@ class Repository:
                 "balance_cents":sum(item["remaining_balance_cents"] for item in matching)})
         return {"as_of":cutoff,"today":actual_today,"through":through_date,"items":result,"groups":groups,
             "totals":{"count":len(result),"balance_cents":sum(item["remaining_balance_cents"] for item in result)}}
+
+    def list_interest(self,hid,as_of=None):
+        view=self.list_credits(hid,as_of)
+        cutoff=view.get("as_of") or as_of_date(as_of)
+        with self.connect() as con:
+            bookings=[dict(row) for row in con.execute("""SELECT b.*,c.name AS credit_name,c.provider,
+                    a.name AS account_name FROM credit_interest_bookings b
+                    JOIN credits c ON c.id=b.credit_id LEFT JOIN accounts a ON a.id=b.account_id
+                    WHERE b.household_id=? ORDER BY b.booking_date DESC,b.created_at DESC""",(hid,)).fetchall()]
+            for booking in bookings:
+                booking["source"]="interest_booking"
+                booking["unassigned"]=False
+            linked_flow_ids={booking["cash_flow_id"] for booking in bookings if booking.get("cash_flow_id")}
+            manual_versions=[dict(row) for row in con.execute("""SELECT f.id AS flow_id,
+                    COALESCE(v.name,f.name) AS booking_name,v.amount_cents,v.active,v.version_from,v.version_to,
+                    v.stream_start,v.stream_end,v.due_date,v.recurrence,v.account_id,a.name AS account_name
+                FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
+                LEFT JOIN accounts a ON a.id=v.account_id
+                WHERE f.household_id=? AND f.kind='expense'
+                  AND COALESCE(v.category,f.category)='interest' AND v.active=1 AND v.version_from<=?
+                ORDER BY v.version_from,v.rowid""",(hid,cutoff)).fetchall()]
+            amount_overrides={row["occurrence_key"]:int(row["amount_cents"])
+                for row in con.execute("SELECT occurrence_key,amount_cents FROM movement_amount_overrides WHERE household_id=?",(hid,)).fetchall()}
+        # Interest entries created through the dedicated dialog already have a
+        # formal credit_interest_bookings row.  Their linked cash flow must not
+        # be counted a second time.  Ordinary expenses with category "interest"
+        # are nevertheless valid booked interest and belong in this overview.
+        manual_bookings=[]; recurring_versions=[]; latest_once={}
+        for version in manual_versions:
+            if version["flow_id"] in linked_flow_ids: continue
+            if (version.get("recurrence") or "once")=="once":
+                latest_once[version["flow_id"]]=version
+            else:
+                recurring_versions.append(version)
+        interest_versions=list(latest_once.values())+recurring_versions
+        for version in interest_versions:
+            due_date=version.get("due_date")
+            if not due_date: continue
+            recurrence=version.get("recurrence") or "once"
+            try:
+                if recurrence=="once":
+                    due_dates=[date.fromisoformat(due_date)] if due_date<=cutoff else []
+                else:
+                    start=(date.fromisoformat(due_date)-timedelta(days=1)).isoformat()
+                    due_dates=planned_booking_dates(due_date,recurrence,start,cutoff,
+                        version.get("version_from"),version.get("version_to"),
+                        version.get("stream_start"),version.get("stream_end"))
+            except (TypeError,ValueError):
+                continue
+            for due in due_dates:
+                due_text=due.isoformat(); occurrence_key=f"cash-flow:{version['flow_id']}:{due_text}"
+                manual_bookings.append({
+                    "id":occurrence_key,"household_id":hid,"credit_id":None,
+                    "booking_date":due_text,
+                    "amount_cents":amount_overrides.get(occurrence_key,int(version.get("amount_cents") or 0)),
+                    "account_id":version.get("account_id"),"cash_flow_id":version["flow_id"],
+                    "credit_name":version.get("booking_name") or "Zinsen","provider":None,
+                    "account_name":version.get("account_name"),"source":"expense","unassigned":True,
+                })
+        bookings.extend(manual_bookings)
+        bookings.sort(key=lambda item:(item.get("booking_date") or "",item.get("id") or ""),reverse=True)
+        by_credit={item["id"]:item for item in view.get("items",[])}
+        for booking in bookings: booking["credit"] = by_credit.get(booking["credit_id"])
+        rows=[]
+        for credit in view.get("items",[]):
+            expected_total=int(credit.get("interest_cents") or 0)+int(credit.get("future_interest_cents") or 0)
+            rows.append({"credit_id":credit["id"],"name":credit["name"],"provider":credit.get("provider"),
+                "credit_type":credit["credit_type"],"calculated_interest_cents":int(credit.get("interest_cents") or 0),
+                "future_interest_cents":int(credit.get("future_interest_cents") or 0),
+                "expected_total_interest_cents":expected_total,
+                "interest_rate":credit.get("interest_rate") or credit.get("calculated_interest_rate"),
+                "interest_rate_inferred":bool(credit.get("interest_rate_inferred")),
+                "booked_interest_cents":int(credit.get("interest_booked_cents") or 0),
+                "difference_cents":int(credit.get("interest_cents") or 0)-int(credit.get("interest_booked_cents") or 0)})
+        unassigned_total=sum(int(item["amount_cents"] or 0) for item in manual_bookings)
+        credit_interest_total=sum(row["calculated_interest_cents"] for row in rows)
+        planned_credit_interest_total=sum(row["future_interest_cents"] for row in rows)
+        return {"as_of":view.get("as_of"),"items":rows,"bookings":bookings,
+            "account_interest_bookings":manual_bookings,
+            "totals":{"credit_interest_cents":credit_interest_total,
+                "planned_credit_interest_cents":planned_credit_interest_total,
+                "checking_account_interest_cents":unassigned_total,
+                "total_interest_cents":credit_interest_total+unassigned_total,
+                "calculated_interest_cents":credit_interest_total,
+                "future_interest_cents":planned_credit_interest_total,
+                "expected_total_interest_cents":sum(row["expected_total_interest_cents"] for row in rows),
+                "booked_interest_cents":sum(row["booked_interest_cents"] for row in rows)+unassigned_total,
+                "unassigned_interest_cents":unassigned_total}}
+
+    def create_interest_booking(self,payload):
+        hid=str(payload.get("household_id") or "").strip(); credit_id=str(payload.get("credit_id") or "").strip()
+        if not hid or not credit_id: raise ValueError("Haushalt und Kredit sind erforderlich.")
+        try: booking_date=date.fromisoformat(str(payload.get("booking_date") or "")).isoformat()
+        except ValueError: raise ValueError("Das Buchungsdatum muss ein gültiges Datum sein.")
+        try: amount_cents=int(payload.get("amount_cents") or 0)
+        except (TypeError,ValueError): raise ValueError("Der Zinsbetrag muss ein gültiger Geldwert sein.")
+        if amount_cents<=0: raise ValueError("Der Zinsbetrag muss größer als 0,00 € sein.")
+        with self.connect() as con:
+            credit=con.execute("SELECT * FROM credits WHERE id=? AND household_id=?",(credit_id,hid)).fetchone()
+            if not credit: raise ValueError("Kredit nicht gefunden.")
+            account_id=payload.get("account_id") or None
+            if account_id and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone():
+                raise ValueError("Das gewählte Konto gehört nicht zum Haushalt.")
+            name=f"Zinsen – {credit['name']}"
+        flow=self.create_cash_flow({"household_id":hid,"kind":"expense","name":name,"category":"interest",
+            "amount_cents":amount_cents,"recurrence":"once","due_date":booking_date,"account_id":account_id,
+            "owner":"A","active":True})
+        booking_id=uid()
+        with self.lock,self.connect() as con:
+            con.execute("""INSERT INTO credit_interest_bookings(id,household_id,credit_id,booking_date,amount_cents,account_id,cash_flow_id)
+                VALUES(?,?,?,?,?,?,?)""",(booking_id,hid,credit_id,booking_date,amount_cents,account_id,flow["id"]))
+        return self.list_interest(hid,booking_date)
+
+    def delete_interest_booking(self,hid,booking_id):
+        with self.lock,self.connect() as con:
+            row=con.execute("SELECT cash_flow_id FROM credit_interest_bookings WHERE id=? AND household_id=?",(booking_id,hid)).fetchone()
+            if not row: raise ValueError("Zinsbuchung nicht gefunden.")
+            flow_id=row["cash_flow_id"]
+            con.execute("DELETE FROM credit_interest_bookings WHERE id=?",(booking_id,))
+        if flow_id:
+            try: self.delete_cash_flow(hid,flow_id)
+            except ValueError: pass
+        return self.list_interest(hid)
     def credit_detail(self,hid,credit_id,as_of=None):
         result=self.list_credits(hid,as_of)
         credit=next((item for item in result["items"] if item["id"]==credit_id),None)
@@ -633,13 +1219,20 @@ class Repository:
     def save_energylab_integration(self,payload):
         hid=payload.get("household_id"); base_url=str(payload.get("base_url") or "").strip().rstrip("/")
         account_id=payload.get("account_id") or None; enabled=0 if payload.get("enabled") in (False,0,"0") else 1
+        callback_token=(str(payload.get("callback_token") or "").strip() or None) if "callback_token" in payload else None
         if not hid or not base_url.startswith(("http://","https://")): raise ValueError("Haushalt und eine gültige EnergyLab-Adresse sind erforderlich.")
         with self.lock,self.connect() as con:
             if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone(): raise ValueError("Haushalt nicht gefunden.")
             if account_id and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone(): raise ValueError("Das gewählte Konto gehört nicht zum Haushalt.")
-            con.execute("""INSERT INTO energylab_integrations(household_id,base_url,account_id,enabled)
-                VALUES(?,?,?,?) ON CONFLICT(household_id) DO UPDATE SET
-                base_url=excluded.base_url,account_id=excluded.account_id,enabled=excluded.enabled,updated_at=CURRENT_TIMESTAMP""",(hid,base_url,account_id,enabled))
+            if "callback_token" in payload:
+                con.execute("""INSERT INTO energylab_integrations(household_id,base_url,account_id,enabled,callback_token)
+                    VALUES(?,?,?,?,?) ON CONFLICT(household_id) DO UPDATE SET
+                    base_url=excluded.base_url,account_id=excluded.account_id,enabled=excluded.enabled,
+                    callback_token=excluded.callback_token,updated_at=CURRENT_TIMESTAMP""",(hid,base_url,account_id,enabled,callback_token))
+            else:
+                con.execute("""INSERT INTO energylab_integrations(household_id,base_url,account_id,enabled)
+                    VALUES(?,?,?,?) ON CONFLICT(household_id) DO UPDATE SET
+                    base_url=excluded.base_url,account_id=excluded.account_id,enabled=excluded.enabled,updated_at=CURRENT_TIMESTAMP""",(hid,base_url,account_id,enabled))
         return self.energylab_integration(hid)
     def enabled_energylab_integrations(self):
         with self.connect() as con: return [dict(row) for row in con.execute("SELECT * FROM energylab_integrations WHERE enabled=1")]
@@ -698,14 +1291,14 @@ class Repository:
                     con.execute("UPDATE cash_flows SET name=?,owner_scope=?,owner_person_id=?,account_id=?,category='energy' WHERE id=?",(name,owner_scope,owner_person_id,flow_account_id,flow_id))
                     payment_amount=contract.get("paymentAmount")
                     if payment_amount is None: payment_amount=contract.get("advanceMonthly")
-                    values={start[:7]:(start,self._energylab_cents(payment_amount))}
+                    values={start:(start,self._energylab_cents(payment_amount))}
                     for change in contract.get("advanceChanges") or []:
                         change_from=str(change.get("validFrom") or "")
                         try: change_date=date.fromisoformat(change_from)
                         except (TypeError,ValueError): continue
                         if change_date<start_date or (end and change_from>end): continue
-                        effective=start if change_date.strftime("%Y-%m")==start_date.strftime("%Y-%m") else change_date.replace(day=1).isoformat()
-                        values[effective[:7]]=(effective,self._energylab_cents(change.get("advanceMonthly")))
+                        effective=change_date.isoformat()
+                        values[effective]=(effective,self._energylab_cents(change.get("advanceMonthly")))
                     schedule=sorted(values.values()); con.execute("DELETE FROM cash_flow_versions WHERE cash_flow_id=?",(flow_id,)); due_day=payment_day or start_date.day
                     for index,(effective,amount) in enumerate(schedule):
                         effective_date=date.fromisoformat(effective)
@@ -717,6 +1310,582 @@ class Repository:
             stale=[row for row in con.execute("SELECT id,source_key FROM cash_flows WHERE household_id=? AND source_key LIKE 'energylab:advance:%'",(hid,)).fetchall() if row["source_key"] not in seen]
             for row in stale: con.execute("UPDATE cash_flow_versions SET active=0 WHERE cash_flow_id=?",(row["id"],))
         return {"created":created,"updated":updated,"deactivated":len(stale),"contracts":len(seen),"unmatched_accounts":unmatched_accounts}
+
+    @staticmethod
+    def _canonical_json(value):
+        return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"))
+
+    @staticmethod
+    def _strict_energylab_cents(value,field="Betrag"):
+        try:
+            decimal=Decimal(str(value))
+        except (InvalidOperation,TypeError,ValueError) as exc:
+            raise ValueError(f"{field} ist ungültig.") from exc
+        if not decimal.is_finite(): raise ValueError(f"{field} ist ungültig.")
+        cents=int((decimal*100).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
+        if cents<0: raise ValueError(f"{field} darf nicht negativ sein.")
+        return cents
+
+    def _current_energylab_snapshot(self,con,hid,source_key):
+        flow=con.execute("SELECT * FROM cash_flows WHERE household_id=? AND source_key=?",(hid,source_key)).fetchone()
+        if not flow: return None
+        versions=con.execute("""SELECT amount_cents,active,version_from,version_to,stream_start,stream_end,
+                due_date,source_reference,recurrence,name,category,owner_scope,owner_person_id,account_id
+            FROM cash_flow_versions WHERE cash_flow_id=? ORDER BY version_from,rowid""",(flow["id"],)).fetchall()
+        return {
+            "source_key":source_key,"name":flow["name"],"account_id":flow["account_id"],
+            "owner_scope":flow["owner_scope"],"owner_person_id":flow["owner_person_id"],
+            "category":flow["category"],"kind":flow["kind"],
+            "versions":[dict(row) for row in versions],
+        }
+
+    def _normalize_energylab_payload(self,con,hid,payload):
+        if not isinstance(payload,dict) or payload.get("source",{}).get("app") not in ("EnergieLab","EnergyLab"):
+            raise ValueError("Die Gegenstelle liefert keine gültigen EnergyLab-Daten.")
+        segments=payload.get("segments")
+        if not isinstance(segments,list): raise ValueError("Die EnergyLab-Vertragsdaten fehlen.")
+        config=con.execute("SELECT * FROM energylab_integrations WHERE household_id=?",(hid,)).fetchone()
+        household=con.execute("SELECT * FROM households WHERE id=?",(hid,)).fetchone()
+        if not config or not household: raise ValueError("Die EnergyLab-Verbindung ist nicht eingerichtet.")
+        default_account=config["account_id"]
+        if default_account and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(default_account,hid)).fetchone():
+            default_account=None
+        person=con.execute("SELECT id FROM persons WHERE household_id=? AND slot='A'",(hid,)).fetchone()
+        owner_scope="joint" if household["mode"]=="couple" else "person"
+        owner_person_id=None if owner_scope=="joint" else person["id"]
+        labels={"electricity":"Strom","gas":"Gas","water":"Wasser","wastewater":"Abwasser"}
+        desired={}; unmatched=[]; warnings=[]
+        for segment in segments:
+            segment_id=str(segment.get("id") or "")
+            if segment_id not in labels: continue
+            contracts=segment.get("contracts") or []
+            if not isinstance(contracts,list):
+                warnings.append(f"{labels[segment_id]}: ungültige Vertragsliste übersprungen."); continue
+            for contract in contracts:
+                remote_id=str(contract.get("id") or "").strip()
+                if not remote_id:
+                    warnings.append(f"{labels[segment_id]}: Vertrag ohne ID übersprungen."); continue
+                try:
+                    start_date=date.fromisoformat(str(contract.get("validFrom") or ""))
+                    end_date=date.fromisoformat(str(contract.get("validTo"))) if contract.get("validTo") else None
+                except (TypeError,ValueError):
+                    warnings.append(f"{labels[segment_id]} {remote_id}: ungültiger Zeitraum übersprungen."); continue
+                if end_date and end_date<start_date:
+                    warnings.append(f"{labels[segment_id]} {remote_id}: Enddatum liegt vor dem Startdatum."); continue
+                recurrence=str(contract.get("paymentRecurrence") or "monthly")
+                if recurrence not in {*RECURRENCE_MONTHS,"once"}: recurrence="monthly"
+                explicit_first=None
+                if contract.get("firstPaymentDate"):
+                    try: explicit_first=date.fromisoformat(str(contract["firstPaymentDate"]))
+                    except ValueError: warnings.append(f"{labels[segment_id]} {remote_id}: ungültige erste Fälligkeit ignoriert.")
+                if explicit_first and (explicit_first<start_date or (end_date and explicit_first>end_date)): explicit_first=None
+                provider=str(contract.get("provider") or "").strip()
+                name=f"EnergyLab · {labels[segment_id]}"+(f" · {provider}" if provider else "")
+                source_key=f"energylab:advance:{segment_id}:{remote_id}"
+                override=con.execute("SELECT account_id,payment_day FROM energylab_account_overrides WHERE household_id=? AND source_key=?",(hid,source_key)).fetchone()
+                source_account_name=str(contract.get("paymentAccountName") or "").strip()
+                source_account=con.execute("SELECT id FROM accounts WHERE household_id=? AND lower(name)=lower(?)",(hid,source_account_name)).fetchone() if source_account_name else None
+                if source_account_name and not source_account: unmatched.append(f"{name}: {source_account_name}")
+                flow_account_id=(override["account_id"] if override else None) or (source_account["id"] if source_account else None) or default_account
+                try: source_payment_day=int(contract.get("paymentDay"))
+                except (TypeError,ValueError): source_payment_day=None
+                if source_payment_day not in range(1,32): source_payment_day=None
+                payment_day=(int(override["payment_day"]) if override and override["payment_day"] else None) or source_payment_day
+                initial=contract.get("paymentAmount")
+                if initial is None: initial=contract.get("advanceMonthly")
+                if initial is None:
+                    warnings.append(f"{name}: Abschlagsbetrag fehlt und wurde als 0,00 EUR behandelt."); initial=0
+                amount_changes={start_date:self._strict_energylab_cents(initial,f"{name}: Abschlagsbetrag")}
+                for change in contract.get("advanceChanges") or []:
+                    try: change_date=date.fromisoformat(str(change.get("validFrom") or ""))
+                    except (TypeError,ValueError):
+                        warnings.append(f"{name}: Änderung mit ungültigem Datum ignoriert."); continue
+                    if change_date<start_date or (end_date and change_date>end_date):
+                        warnings.append(f"{name}: Änderung außerhalb der Vertragslaufzeit ignoriert."); continue
+                    change_value=change.get("advanceMonthly")
+                    if change_value is None: change_value=change.get("paymentAmount")
+                    amount_changes[change_date]=self._strict_energylab_cents(change_value,f"{name}: geänderter Abschlag")
+                suspensions=[]
+                for pause in contract.get("suspendedPeriods") or contract.get("paymentPauses") or []:
+                    try:
+                        pause_from=date.fromisoformat(str(pause.get("validFrom") or pause.get("from") or ""))
+                        pause_to=date.fromisoformat(str(pause.get("validTo") or pause.get("to") or ""))
+                    except (TypeError,ValueError):
+                        warnings.append(f"{name}: ungültige Zahlungspause ignoriert."); continue
+                    pause_from=max(pause_from,start_date); pause_to=min(pause_to,end_date) if end_date else pause_to
+                    if pause_from<=pause_to: suspensions.append((pause_from,pause_to))
+                boundaries=set(amount_changes)
+                for pause_from,pause_to in suspensions:
+                    boundaries.add(pause_from)
+                    resume=pause_to+timedelta(days=1)
+                    if not end_date or resume<=end_date: boundaries.add(resume)
+                ordered=sorted(day for day in boundaries if not end_date or day<=end_date)
+                versions=[]; due_day=payment_day or start_date.day
+                contractual_first_due=(explicit_first or
+                    (energylab_first_due(start_date,due_day,recurrence) if payment_day else start_date))
+                for index,effective_date in enumerate(ordered):
+                    amount=amount_changes[max(day for day in amount_changes if day<=effective_date)]
+                    paused=any(pause_from<=effective_date<=pause_to for pause_from,pause_to in suspensions)
+                    versions.append({
+                        "amount_cents":amount,"active":1 if amount>0 and not paused else 0,
+                        "version_from":effective_date.isoformat(),
+                        "version_to":ordered[index+1].isoformat() if index+1<len(ordered) else None,
+                        "stream_start":start_date.isoformat(),"stream_end":end_date.isoformat() if end_date else None,
+                        # Every version keeps the original contractual anchor.
+                        # version_from/version_to selects the applicable amount;
+                        # moving due_date to the first date after a change would
+                        # make a 31st drift permanently to the 29th in February.
+                        "due_date":contractual_first_due.isoformat(),"source_reference":f"EnergyLab-Vertrag {remote_id}",
+                        "recurrence":recurrence,"name":name,"category":"energy",
+                        "owner_scope":owner_scope,"owner_person_id":owner_person_id,"account_id":flow_account_id,
+                    })
+                desired[source_key]={
+                    "source_key":source_key,"name":name,"account_id":flow_account_id,
+                    "owner_scope":owner_scope,"owner_person_id":owner_person_id,
+                    "category":"energy","kind":"expense","versions":versions,
+                    "segment_id":segment_id,"contract_id":remote_id,"provider":provider,
+                }
+        return desired,sorted(set(unmatched)),warnings
+
+    def preview_energylab_contracts(self,hid,payload):
+        canonical_payload=self._canonical_json(payload)
+        payload_hash=hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+        with self.connect() as con:
+            desired,unmatched,warnings=self._normalize_energylab_payload(con,hid,payload)
+            current_keys={row["source_key"] for row in con.execute(
+                "SELECT source_key FROM cash_flows WHERE household_id=? AND source_key LIKE 'energylab:advance:%'",(hid,)).fetchall()}
+            items=[]
+            for source_key,after in sorted(desired.items()):
+                before=self._current_energylab_snapshot(con,hid,source_key)
+                comparable_after={key:value for key,value in after.items() if key not in ("segment_id","contract_id","provider")}
+                action="create" if before is None else ("unchanged" if before==comparable_after else "update")
+                items.append({"source_key":source_key,"segment_id":after["segment_id"],"contract_id":after["contract_id"],
+                    "provider":after["provider"],"name":after["name"],"action":action,"before":before,"after":comparable_after})
+            for source_key in sorted(current_keys-set(desired)):
+                items.append({"source_key":source_key,"action":"deactivate","before":self._current_energylab_snapshot(con,hid,source_key),"after":None})
+        counts={action:sum(item["action"]==action for item in items) for action in ("create","update","unchanged","deactivate")}
+        return {"payload_sha256":payload_hash,"source_version":str(payload.get("source",{}).get("version") or ""),
+            "contracts":len(desired),"created":counts["create"],"updated":counts["update"],
+            "unchanged":counts["unchanged"],"deactivated":counts["deactivate"],
+            "unmatched_accounts":unmatched,"warnings":warnings,"items":items}
+
+    def sync_energylab_contracts(self,hid,payload):
+        preview=self.preview_energylab_contracts(hid,payload)
+        started=timestamp(); run_id=uid()
+        with self.lock,self.connect() as con:
+            desired,unmatched,warnings=self._normalize_energylab_payload(con,hid,payload)
+            preview_by_key={item["source_key"]:item for item in preview["items"]}
+            for source_key,item in desired.items():
+                operation=preview_by_key[source_key]
+                flow=con.execute("SELECT id FROM cash_flows WHERE household_id=? AND source_key=?",(hid,source_key)).fetchone()
+                if flow:
+                    flow_id=flow["id"]
+                    # These fields are deliberately structured.  Matching a
+                    # payment to a supplier must not depend on parsing the
+                    # human-readable flow name, especially around a switch.
+                    con.execute("""UPDATE cash_flows SET
+                        source_provider=?,source_segment_id=?,source_contract_id=? WHERE id=?""",
+                        (item["provider"],item["segment_id"],item["contract_id"],flow_id))
+                    if operation["action"]=="unchanged":
+                        continue
+                else:
+                    flow_id=uid()
+                    con.execute("""INSERT INTO cash_flows(
+                            id,household_id,kind,name,owner_scope,owner_person_id,account_id,source_key,
+                            source_provider,source_segment_id,source_contract_id,category)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",(
+                            flow_id,hid,"expense",item["name"],item["owner_scope"],item["owner_person_id"],
+                            item["account_id"],source_key,item["provider"],item["segment_id"],item["contract_id"],"energy"))
+                con.execute("""UPDATE cash_flows SET kind='expense',name=?,owner_scope=?,owner_person_id=?,
+                    account_id=?,source_provider=?,source_segment_id=?,source_contract_id=?,category='energy' WHERE id=?""",
+                    (item["name"],item["owner_scope"],item["owner_person_id"],item["account_id"],item["provider"],
+                     item["segment_id"],item["contract_id"],flow_id))
+                con.execute("DELETE FROM cash_flow_versions WHERE cash_flow_id=?",(flow_id,))
+                for version in item["versions"]:
+                    con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,
+                        stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,
+                        owner_scope,owner_person_id,account_id,credit_id,credit_reduction_cents)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (uid(),flow_id,version["amount_cents"],version["active"],version["version_from"],version["version_to"],
+                         version["stream_start"],version["stream_end"],version["due_date"],version["source_reference"],None,
+                         version["recurrence"],version["name"],version["category"],version["owner_scope"],
+                         version["owner_person_id"],version["account_id"],None,0))
+            stale_day=(date.today()-timedelta(days=1)).isoformat()
+            for operation in preview["items"]:
+                if operation["action"]!="deactivate": continue
+                flow=con.execute("SELECT id FROM cash_flows WHERE household_id=? AND source_key=?",(hid,operation["source_key"])).fetchone()
+                if not flow: continue
+                con.execute("""UPDATE cash_flow_versions SET
+                    stream_end=CASE WHEN stream_start>? THEN stream_end WHEN stream_end IS NULL OR stream_end>? THEN ? ELSE stream_end END,
+                    active=CASE WHEN stream_start>? THEN 0 ELSE active END
+                    WHERE cash_flow_id=?""",(stale_day,stale_day,stale_day,stale_day,flow["id"]))
+            finished=timestamp()
+            con.execute("""INSERT INTO energylab_sync_runs(id,household_id,status,source_version,payload_sha256,contracts,
+                created,updated,unchanged,deactivated,message,started_at,finished_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (run_id,hid,"ok",preview["source_version"],preview["payload_sha256"],preview["contracts"],preview["created"],
+                 preview["updated"],preview["unchanged"],preview["deactivated"],"EnergyLab-Import erfolgreich",started,finished))
+            for operation in preview["items"]:
+                after=(self._current_energylab_snapshot(con,hid,operation["source_key"])
+                    if operation["action"]!="deactivate" else None)
+                con.execute("""INSERT INTO energylab_sync_items(id,run_id,household_id,source_key,action,before_payload,after_payload,created_at)
+                    VALUES(?,?,?,?,?,?,?,?)""",(uid(),run_id,hid,operation["source_key"],operation["action"],
+                    self._canonical_json(operation.get("before")) if operation.get("before") is not None else None,
+                    self._canonical_json(after) if after is not None else None,finished))
+            con.execute("UPDATE energylab_integrations SET last_payload_sha256=? WHERE household_id=?",(preview["payload_sha256"],hid))
+            self._import_energylab_payload_events(con,hid,payload)
+        return {key:value for key,value in preview.items() if key!="items"}|{"run_id":run_id,"unmatched_accounts":unmatched,"warnings":warnings}
+
+    def record_energylab_sync(self,hid,status,message):
+        now=timestamp()
+        with self.lock,self.connect() as con:
+            con.execute("UPDATE energylab_integrations SET last_sync_at=?,last_status=?,last_message=? WHERE household_id=?",
+                (now,status,str(message)[:500],hid))
+            if status=="error" and con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone():
+                con.execute("""INSERT INTO energylab_sync_runs(id,household_id,status,message,started_at,finished_at)
+                    VALUES(?,?,?,?,?,?)""",(uid(),hid,"error",str(message)[:1000],now,now))
+
+    def list_energylab_sync_history(self,hid,limit=20):
+        try: limit=max(1,min(100,int(limit)))
+        except (TypeError,ValueError): limit=20
+        with self.connect() as con:
+            rows=con.execute("SELECT * FROM energylab_sync_runs WHERE household_id=? ORDER BY finished_at DESC LIMIT ?",(hid,limit)).fetchall()
+            result=[]
+            for row in rows:
+                item=dict(row)
+                details=con.execute("SELECT source_key,action,before_payload,after_payload FROM energylab_sync_items WHERE run_id=? ORDER BY source_key",(row["id"],)).fetchall()
+                item["items"]=[{**dict(detail),"before":json.loads(detail["before_payload"]) if detail["before_payload"] else None,
+                    "after":json.loads(detail["after_payload"]) if detail["after_payload"] else None} for detail in details]
+                for detail in item["items"]: detail.pop("before_payload",None); detail.pop("after_payload",None)
+                result.append(item)
+            return result
+
+    def energylab_sync_status(self,hid):
+        integration=self.energylab_integration(hid)
+        with self.connect() as con:
+            latest=con.execute("SELECT id,finished_at,status,payload_sha256 FROM energylab_sync_runs WHERE household_id=? ORDER BY finished_at DESC LIMIT 1",(hid,)).fetchone()
+            pending=con.execute("""SELECT COUNT(*) FROM bank_transaction_matches m JOIN bank_transactions t ON t.id=m.transaction_id
+                JOIN cash_flows f ON f.id=m.target_id WHERE t.household_id=? AND f.source_key LIKE 'energylab:%'
+                AND (m.confirmed=0 OR m.status='pending')""",(hid,)).fetchone()[0]
+            actual=con.execute("""SELECT COUNT(*) FROM bank_transaction_matches m JOIN bank_transactions t ON t.id=m.transaction_id
+                JOIN cash_flows f ON f.id=m.target_id WHERE t.household_id=? AND f.source_key LIKE 'energylab:%'
+                AND m.status='confirmed'""",(hid,)).fetchone()[0]
+            contracts=con.execute("SELECT COUNT(*) FROM cash_flows WHERE household_id=? AND source_key LIKE 'energylab:advance:%'",(hid,)).fetchone()[0]
+        safe={key:value for key,value in integration.items() if key!="callback_token"}
+        return {**safe,"connected":bool(integration.get("enabled")),"contract_count":contracts,
+            "confirmed_payment_count":actual,"pending_review_count":pending,
+            "latest_audit":dict(latest) if latest else None,"api_version":APP_VERSION}
+
+    def resolve_energylab_household(self,value):
+        """Resolve a callback household without requiring the inbound sync setup.
+
+        EnergyLab stores the FinanzLab household reference as text.  Older setups
+        sometimes used the visible household name because the UUID was not shown
+        in the UI.  Accept an exact UUID first and, for backwards compatibility,
+        a unique case-insensitive household name.
+        """
+        reference=str(value or "").strip()
+        if not reference:
+            raise ValueError("Die Haushalts-ID für den Zahlungsabgleich fehlt.")
+        with self.connect() as con:
+            row=con.execute("SELECT id FROM households WHERE id=?",(reference,)).fetchone()
+            if row:
+                return row["id"]
+            matches=con.execute(
+                "SELECT id FROM households WHERE lower(trim(name))=lower(?) ORDER BY created_at,id",
+                (reference,),
+            ).fetchall()
+        if len(matches)==1:
+            return matches[0]["id"]
+        if len(matches)>1:
+            raise ValueError(
+                "Der Haushaltsname ist nicht eindeutig. Bitte die interne Haushalts-ID verwenden."
+            )
+        raise KeyError("Haushalt nicht gefunden.")
+
+    def verify_energylab_access(self,hid,token=None):
+        with self.connect() as con:
+            household=con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone()
+            row=con.execute(
+                "SELECT callback_token FROM energylab_integrations WHERE household_id=?",(hid,)
+            ).fetchone()
+        if not household:
+            raise KeyError("Haushalt nicht gefunden.")
+        # The inbound contract import and the outbound actual-payment feed are
+        # independent directions.  A migrated 1.1.2 household may legitimately
+        # have no energylab_integrations row yet; in that case the feed is still
+        # available (like the other local household APIs) and simply contains
+        # the matches already present for that household.
+        expected=str(row["callback_token"] or "") if row else ""
+        if expected and not secrets.compare_digest(expected,str(token or "")):
+            raise PermissionError("Ungültiger Zugriffsschlüssel.")
+        return True
+
+    @staticmethod
+    def _payment_source_key(payload):
+        source_key=str(payload.get("source_key") or payload.get("sourceKey") or "").strip()
+        if source_key: return source_key
+        segment=str(payload.get("segment_id") or payload.get("segmentId") or "").strip()
+        contract=str(payload.get("contract_id") or payload.get("contractId") or "").strip()
+        return f"energylab:advance:{segment}:{contract}" if segment and contract else ""
+
+    @staticmethod
+    def _event_cents(payload,cent_names,value_names,default=None):
+        for name in cent_names:
+            if payload.get(name) not in (None,""):
+                try: return int(payload[name])
+                except (TypeError,ValueError) as exc: raise ValueError("Der Ereignisbetrag muss centgenau sein.") from exc
+        for name in value_names:
+            if payload.get(name) not in (None,""):
+                try: return int((Decimal(str(payload[name]))*100).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
+                except (InvalidOperation,TypeError,ValueError) as exc: raise ValueError("Der Ereignisbetrag ist ungültig.") from exc
+        return default
+
+    def _planned_amount_for(self,con,flow_id,occurrence_date):
+        row=con.execute("""SELECT amount_cents FROM cash_flow_versions WHERE cash_flow_id=?
+            AND version_from<=? AND (version_to IS NULL OR version_to>?)
+            AND (stream_start IS NULL OR stream_start<=?) AND (stream_end IS NULL OR stream_end>=?)
+            ORDER BY version_from DESC,rowid DESC LIMIT 1""",
+            (flow_id,occurrence_date,occurrence_date,occurrence_date,occurrence_date)).fetchone()
+        return int(row["amount_cents"]) if row else None
+
+    def _insert_energylab_payment_event(self,con,hid,payload):
+        source_key=self._payment_source_key(payload)
+        flow=con.execute("SELECT id FROM cash_flows WHERE household_id=? AND source_key=?",(hid,source_key)).fetchone()
+        if not source_key or not flow: raise ValueError("Das Zahlungsereignis gehört zu keinem importierten EnergyLab-Vertrag.")
+        occurrence=as_of_date(payload.get("occurrence_date") or payload.get("occurrenceDate") or
+            payload.get("planned_date") or payload.get("plannedDate") or payload.get("booking_date") or payload.get("bookingDate"))
+        event_type=str(payload.get("event_type") or payload.get("eventType") or payload.get("type") or "payment").casefold()
+        event_type={"paid":"payment","reversal":"chargeback","reversed":"chargeback","pause":"skipped"}.get(event_type,event_type)
+        if event_type not in ("payment","refund","chargeback","correction","skipped"):
+            raise ValueError("Unbekannter Typ des Zahlungsereignisses.")
+        amount=self._event_cents(payload,("actual_amount_cents","actualAmountCents","amount_cents","amountCents"),("actual_amount","actualAmount","amount"),0)
+        if event_type=="payment": amount=abs(amount)
+        elif event_type in ("refund","chargeback"): amount=-abs(amount)
+        elif event_type=="skipped": amount=0
+        elif not amount: raise ValueError("Eine Korrektur benötigt einen positiven oder negativen Betrag.")
+        planned=self._event_cents(payload,("planned_amount_cents","plannedAmountCents"),("planned_amount","plannedAmount"),None)
+        if planned is None: planned=self._planned_amount_for(con,flow["id"],occurrence)
+        status=str(payload.get("status") or "confirmed").casefold()
+        status={"paid":"confirmed","cancelled":"reversed","canceled":"reversed"}.get(status,status)
+        if status not in ("pending","confirmed","reversed","ignored"): raise ValueError("Ungültiger Zahlungsstatus.")
+        external_id=str(payload.get("external_id") or payload.get("externalId") or "").strip() or None
+        if external_id:
+            existing=con.execute("SELECT * FROM energylab_payment_events WHERE household_id=? AND external_id=?",(hid,external_id)).fetchone()
+            if existing:
+                same=(existing["source_key"]==source_key and existing["occurrence_date"]==occurrence and
+                    int(existing["actual_amount_cents"])==amount and existing["event_type"]==event_type and existing["status"]==status)
+                if not same: raise ValueError("Ein Zahlungsereignis mit dieser externen ID existiert bereits mit anderem Inhalt.")
+                return dict(existing)|{"already_recorded":True}
+        supersedes=str(payload.get("supersedes_event_id") or payload.get("supersedesEventId") or "").strip() or None
+        if supersedes and not con.execute("SELECT 1 FROM energylab_payment_events WHERE id=? AND household_id=?",(supersedes,hid)).fetchone():
+            raise ValueError("Das zu korrigierende Zahlungsereignis wurde nicht gefunden.")
+        event_id=uid(); created=timestamp(); confirmed=1 if payload.get("confirmed",status=="confirmed") else 0
+        con.execute("""INSERT INTO energylab_payment_events(id,household_id,source_key,occurrence_date,planned_amount_cents,
+            actual_amount_cents,event_type,status,bank_transaction_id,external_id,note,confirmed,created_at,supersedes_event_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(event_id,hid,source_key,occurrence,planned,amount,event_type,status,
+            payload.get("bank_transaction_id") or None,external_id,str(payload.get("note") or "").strip()[:500] or None,
+            confirmed,created,supersedes))
+        return dict(con.execute("SELECT * FROM energylab_payment_events WHERE id=?",(event_id,)).fetchone())|{"already_recorded":False}
+
+    def _import_energylab_payload_events(self,con,hid,payload):
+        events=[]
+        for event in payload.get("paymentEvents") or payload.get("payment_events") or []:
+            events.append(dict(event))
+        for segment in payload.get("segments") or []:
+            segment_id=str(segment.get("id") or "")
+            for contract in segment.get("contracts") or []:
+                contract_id=str(contract.get("id") or "")
+                for event in contract.get("paymentEvents") or contract.get("payment_events") or []:
+                    events.append({"segment_id":segment_id,"contract_id":contract_id,**dict(event)})
+        for event in events: self._insert_energylab_payment_event(con,hid,event)
+
+    def record_energylab_payment_event(self,hid,payload):
+        if not hid: raise ValueError("Haushalt fehlt.")
+        with self.lock,self.connect() as con: return self._insert_energylab_payment_event(con,hid,payload)
+
+    @staticmethod
+    def _source_parts(source_key):
+        parts=str(source_key or "").split(":",3)
+        return (parts[2],parts[3]) if len(parts)==4 and parts[:2]==["energylab","advance"] else (None,None)
+
+    def actual_energylab_payments(self,hid,since=None):
+        since_value=None
+        if since:
+            try: since_value=datetime.fromisoformat(str(since).replace("Z","+00:00")).date().isoformat()
+            except ValueError:
+                try: since_value=date.fromisoformat(str(since)).isoformat()
+                except ValueError as exc: raise ValueError("since muss ein ISO-Datum oder -Zeitpunkt sein.") from exc
+        # ``since`` denotes the booking/occurrence period requested by
+        # EnergyLab, not the time at which FinanzLab happened to import it.
+        # Filtering by created_at used to hide older persisted matches after an
+        # update even though their bank date belonged to the active contract.
+        clause=" AND occurrence_date>=?" if since_value else ""; params=(hid,since_value) if since_value else (hid,)
+        payments=[]
+        with self.connect() as con:
+            events=con.execute(f"SELECT * FROM energylab_payment_events WHERE household_id=?{clause} ORDER BY created_at,id",params).fetchall()
+            event_bank_ids={row["bank_transaction_id"] for row in events if row["bank_transaction_id"]}
+            for row in events:
+                segment_id,contract_id=self._source_parts(row["source_key"])
+                payments.append({
+                    "id":f"energylab-event:{row['id']}","source_key":row["source_key"],"segment_id":segment_id,
+                    "contract_id":contract_id,"occurrence_date":row["occurrence_date"],"planned_date":row["occurrence_date"],
+                    "booking_date":row["occurrence_date"],"planned_amount_cents":row["planned_amount_cents"],
+                    "actual_amount_cents":int(row["actual_amount_cents"]),"currency":"EUR","status":row["status"],
+                    "event_type":row["event_type"],"match_method":"manual-event","confidence":100 if row["confirmed"] else 0,
+                    "confirmed":bool(row["confirmed"]),"created_at":row["created_at"],
+                })
+            sql="""SELECT t.*,m.planned_date,m.match_method,m.score,m.confirmed,m.status AS match_status,
+                    f.id AS flow_id,f.source_key
+                FROM bank_transaction_matches m JOIN bank_transactions t ON t.id=m.transaction_id
+                JOIN cash_flows f ON f.id=m.target_id
+                WHERE t.household_id=? AND m.target_type='cash_flow' AND f.source_key LIKE 'energylab:advance:%'"""
+            values=[hid]
+            if since_value: sql+=" AND COALESCE(t.value_date,t.booking_date)>=?"; values.append(since_value)
+            sql+=" ORDER BY t.created_at,t.id"
+            for row in con.execute(sql,values).fetchall():
+                if row["id"] in event_bank_ids: continue
+                segment_id,contract_id=self._source_parts(row["source_key"])
+                is_reversal=row["match_status"]=="reversed" or int(row["amount_cents"])>0
+                actual=(-abs(int(row["amount_cents"])) if is_reversal else abs(int(row["amount_cents"])))
+                payments.append({
+                    "id":f"bank-transaction:{row['id']}","source_key":row["source_key"],"segment_id":segment_id,
+                    "contract_id":contract_id,"occurrence_date":row["planned_date"],"planned_date":row["planned_date"],
+                    "booking_date":row["value_date"] or row["booking_date"],
+                    "planned_amount_cents":self._planned_amount_for(con,row["flow_id"],row["planned_date"]),
+                    "actual_amount_cents":actual,"currency":row["currency"] or "EUR",
+                    "status":"reversed" if is_reversal else row["match_status"],
+                    "event_type":"chargeback" if is_reversal else "payment","match_method":row["match_method"],
+                    "confidence":int(row["score"]),"confirmed":bool(row["confirmed"]),"created_at":row["created_at"],
+                })
+        payments.sort(key=lambda item:(item["created_at"],item["id"]))
+        # API v3 uses the same camelCase field names as EnergyLab's contract
+        # export while retaining snake_case aliases for older local clients.
+        for item in payments:
+            item.update({
+                "sourceKey":item.get("source_key"),"segmentId":item.get("segment_id"),
+                "contractId":item.get("contract_id"),"occurrenceDate":item.get("occurrence_date"),
+                "plannedDate":item.get("planned_date"),"bookingDate":item.get("booking_date"),
+                "plannedAmountCents":item.get("planned_amount_cents"),
+                "actualAmountCents":item.get("actual_amount_cents"),
+                "eventType":item.get("event_type"),"matchMethod":item.get("match_method"),
+            })
+        return {"source":{"app":"FinanzLab","version":APP_VERSION},"generated_at":timestamp(),
+            "household_id":hid,"payments":payments}
+
+    def _planned_energylab_total(self,con,hid,source_key,period_from,period_to):
+        flow=con.execute("SELECT id FROM cash_flows WHERE household_id=? AND source_key=?",(hid,source_key)).fetchone()
+        if not flow: return 0
+        total=0; start=(date.fromisoformat(period_from)-timedelta(days=1)).isoformat()
+        for row in con.execute("SELECT * FROM cash_flow_versions WHERE cash_flow_id=? AND active=1",(flow["id"],)).fetchall():
+            dates=planned_booking_dates(row["due_date"],row["recurrence"] or "monthly",start,period_to,
+                row["version_from"],row["version_to"],row["stream_start"],row["stream_end"])
+            total+=len(dates)*int(row["amount_cents"] or 0)
+        return total
+
+    def create_energylab_billing_snapshot(self,hid,payload):
+        segment_id=str(payload.get("segment_id") or payload.get("segmentId") or "").strip()
+        contract_id=str(payload.get("contract_id") or payload.get("contractId") or "").strip()
+        period_from=as_of_date(payload.get("period_from") or payload.get("periodFrom"))
+        period_to=as_of_date(payload.get("period_to") or payload.get("periodTo"))
+        if not segment_id or not contract_id or period_to<period_from: raise ValueError("Vertrag und gültiger Abrechnungszeitraum sind erforderlich.")
+        source_key=f"energylab:advance:{segment_id}:{contract_id}"
+        all_payments=self.actual_energylab_payments(hid)["payments"]
+        payment_items=[item for item in all_payments if item["source_key"]==source_key and
+            period_from<=str(item.get("booking_date") or item["occurrence_date"])[:10]<=period_to and
+            item["status"] not in ("pending","ignored") and item["confirmed"]]
+        with self.lock,self.connect() as con:
+            if not con.execute("SELECT 1 FROM cash_flows WHERE household_id=? AND source_key=?",(hid,source_key)).fetchone():
+                raise ValueError("EnergyLab-Vertrag nicht gefunden.")
+            planned=self._planned_energylab_total(con,hid,source_key,period_from,period_to)
+            actual=sum(int(item["actual_amount_cents"]) for item in payment_items)
+            statement=payload.get("statement") if isinstance(payload.get("statement"),dict) else {}
+            frozen={"segment_id":segment_id,"contract_id":contract_id,"period_from":period_from,"period_to":period_to,
+                "statement":statement,"planned_total_cents":planned,"actual_total_cents":actual,
+                "payment_ids":[item["id"] for item in payment_items]}
+            digest=hashlib.sha256(self._canonical_json(frozen).encode("utf-8")).hexdigest()
+            latest=con.execute("""SELECT * FROM energylab_billing_snapshots WHERE household_id=? AND segment_id=? AND contract_id=?
+                AND period_from=? AND period_to=? ORDER BY revision DESC LIMIT 1""",(hid,segment_id,contract_id,period_from,period_to)).fetchone()
+            if latest and latest["payload_sha256"]==digest:
+                return self._billing_snapshot_from_row(con,latest)|{"already_exists":True}
+            revision=(int(latest["revision"])+1) if latest else 1; snapshot_id=uid(); created=timestamp()
+            con.execute("""INSERT INTO energylab_billing_snapshots(id,household_id,segment_id,contract_id,period_from,period_to,
+                revision,status,payload_sha256,statement_payload,planned_total_cents,actual_total_cents,created_at,supersedes_snapshot_id)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(snapshot_id,hid,segment_id,contract_id,period_from,period_to,revision,
+                str(payload.get("status") or "final"),digest,self._canonical_json(statement),planned,actual,created,latest["id"] if latest else None))
+            for item in payment_items:
+                con.execute("""INSERT INTO energylab_billing_snapshot_items(id,snapshot_id,payment_event_id,occurrence_date,
+                    planned_amount_cents,actual_amount_cents,event_type,status,payload) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (uid(),snapshot_id,item["id"],item["occurrence_date"],item["planned_amount_cents"],item["actual_amount_cents"],
+                     item["event_type"],item["status"],self._canonical_json(item)))
+            row=con.execute("SELECT * FROM energylab_billing_snapshots WHERE id=?",(snapshot_id,)).fetchone()
+            return self._billing_snapshot_from_row(con,row)|{"already_exists":False}
+
+    def _billing_snapshot_from_row(self,con,row):
+        result=dict(row); result["statement"]=json.loads(result.pop("statement_payload"))
+        items=con.execute("SELECT * FROM energylab_billing_snapshot_items WHERE snapshot_id=? ORDER BY occurrence_date,id",(row["id"],)).fetchall()
+        result["payments"]=[json.loads(item["payload"]) for item in items]
+        return result
+
+    def list_energylab_billing_snapshots(self,hid):
+        with self.connect() as con:
+            return [self._billing_snapshot_from_row(con,row) for row in con.execute(
+                "SELECT * FROM energylab_billing_snapshots WHERE household_id=? ORDER BY created_at DESC",(hid,)).fetchall()]
+
+    def get_energylab_billing_snapshot(self,hid,snapshot_id):
+        with self.connect() as con:
+            row=con.execute("SELECT * FROM energylab_billing_snapshots WHERE id=? AND household_id=?",(snapshot_id,hid)).fetchone()
+            if not row: raise ValueError("Abrechnungssnapshot nicht gefunden.")
+            return self._billing_snapshot_from_row(con,row)
+
+    def _backup_directory(self):
+        return Path(self.path).resolve().parent/"backups"
+
+    def create_backup(self,reason="manual"):
+        backup_dir=self._backup_directory(); backup_dir.mkdir(parents=True,exist_ok=True)
+        backup_id=uid(); compact=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        file_name=f"finanzlab-{compact}-{backup_id[:8]}.sqlite3"; target=backup_dir/file_name
+        with self.lock:
+            source=sqlite3.connect(self.path); destination=sqlite3.connect(target)
+            try: source.backup(destination)
+            finally: destination.close(); source.close()
+            digest=hashlib.sha256(target.read_bytes()).hexdigest(); size=target.stat().st_size; created=timestamp()
+            with self.connect() as con:
+                con.execute("INSERT INTO app_backups(id,file_name,reason,database_sha256,size_bytes,created_at) VALUES(?,?,?,?,?,?)",
+                    (backup_id,file_name,str(reason or "manual")[:200],digest,size,created))
+        return {"id":backup_id,"file_name":file_name,"reason":str(reason or "manual")[:200],
+            "database_sha256":digest,"size_bytes":size,"created_at":created,"restored_at":None}
+
+    def list_backups(self):
+        backup_dir=self._backup_directory()
+        with self.connect() as con: rows=[dict(row) for row in con.execute("SELECT * FROM app_backups ORDER BY created_at DESC").fetchall()]
+        for row in rows: row["available"]=(backup_dir/row["file_name"]).is_file()
+        return rows
+
+    def restore_backup(self,backup_id):
+        with self.connect() as con: selected=con.execute("SELECT * FROM app_backups WHERE id=?",(backup_id,)).fetchone()
+        if not selected: raise ValueError("Sicherung nicht gefunden.")
+        selected=dict(selected); source_path=(self._backup_directory()/selected["file_name"]).resolve()
+        if source_path.parent!=self._backup_directory().resolve() or not source_path.is_file(): raise ValueError("Sicherungsdatei fehlt.")
+        digest=hashlib.sha256(source_path.read_bytes()).hexdigest()
+        if not secrets.compare_digest(digest,selected["database_sha256"]): raise ValueError("Prüfsumme der Sicherung stimmt nicht.")
+        verify=sqlite3.connect(f"file:{source_path}?mode=ro",uri=True)
+        try:
+            if verify.execute("PRAGMA integrity_check").fetchone()[0]!="ok": raise ValueError("Sicherung ist beschädigt.")
+            required={row[0] for row in verify.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {"households","cash_flows","cash_flow_versions"}.issubset(required): raise ValueError("Datei ist keine FinanzLab-Sicherung.")
+        finally: verify.close()
+        safety=self.create_backup(f"automatisch vor Wiederherstellung {backup_id}")
+        with self.lock:
+            source=sqlite3.connect(source_path); destination=sqlite3.connect(self.path)
+            try: source.backup(destination); destination.commit()
+            finally: destination.close(); source.close()
+            self.initialize(); restored=timestamp()
+            with self.connect() as con:
+                for row in (selected,safety):
+                    con.execute("""INSERT OR IGNORE INTO app_backups(id,file_name,reason,database_sha256,size_bytes,created_at,restored_at)
+                        VALUES(?,?,?,?,?,?,?)""",(row["id"],row["file_name"],row.get("reason"),row["database_sha256"],row["size_bytes"],row["created_at"],row.get("restored_at")))
+                con.execute("UPDATE app_backups SET restored_at=? WHERE id=?",(restored,backup_id))
+        return {"id":backup_id,"restored":True,"restored_at":restored,"safety_backup_id":safety["id"]}
 
     def update_energylab_cash_flow_account(self,flow_id,payload):
         hid=payload.get("household_id"); account_id=payload.get("account_id")
@@ -737,9 +1906,10 @@ class Repository:
             original_first=date.fromisoformat(versions[0]["due_date"]) if versions and versions[0]["due_date"] else None
             adjusted_first=(date(original_first.year,original_first.month,min(payment_day,monthrange(original_first.year,original_first.month)[1])) if original_first else None)
             for version in versions:
-                effective_date=date.fromisoformat(version["version_from"]); stream_start=date.fromisoformat(version["stream_start"]) if version["stream_start"] else effective_date
-                due_date=energylab_first_due(stream_start,payment_day,version["recurrence"] or "monthly",effective_date,adjusted_first)
-                con.execute("UPDATE cash_flow_versions SET due_date=? WHERE id=?",(due_date.isoformat(),version["id"]))
+                # Keep one contractual anchor for the complete series.  The
+                # version dates select the applicable amount but never restart
+                # a monthly cadence (notably after February for day 29-31).
+                con.execute("UPDATE cash_flow_versions SET due_date=? WHERE id=?",(adjusted_first.isoformat(),version["id"]))
         return next(item for item in self.list_cash_flows(hid,"expense",date.today().isoformat()) if item["id"]==flow_id)
 
     def list_cash_flows(self,hid,kind,as_of=None):
@@ -767,7 +1937,12 @@ class Repository:
                 item["lifecycle_status"]="current" if current and in_stream else ("upcoming" if upcoming and not current else "ended")
                 item["archive_date"]=lifecycle_end
                 item["end_date"]=item.get("stream_end") if kind=="expense" else None
-                item["duration_months"]=duration_months_between(item.get("due_date"),item.get("stream_end")) if kind=="expense" else None
+                if kind=="expense" and item.get("due_date") and item.get("stream_end"):
+                    start_day=date.fromisoformat(item["due_date"])-timedelta(days=1)
+                    item["duration_months"]=len(recurrence_dates(
+                        item["due_date"],item.get("recurrence") or "monthly",start_day,item["stream_end"]))
+                else:
+                    item["duration_months"]=None
                 source_key=str(flow["source_key"] or "")
                 item["is_imported"]=source_key.startswith("excel:household-planning:")
                 item["managed_by"]="energylab" if source_key.startswith("energylab:advance:") else None
@@ -852,7 +2027,9 @@ class Repository:
             amount=int(payload.get("amount_cents") or 0)
         except (TypeError,ValueError): raise ValueError("Beträge müssen gültige Geldwerte sein.")
         if amount<0: raise ValueError("Beträge dürfen nicht negativ sein.")
-        recurrence=str(payload.get("recurrence") or "monthly")
+        # Neue manuelle Einnahmen/Ausgaben sind standardmäßig einmalig. Bestehende
+        # Serien und EnergyLab-Importe liefern ihren Rhythmus weiterhin explizit.
+        recurrence=str(payload.get("recurrence") or "once")
         valid_recurrences=("weekly","monthly","quarterly","semiannual","yearly","once") if kind=="expense" else ("monthly","quarterly","semiannual","yearly","once")
         if recurrence not in valid_recurrences: raise ValueError("Ungültiger Zahlungsrhythmus.")
         effective=str(payload.get("effective_from") or date.today().isoformat())
@@ -875,7 +2052,7 @@ class Repository:
                     raise ValueError("Die Dauer muss als ganze Anzahl Monate angegeben werden.")
                 if str(duration_raw).strip()!=str(duration_months) or not 1<=duration_months<=1200:
                     raise ValueError("Die Dauer muss zwischen 1 und 1.200 ganzen Monaten liegen.")
-                calculated_end=add_months_anchored(due,duration_months).isoformat()
+                calculated_end=last_occurrence_date(due,recurrence,duration_months).isoformat()
                 if parsed_end and parsed_end!=calculated_end:
                     raise ValueError("Enddatum und Dauer passen nicht zusammen.")
                 stream_end=calculated_end
@@ -1057,6 +2234,40 @@ class Repository:
                 con.execute("DELETE FROM movement_completions WHERE household_id=? AND occurrence_key=?",(hid,occurrence_key))
         return {"household_id":hid,"occurrence_key":occurrence_key,"completed":completed,
             "occurrence_date":occurrence_date}
+
+    def set_movement_amount(self,payload):
+        """Override exactly one planned expense occurrence without changing its series."""
+        hid=str(payload.get("household_id") or "").strip()
+        occurrence_key=str(payload.get("occurrence_key") or "").strip()
+        if not hid or not occurrence_key:
+            raise ValueError("Haushalt und Bewegung sind erforderlich.")
+        parts=occurrence_key.split(":")
+        if len(parts)!=3 or parts[0]!="cash-flow":
+            raise ValueError("Nur einzelne geplante Ausgaben können geändert werden.")
+        flow_id=parts[1]
+        try: occurrence_date=date.fromisoformat(parts[2]).isoformat()
+        except ValueError: raise ValueError("Das Bewegungsdatum ist ungültig.")
+        reset=payload.get("amount_cents") in (None,"")
+        if not reset:
+            try: amount_cents=int(payload.get("amount_cents"))
+            except (TypeError,ValueError): raise ValueError("Der Betrag muss ein gültiger Geldwert sein.")
+            if amount_cents<0: raise ValueError("Der Betrag darf nicht negativ sein.")
+        with self.lock,self.connect() as con:
+            flow=con.execute("SELECT kind FROM cash_flows WHERE id=? AND household_id=?",(flow_id,hid)).fetchone()
+            if not flow or flow["kind"]!="expense":
+                raise ValueError("Die geplante Ausgabe gehört nicht zu diesem Haushalt oder existiert nicht mehr.")
+            if reset:
+                con.execute("DELETE FROM movement_amount_overrides WHERE household_id=? AND occurrence_key=?",
+                    (hid,occurrence_key))
+            else:
+                con.execute("""INSERT INTO movement_amount_overrides
+                    (id,household_id,occurrence_key,cash_flow_id,occurrence_date,amount_cents,updated_at)
+                    VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(household_id,occurrence_key) DO UPDATE SET
+                    amount_cents=excluded.amount_cents,updated_at=excluded.updated_at""",
+                    (uid(),hid,occurrence_key,flow_id,occurrence_date,amount_cents,timestamp()))
+        return {"household_id":hid,"occurrence_key":occurrence_key,"occurrence_date":occurrence_date,
+            "amount_cents":None if reset else amount_cents,"overridden":not reset}
     def household_detail(self,hid,as_of=None):
         selected_date=as_of_date(as_of)
         with self.connect() as con:
@@ -1104,6 +2315,8 @@ class Repository:
         matched_occurrences={row["occurrence_key"] for row in matches}
         completed_occurrences={row["occurrence_key"] for row in con.execute(
             "SELECT occurrence_key FROM movement_completions WHERE household_id=?",(hid,)).fetchall()}
+        amount_overrides={row["occurrence_key"]:int(row["amount_cents"]) for row in con.execute(
+            "SELECT occurrence_key,amount_cents FROM movement_amount_overrides WHERE household_id=?",(hid,)).fetchall()}
         bank_actual_flow_ids={
             row["target_id"] for row in matches
             if row["target_type"]=="cash_flow" and row["match_method"]=="created-other-expense"
@@ -1157,7 +2370,7 @@ class Repository:
         versions=con.execute("""SELECT f.id AS flow_id,f.kind,COALESCE(v.name,f.name) AS label,
                    v.amount_cents,v.active,v.version_from,v.version_to,v.stream_start,v.stream_end,
                    v.due_date,v.recurrence,COALESCE(v.account_id,f.account_id) AS account_id,
-                   v.credit_id,v.credit_reduction_cents
+                   v.credit_id,v.credit_reduction_cents,COALESCE(v.category,f.category) AS category
             FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
             WHERE f.household_id=? AND v.active=1 AND v.version_from<=?
               AND (v.stream_start IS NULL OR v.stream_start<=?)""",(hid,selected_date,selected_date)).fetchall()
@@ -1183,9 +2396,8 @@ class Repository:
                 try: start=(date.fromisoformat(selected_date).replace(day=1)-timedelta(days=1)).isoformat()
                 except (TypeError,ValueError): continue
             try:
-                due_dates=recurrence_dates(version["due_date"],version["recurrence"] or "monthly",start,selected_date,
-                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"],
-                    move_weekends_to_friday=True)
+                due_dates=planned_booking_dates(version["due_date"],version["recurrence"] or "monthly",start,selected_date,
+                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"])
             except (TypeError,ValueError):
                 # Legacy or otherwise malformed rows remain visible in the
                 # data check, but must not break the complete forecast.
@@ -1194,22 +2406,27 @@ class Repository:
                 due_text=due.isoformat(); occurrence_key=f"cash-flow:{version['flow_id']}:{due_text}"
                 if occurrence_key in matched_occurrences: continue
                 planned_amount=int(version["amount_cents"] or 0)
-                amount=planned_amount*(1 if version["kind"]=="income" else -1)
-                applied_override=None; event_meta=None; completion_key=occurrence_key
+                actual_override=amount_overrides.get(occurrence_key) if version["kind"]=="expense" else None
+                effective_planned=actual_override if actual_override is not None else planned_amount
+                amount=effective_planned*(1 if version["kind"]=="income" else -1)
+                applied_override=None
+                event_meta={"category":version["category"],"planned_amount_cents":planned_amount,
+                    "amount_overridden":actual_override is not None}
+                completion_key=occurrence_key
                 if version["kind"]=="expense" and version["credit_id"]:
                     adjustment=credit_occurrences.get(occurrence_key)
                     if adjustment:
-                        effective_amount=int(adjustment["account_amount_cents"] or 0)
+                        effective_amount=(actual_override if actual_override is not None
+                            else int(adjustment["account_amount_cents"] or 0))
                         amount=-effective_amount
-                        event_meta={
+                        event_meta.update({
                             "credit_id":version["credit_id"],
-                            "credit_reduction_cents":int(adjustment["effective_reduction_cents"] or 0),
-                            "planned_amount_cents":planned_amount,
+                            "credit_reduction_cents":min(effective_amount,int(adjustment["effective_reduction_cents"] or 0)),
                             "planned_credit_reduction_cents":int(version["credit_reduction_cents"] or 0),
                             "credit_adjusted":bool(adjustment["adjusted"]),
                             "final_residual_added_cents":int(adjustment.get("final_residual_added_cents") or 0),
                             "skip_reason":adjustment["skip_reason"],
-                        }
+                        })
                         if adjustment["skipped"]:
                             applied_override=False; completion_key=None
                 add_event(version["account_id"],due_text,amount,version["kind"],version["label"],version["flow_id"],
@@ -1561,8 +2778,8 @@ class Repository:
         }
 
     def planned_occurrences_for_matching(self,con,hid,account_id,period_from,period_to):
-        scan_from=(date.fromisoformat(period_from)-timedelta(days=3))
-        scan_to=(date.fromisoformat(period_to)+timedelta(days=3))
+        scan_from=(date.fromisoformat(period_from)-timedelta(days=7))
+        scan_to=(date.fromisoformat(period_to)+timedelta(days=7))
         start=(scan_from-timedelta(days=1)).isoformat(); end=scan_to.isoformat()
         occurrences=[]
         versions=con.execute("""SELECT f.id AS flow_id,f.kind,COALESCE(v.name,f.name) AS label,
@@ -1573,9 +2790,8 @@ class Repository:
               AND v.version_from<=? AND (v.stream_start IS NULL OR v.stream_start<=?)""",
             (hid,account_id,end,end)).fetchall()
         for version in versions:
-            for due in recurrence_dates(version["due_date"],version["recurrence"] or "monthly",start,end,
-                                        version["version_from"],version["version_to"],version["stream_start"],version["stream_end"],
-                                        move_weekends_to_friday=True):
+            for due in planned_booking_dates(version["due_date"],version["recurrence"] or "monthly",start,end,
+                                        version["version_from"],version["version_to"],version["stream_start"],version["stream_end"]):
                 due_text=due.isoformat()
                 occurrences.append({
                     "target_type":"cash_flow","target_id":version["flow_id"],
@@ -1588,8 +2804,12 @@ class Repository:
         return [item for item in occurrences if item["occurrence_key"] not in used]
 
     def save_bank_statement_preview(self,hid,account_id,parsed):
-        raise ValueError("Importfunktionen sind in dieser Version vollständig deaktiviert.")
+        raise ValueError("Der Kontoauszugsimport ist in dieser Version vollständig deaktiviert.")
+
+    def _disabled_save_bank_statement_preview(self,hid,account_id,parsed):
         if not hid or not account_id: raise ValueError("Haushalt und Konto sind erforderlich.")
+        if not isinstance(parsed,dict) or not isinstance(parsed.get("rows"),list) or not parsed.get("sha256"):
+            raise ValueError("Die Kontoauszugsdaten sind unvollständig.")
         currencies={str(row.get("currency") or "EUR").upper() for row in parsed.get("rows",[])}
         if currencies-{"EUR"}: raise ValueError("Der Kontoauszugsimport unterstützt in dieser Version ausschließlich EUR-Buchungen.")
         summary=dict(parsed.get("summary") or {})
@@ -1604,9 +2824,6 @@ class Repository:
         closing_balance=summary.get("detected_closing_balance_cents")
         with self.lock,self.connect() as con:
             occurrences=self.planned_occurrences_for_matching(con,hid,account_id,period_from,period_to)
-            occurrences_by_amount={}
-            for occurrence in occurrences:
-                occurrences_by_amount.setdefault(int(occurrence["amount_cents"]),[]).append(occurrence)
             existing={(row["fingerprint_base"],int(row["occurrence_no"])) for row in con.execute(
                 "SELECT fingerprint_base,occurrence_no FROM bank_transactions WHERE account_id=?",(account_id,)).fetchall()}
             preview_rows=[]
@@ -1619,19 +2836,31 @@ class Repository:
                 transaction_date=date.fromisoformat(row.get("value_date") or row["booking_date"])
                 transaction_tokens=normalized_match_tokens(row.get("counterparty"),row.get("purpose"),row.get("bank_reference"))
                 candidates=[]
-                for occurrence in occurrences_by_amount.get(int(row["amount_cents"]),[]):
+                transaction_amount=int(row["amount_cents"])
+                for occurrence in occurrences:
+                    planned_amount=int(occurrence["amount_cents"])
+                    if (transaction_amount<0)!=(planned_amount<0):
+                        continue
+                    amount_difference=abs(transaction_amount-planned_amount)
+                    amount_tolerance=max(100,min(500,round(abs(planned_amount)*0.05)))
+                    if amount_difference>amount_tolerance:
+                        continue
                     distance=abs((date.fromisoformat(occurrence["date"])-transaction_date).days)
-                    if distance>3: continue
+                    if distance>7: continue
                     label_tokens=normalized_match_tokens(occurrence["label"])
                     overlap=len(transaction_tokens & label_tokens)
-                    score=100+(3-distance)*10+min(20,overlap*5)
-                    candidates.append({**occurrence,"date_distance":distance,"score":score})
+                    amount_penalty=round(35*amount_difference/max(1,amount_tolerance))
+                    score=max(0,min(100,100-amount_penalty-distance*5+min(15,overlap*5)))
+                    candidates.append({**occurrence,"date_distance":distance,
+                        "amount_difference_cents":amount_difference,
+                        "amount_tolerance_cents":amount_tolerance,"score":score})
                 candidates.sort(key=lambda item:(-item["score"],item["date"],item["label"]))
                 suggested=None
-                if len(candidates)==1:
-                    suggested=candidates[0]
-                elif len(candidates)>1 and candidates[0]["score"]>=candidates[1]["score"]+5:
-                    suggested=candidates[0]
+                # Only an exact, close and clearly unique hit may be proposed
+                # automatically. Tolerated differences always stay in review.
+                if candidates and candidates[0]["amount_difference_cents"]==0 and candidates[0]["date_distance"]<=3:
+                    if len(candidates)==1 or candidates[0]["score"]>=candidates[1]["score"]+10:
+                        suggested=candidates[0]
                 if suggested:
                     status="matched"; action="match"; occurrence_key=suggested["occurrence_key"]
                 elif candidates:
@@ -1653,7 +2882,6 @@ class Repository:
         return {**payload,"preview_id":preview_id}
 
     def commit_bank_statement_preview(self,hid,account_id,preview_id,decisions,closing_balance_cents,balance_date):
-        raise ValueError("Importfunktionen sind in dieser Version vollständig deaktiviert.")
         with self.connect() as con:
             preview=con.execute("SELECT * FROM bank_statement_previews WHERE id=? AND household_id=? AND account_id=?",(preview_id,hid,account_id)).fetchone()
             if not preview: raise ValueError("Die Kontoauszugsvorschau ist abgelaufen oder gehört nicht zu diesem Konto.")
@@ -1707,8 +2935,10 @@ class Repository:
                     occurrence_key=str(decision.get("occurrence_key") or "")
                     candidate=next((item for item in row.get("candidates",[]) if item["occurrence_key"]==occurrence_key),None)
                     if not candidate: raise ValueError(f"Die Zuordnung für Zeile {row['row_no']} ist nicht gültig.")
-                    con.execute("""INSERT INTO bank_transaction_matches(id,transaction_id,target_type,target_id,planned_date,occurrence_key,match_method,score)
-                        VALUES(?,?,?,?,?,?,?,?)""",(uid(),transaction_id,candidate["target_type"],candidate["target_id"],candidate["date"],candidate["occurrence_key"],"amount-date-text",int(candidate["score"])))
+                    con.execute("""INSERT INTO bank_transaction_matches(id,transaction_id,target_type,target_id,planned_date,
+                        occurrence_key,match_method,score,confirmed,status)
+                        VALUES(?,?,?,?,?,?,?,?,1,'confirmed')""",(uid(),transaction_id,candidate["target_type"],candidate["target_id"],
+                        candidate["date"],candidate["occurrence_key"],"amount-date-text-confirmed",int(candidate["score"])))
                     matched_count+=1
                 elif action=="other_expense":
                     if int(row["amount_cents"])>=0: raise ValueError("Nur Abbuchungen dürfen als sonstige Zahlung angelegt werden.")
@@ -1719,8 +2949,10 @@ class Repository:
                         VALUES(?,?,?,?,?,?,?,?,?)""",(flow_id,hid,"expense",name,account["owner_scope"],account["owner_person_id"],account_id,source_key,"other_expense"))
                     con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,owner_scope,owner_person_id,account_id)
                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,-int(row["amount_cents"]),1,row["booking_date"],None,row["booking_date"],row["booking_date"],row["booking_date"],f"Kontoauszug {payload['file_name']} · Zeile {row['row_no']}",None,"once",name,"other_expense",account["owner_scope"],account["owner_person_id"],account_id))
-                    con.execute("""INSERT INTO bank_transaction_matches(id,transaction_id,target_type,target_id,planned_date,occurrence_key,match_method,score)
-                        VALUES(?,?,?,?,?,?,?,?)""",(uid(),transaction_id,"cash_flow",flow_id,row["booking_date"],f"cash-flow:{flow_id}:{row['booking_date']}","created-other-expense",100))
+                    con.execute("""INSERT INTO bank_transaction_matches(id,transaction_id,target_type,target_id,planned_date,
+                        occurrence_key,match_method,score,confirmed,status)
+                        VALUES(?,?,?,?,?,?,?,?,1,'confirmed')""",(uid(),transaction_id,"cash_flow",flow_id,row["booking_date"],
+                        f"cash-flow:{flow_id}:{row['booking_date']}","created-other-expense",100))
                     created_expense_count+=1
                 elif action=="actual_only":
                     actual_only_count+=1
@@ -1738,7 +2970,6 @@ class Repository:
             "projected_before_cents":projected_before,"delta_cents":delta}
 
     def list_bank_statements(self,hid,account_id):
-        raise ValueError("Importfunktionen sind in dieser Version vollständig deaktiviert.")
         with self.connect() as con:
             if not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone():
                 raise ValueError("Konto gehört nicht zu diesem Haushalt.")
@@ -1760,7 +2991,7 @@ class Repository:
             credit_occurrences=self._credit_timelines(con,hid,month_end.isoformat())["occurrences"]
             def monthly_values(kind):
                 rows=con.execute("""SELECT f.id AS flow_id,COALESCE(v.name,f.name) AS name,
-                        v.amount_cents,v.recurrence,v.due_date,v.credit_id,
+                        v.amount_cents,v.recurrence,v.due_date,v.credit_id,COALESCE(v.category,f.category) AS category,
                         v.version_from,v.version_to,v.stream_start,v.stream_end
                     FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
                     WHERE f.household_id=? AND f.kind=? AND v.active=1
@@ -1769,14 +3000,15 @@ class Repository:
                       AND (v.stream_end IS NULL OR v.stream_end>=?)""",
                     (hid,kind,month_end.isoformat(),month_start.isoformat(),
                      month_end.isoformat(),month_start.isoformat())).fetchall()
-                totals={}
+                totals={}; category_totals={}
+                overrides={row["occurrence_key"]:int(row["amount_cents"]) for row in con.execute(
+                    "SELECT occurrence_key,amount_cents FROM movement_amount_overrides WHERE household_id=?",(hid,)).fetchall()}
                 for row in rows:
                     try:
-                        due_dates=recurrence_dates(
+                        due_dates=planned_booking_dates(
                             row["due_date"],row["recurrence"] or "monthly",
                             (month_start-timedelta(days=1)).isoformat(),month_end.isoformat(),
-                            row["version_from"],row["version_to"],row["stream_start"],row["stream_end"],
-                            move_weekends_to_friday=True)
+                            row["version_from"],row["version_to"],row["stream_start"],row["stream_end"])
                     except (TypeError,ValueError):
                         continue
                     if not due_dates: continue
@@ -1785,15 +3017,19 @@ class Repository:
                     for due in due_dates:
                         occurrence_key=f"cash-flow:{row['flow_id']}:{due.isoformat()}"
                         adjustment=credit_occurrences.get(occurrence_key) if kind=="expense" and row["credit_id"] else None
-                        amount+=(int(adjustment["account_amount_cents"])
-                            if adjustment is not None else int(row["amount_cents"] or 0))
+                        occurrence_amount=(overrides[occurrence_key] if kind=="expense" and occurrence_key in overrides
+                            else int(adjustment["account_amount_cents"]) if adjustment is not None
+                            else int(row["amount_cents"] or 0))
+                        amount+=occurrence_amount
+                        category_totals[row["category"] or "other"]=category_totals.get(row["category"] or "other",0)+occurrence_amount
                     totals[label]=totals.get(label,0)+amount
-                return [
+                return ([
                     {"label":label,"amount_cents":amount}
                     for label,amount in sorted(totals.items(),key=lambda item:(-item[1],item[0].lower()))
                     if amount
-                ]
-            income_items=monthly_values("income"); expense_items=monthly_values("expense")
+                ],[{"category":category,"amount_cents":amount} for category,amount in
+                    sorted(category_totals.items(),key=lambda item:(-item[1],item[0])) if amount])
+            income_items,_=monthly_values("income"); expense_items,expense_categories=monthly_values("expense")
             income=sum(item["amount_cents"] for item in income_items)
             expenses=sum(item["amount_cents"] for item in expense_items)
             balances=sum((a["projected_balance_cents"] or 0) for a in detail["accounts"] if a["projected_balance_cents"] is not None)
@@ -1804,7 +3040,7 @@ class Repository:
             "unassigned_projection_count":unassigned_projection["event_count"],
             "unassigned_projection_cents":unassigned_projection["net_cents"],
             "overdraft_warning_count":len(warning_accounts)},
-            "breakdowns":{"income":income_items,"expenses":expense_items},
+            "breakdowns":{"income":income_items,"expenses":expense_items,"expense_categories":expense_categories},
             "credit_summary":{"as_of":credit_summary["as_of"],"groups":credit_summary["groups"],"totals":credit_summary["totals"]},
             "overdraft_warnings":[{"account_id":account["id"],"name":account["name"],
                 "overage_cents":account["overdraft_overage_cents"],"projected_balance_cents":account["projected_balance_cents"],

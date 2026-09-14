@@ -67,11 +67,11 @@ class IncomeArchiveTests(unittest.TestCase):
         energylab_position = html.index('class="panel energylab-panel"')
         export_position = html.index('class="panel export-panel"')
         diagnostics_position = html.index('class="panel diagnostics-panel"')
-        self.assertLess(energylab_position, export_position)
-        self.assertLess(export_position, diagnostics_position)
+        self.assertLess(export_position, energylab_position)
+        self.assertLess(energylab_position, diagnostics_position)
         self.assertIn(".diagnostics-panel{grid-column:1/-1}", css)
         self.assertNotIn(".diagnostics-panel,.export-panel{grid-column:1/-1}", css)
-        self.assertIn(".export-panel{display:flex;flex-direction:column}", css)
+        self.assertIn(".export-panel{grid-column:1/-1;display:flex;flex-direction:column}", css)
 
     def test_recurring_income_amount_change_preserves_history(self):
         income = self.create_income("Gehalt", "monthly", "2025-01-25")

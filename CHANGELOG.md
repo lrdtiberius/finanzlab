@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.0
+
+- Automatisch berechnete Konsumkredite verwenden den Produktpreis als verzinslichen Anfangssaldo; der Finanzierungspreis wird nicht erneut verzinst.
+- Monatsrate, Zahlungsanzahl und Schlussrate werden gegen den Finanzierungspreis plausibilisiert, übliche Cent-Rundungsdifferenzen werden toleriert.
+- Die Zinsauswertung zeigt „Kreditzinsen“, „Geplante Kreditzinsen“, „Zinsen Girokonto“ und „Zinsen gesamt“; die frühere Anzeige „Gebuchte Zinsen“ entfällt.
+- Girokontozinsen lassen sich direkt aus der Zinsauswertung als Kontoausgabe erfassen.
+- Negative manuelle Tilgungen werden als Kreditaufstockung behandelt, erhöhen die Restschuld und fließen in folgende Zinsberechnungen ein.
+- Bestehende manuelle Kreditdaten und Zinswerte bleiben kompatibel.
+- Wochenendfälligkeiten werden weiterhin auf den vorherigen Freitag verschoben.
+
 ## 1.0.2
 
 - ein in EnergyLab ausdrücklich gesetztes Datum „Erste Zahlung“ wird als tatsächlicher Beginn des Zahlungsrhythmus übernommen

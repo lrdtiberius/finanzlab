@@ -19,7 +19,7 @@ ENERGYLAB = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Haushaltsplaner/1.0.2"
+    server_version = "FinanzLab/1.6.0"
 
     def json_response(self, data, status=HTTPStatus.OK):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -50,7 +50,7 @@ class Handler(BaseHTTPRequestHandler):
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "1.0.2"})
+                return self.json_response({"status": "ok", "version": "1.6.0"})
             if path == "/api/households":
                 return self.json_response({"items": REPOSITORY.list_households()})
             if path == "/api/dashboard":
@@ -65,6 +65,38 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/integrations/energylab":
                 hid = (query.get("household_id") or [""])[0]
                 return self.json_response(REPOSITORY.energylab_integration(hid))
+            if path == "/api/integrations/energylab/status":
+                hid = (query.get("household_id") or [""])[0]
+                return self.json_response(REPOSITORY.energylab_sync_status(hid))
+            if path == "/api/integrations/energylab/history":
+                hid = (query.get("household_id") or [""])[0]
+                limit = (query.get("limit") or [20])[0]
+                return self.json_response({"items": REPOSITORY.list_energylab_sync_history(hid, limit)})
+            if path == "/api/integrations/energylab/actual-payments":
+                household_reference = (
+                    query.get("household_id") or query.get("householdId") or [""]
+                )[0]
+                hid = REPOSITORY.resolve_energylab_household(household_reference)
+                since = (query.get("since") or [None])[0]
+                authorization = self.headers.get("Authorization", "")
+                token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else (query.get("token") or [""])[0]
+                REPOSITORY.verify_energylab_access(hid, token)
+                return self.json_response(REPOSITORY.actual_energylab_payments(hid, since))
+            if path == "/api/integrations/energylab/billing-snapshots":
+                hid = (query.get("household_id") or [""])[0]
+                return self.json_response({"items": REPOSITORY.list_energylab_billing_snapshots(hid)})
+            if path.startswith("/api/integrations/energylab/billing-snapshots/"):
+                parts = path.strip("/").split("/")
+                hid = (query.get("household_id") or [""])[0]
+                if len(parts) != 5:
+                    return self.json_response({"error": "Nicht gefunden."}, 404)
+                return self.json_response(REPOSITORY.get_energylab_billing_snapshot(hid, parts[4]))
+            if path == "/api/backups":
+                return self.json_response({"items": REPOSITORY.list_backups()})
+            if path == "/api/bank-statements":
+                hid = (query.get("household_id") or [""])[0]
+                account_id = (query.get("account_id") or [""])[0]
+                return self.json_response({"items": REPOSITORY.list_bank_statements(hid, account_id)})
             if path == "/api/diagnostics":
                 hid = (query.get("household_id") or [""])[0]
                 as_of = (query.get("as_of") or [None])[0]
@@ -76,6 +108,10 @@ class Handler(BaseHTTPRequestHandler):
                 hid = (query.get("household_id") or [""])[0]
                 as_of = (query.get("as_of") or [None])[0]
                 return self.json_response(REPOSITORY.list_credits(hid, as_of))
+            if path == "/api/interest":
+                hid = (query.get("household_id") or [""])[0]
+                as_of = (query.get("as_of") or [None])[0]
+                return self.json_response(REPOSITORY.list_interest(hid, as_of))
             if path.startswith("/api/credits/"):
                 parts = path.strip("/").split("/")
                 hid = (query.get("household_id") or [""])[0]
@@ -117,6 +153,8 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response({"error": "Nicht gefunden."}, 404)
         except KeyError:
             self.json_response({"error": "Haushalt nicht gefunden."}, 404)
+        except PermissionError as exc:
+            self.json_response({"error": str(exc)}, 403)
         except Exception as exc:
             self.json_response({"error": str(exc)}, 400)
 
@@ -134,10 +172,40 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/integrations/energylab/sync":
                 payload = self.read_json()
                 return self.json_response(ENERGYLAB.sync(payload.get("household_id")))
+            if path == "/api/integrations/energylab/preview":
+                payload = self.read_json()
+                return self.json_response(ENERGYLAB.preview(payload.get("household_id")))
+            if path == "/api/integrations/energylab/payment-events":
+                payload = self.read_json()
+                return self.json_response(REPOSITORY.record_energylab_payment_event(
+                    payload.get("household_id"), payload), 201)
+            if path == "/api/integrations/energylab/billing-snapshots":
+                payload = self.read_json()
+                return self.json_response(REPOSITORY.create_energylab_billing_snapshot(
+                    payload.get("household_id"), payload), 201)
+            if path == "/api/backups":
+                payload = self.read_json()
+                return self.json_response(REPOSITORY.create_backup(payload.get("reason") or "manuell"), 201)
+            if path.startswith("/api/backups/") and path.endswith("/restore"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 4:
+                    return self.json_response({"error": "Nicht gefunden."}, 404)
+                return self.json_response(REPOSITORY.restore_backup(parts[2]))
+            if path == "/api/bank-statements/preview":
+                payload = self.read_json(max_bytes=10 * 1024 * 1024)
+                return self.json_response(REPOSITORY.save_bank_statement_preview(
+                    payload.get("household_id"), payload.get("account_id"), payload.get("parsed")), 201)
+            if path == "/api/bank-statements/commit":
+                payload = self.read_json(max_bytes=10 * 1024 * 1024)
+                return self.json_response(REPOSITORY.commit_bank_statement_preview(
+                    payload.get("household_id"), payload.get("account_id"), payload.get("preview_id"),
+                    payload.get("decisions") or [], payload.get("closing_balance_cents"), payload.get("balance_date")), 201)
             if path == "/api/transfers":
                 return self.json_response(REPOSITORY.create_transfer(self.read_json()), 201)
             if path == "/api/credits":
                 return self.json_response(REPOSITORY.create_credit(self.read_json()), 201)
+            if path == "/api/interest/bookings":
+                return self.json_response(REPOSITORY.create_interest_booking(self.read_json()), 201)
             if path.startswith("/api/credits/") and path.endswith("/payments"):
                 parts = path.strip("/").split("/")
                 if len(parts) != 4:
@@ -164,6 +232,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/movement-completion":
                 return self.json_response(REPOSITORY.set_movement_completion(self.read_json()))
+            if path == "/api/movement-amount":
+                return self.json_response(REPOSITORY.set_movement_amount(self.read_json()))
             if path.startswith("/api/integrations/energylab/flows/") and path.endswith("/account"):
                 parts = path.strip("/").split("/")
                 if len(parts) != 6:
@@ -225,6 +295,11 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts) != 5:
                     return self.json_response({"error": "Nicht gefunden."}, 404)
                 return self.json_response(REPOSITORY.delete_credit_payment(hid, parts[2], parts[4]))
+            if path.startswith("/api/interest/bookings/"):
+                booking_id = path.removeprefix("/api/interest/bookings/")
+                if not booking_id or "/" in booking_id:
+                    return self.json_response({"error": "Nicht gefunden."}, 404)
+                return self.json_response(REPOSITORY.delete_interest_booking(hid, booking_id))
             if path.startswith("/api/credits/"):
                 credit_id = path.removeprefix("/api/credits/")
                 if not credit_id or "/" in credit_id:

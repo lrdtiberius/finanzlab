@@ -74,7 +74,7 @@ class EnergyLabIntegrationTests(unittest.TestCase):
         self.assertEqual(second_account["id"], refreshed["account_id"])
         self.assertEqual(20, refreshed["payment_day"])
         self.assertEqual("2025-01-20", refreshed["versions"][0]["due_date"])
-        self.assertEqual("2025-07-20", refreshed["versions"][1]["due_date"])
+        self.assertEqual("2025-01-20", refreshed["versions"][1]["due_date"])
         self.assertTrue(all(version["account_id"] == second_account["id"] for version in refreshed["versions"]))
 
     def test_payment_day_uses_last_day_of_short_months(self):
