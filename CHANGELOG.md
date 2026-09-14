@@ -6,6 +6,7 @@
 - Nur ausgewählte Kredite werden unter „Zinsen je Kredit“ angezeigt und in „Kreditzinsen“, „Geplante Kreditzinsen“ sowie „Zinsen gesamt“ eingerechnet.
 - Aktive Kredite sind beim Öffnen eines Haushalts vorausgewählt; archivierte Kredite können bei Bedarf zugeschaltet werden.
 - Girokontozinsen bleiben von der Kreditauswahl unabhängig und werden weiterhin in „Zinsen gesamt“ berücksichtigt.
+- Installationsanleitung und Benutzerhandbuch beschreiben Version 1.6.1 einschließlich Kredit-, Archiv- und Zinslogik.
 
 ## 1.6.0
 

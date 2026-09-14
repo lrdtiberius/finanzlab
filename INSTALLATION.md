@@ -2,7 +2,7 @@
 
 Diese Anleitung beschreibt die vollständige Installation und Ersteinrichtung des **Haushaltsplaners / FinanzLab**.
 
-Gültig für Version **1.0.2**.
+Gültig für Version **1.6.1**.
 
 Die Anwendung ist für den lokalen Betrieb vorgesehen und speichert ihre Daten ausschließlich lokal in einer SQLite-Datenbank im Docker-Volume beziehungsweise unter dem konfigurierten `DATA_DIR`.
 
@@ -223,7 +223,7 @@ finanzlab-image-v<VERSION>-amd64.tar.gz
 Beispiel:
 
 ```text
-finanzlab-image-v1.0.2-amd64.tar.gz
+finanzlab-image-v1.6.1-amd64.tar.gz
 ```
 
 Dieses Image wurde mit `docker save` erzeugt und anschließend komprimiert.
@@ -232,23 +232,23 @@ Dieses Image wurde mit `docker save` erzeugt und anschließend komprimiert.
 
 Auf der GitHub-Seite [Releases](https://github.com/lrdtiberius/finanzlab/releases/latest) den gewünschten Release öffnen und das Docker-Image herunterladen.
 
-Für Version 1.0.2 werden für die Portainer-Installation diese Dateien angeboten:
+Für Version 1.6.1 werden für die Portainer-Installation diese Dateien angeboten:
 
 ```text
-finanzlab-image-v1.0.2-amd64.tar.gz
-finanzlab-image-v1.0.2-amd64.tar.gz.sha256
+finanzlab-image-v1.6.1-amd64.tar.gz
+finanzlab-image-v1.6.1-amd64.tar.gz.sha256
 ```
 
-Die Datei `finanzlab-v1.0.2.tar.gz` enthält dagegen den Quellcode und ist **kein importierbares Docker-Image**.
+Die Datei `finanzlab-v1.6.1.tar.gz` enthält dagegen den Quellcode und ist **kein importierbares Docker-Image**.
 
 Optional kann die Prüfsumme vor dem Import kontrolliert werden:
 
 ```bash
 # Linux
-sha256sum finanzlab-image-v1.0.2-amd64.tar.gz
+sha256sum finanzlab-image-v1.6.1-amd64.tar.gz
 
 # macOS
-shasum -a 256 finanzlab-image-v1.0.2-amd64.tar.gz
+shasum -a 256 finanzlab-image-v1.6.1-amd64.tar.gz
 ```
 
 Der ausgegebene Wert muss mit dem Wert in der heruntergeladenen `.sha256`-Datei übereinstimmen.
@@ -260,13 +260,13 @@ Einige Portainer-Versionen akzeptieren die komprimierte `.tar.gz`-Datei direkt. 
 Linux/macOS:
 
 ```bash
-gunzip finanzlab-image-v1.0.2-amd64.tar.gz
+gunzip finanzlab-image-v1.6.1-amd64.tar.gz
 ```
 
 Danach liegt vor:
 
 ```text
-finanzlab-image-v1.0.2-amd64.tar
+finanzlab-image-v1.6.1-amd64.tar
 ```
 
 #### Schritt 3: Image in Portainer importieren
@@ -277,20 +277,20 @@ In Portainer:
 2. **Import** wählen.
 3. die Image-TAR auswählen.
 4. Import starten.
-5. anschließend kontrollieren, ob `finanzlab:1.0.2` in der Image-Liste vorhanden ist.
+5. anschließend kontrollieren, ob `finanzlab:1.6.1` in der Image-Liste vorhanden ist.
 
 > **Nicht verwechseln:** Ein Docker-Image-TAR gehört zu **Images → Import**. Ein Quell-/Build-TAR mit Dockerfile gehört dagegen zu **Images → Build image → Upload**.
 
-Die Seite **Build a new image** darf für `finanzlab-image-v1.0.2-amd64.tar` nicht verwendet werden. Dort sucht Portainer nach einem Dockerfile und meldet deshalb bei einer Image-TAR `Cannot locate Dockerfile`.
+Die Seite **Build a new image** darf für `finanzlab-image-v1.6.1-amd64.tar` nicht verwendet werden. Dort sucht Portainer nach einem Dockerfile und meldet deshalb bei einer Image-TAR `Cannot locate Dockerfile`.
 
 ### 5.2 Portainer-Stack für ein bereits vorhandenes Image
 
-Nachdem das Image `finanzlab:1.0.2` vorhanden ist, kann die fertige Datei **[`portainer-stack.yaml`](portainer-stack.yaml)** verwendet werden. Sie enthält folgenden Stack:
+Nachdem das Image `finanzlab:1.6.1` vorhanden ist, kann die fertige Datei **[`portainer-stack.yaml`](portainer-stack.yaml)** verwendet werden. Sie enthält folgenden Stack:
 
 ```yaml
 services:
   haushaltsplaner:
-    image: finanzlab:1.0.2
+    image: finanzlab:1.6.1
     container_name: finanzlab
     ports:
       - "8798:8798"
@@ -354,7 +354,7 @@ app/
 Beim Build:
 
 ```text
-Name: finanzlab:1.0.2
+Name: finanzlab:1.6.1
 Dockerfile path: Dockerfile
 ```
 
@@ -369,7 +369,7 @@ Nach erfolgreichem Build kann derselbe Stack aus Abschnitt 5.2 verwendet werden.
 Wer das Image ohne Docker Compose erzeugen möchte, kann direkt im geklonten Repository bauen.
 
 ```bash
-docker build -t finanzlab:1.0.2 .
+docker build -t finanzlab:1.6.1 .
 ```
 
 Danach kann ein Container manuell gestartet werden:
@@ -384,7 +384,7 @@ docker run -d \
   -e DATA_DIR=/data \
   -e PORT=8798 \
   -v finanzlab_data:/data \
-  finanzlab:1.0.2
+  finanzlab:1.6.1
 ```
 
 Status prüfen:
@@ -510,7 +510,9 @@ Unter **Kredite** können drei Arten verwaltet werden:
 
 Nach dem Anlegen eines Kredits kann eine entsprechende Ausgabe mit diesem Kredit verknüpft werden. Dabei lassen sich Abbuchungsbetrag und tatsächlicher Tilgungsanteil getrennt behandeln.
 
-Ein Kredit mit einem Saldo von `0,00 €` wird automatisch archiviert. Kredite können auch manuell archiviert werden. Archivierte Kredite werden aus der aktiven Berechnung und aus der Kreditauswahl der Vorschau entfernt.
+Bei aktivierter automatischer Berechnung verwendet FinanzLab Rate, Sollzins und aktuellen Saldo zur Aufteilung in Zins und Tilgung. Für Konsumkredite ist der Produktpreis der verzinsliche Anfangssaldo; Finanzierungspreis und Ratenaufpreis dienen nur als Gesamt- und Kontrollwerte. Eine negative manuelle Tilgung stockt den Kredit auf und erhöht den Restbetrag.
+
+Ein Kredit mit einem Saldo von `0,00 €` wird automatisch archiviert. Kredite können auch manuell archiviert werden. Archivierte Kredite werden aus der aktiven Berechnung und aus der Kreditauswahl der Vorschau entfernt. Auf der Seite **Zinsen** können sie über **Einbezogene Kredite** dennoch bei Bedarf ausgewählt und in die Zinsauswertung aufgenommen werden.
 
 ### 8.6 Umbuchungen anlegen
 
@@ -662,7 +664,7 @@ Das vorhandene Volume `finanzlab_data` wird erneut eingebunden. Die Nutzdaten bl
 ### 11.2 Portainer mit neuem fertigem Image
 
 1. neues Image importieren,
-2. prüfen, ob das neue Tag vorhanden ist, zum Beispiel `finanzlab:1.0.2`,
+2. prüfen, ob das neue Tag vorhanden ist, zum Beispiel `finanzlab:1.6.1`,
 3. den **bestehenden Stack unter demselben Namen** öffnen,
 4. im Stack die `image:`-Zeile auf die neue Version ändern,
 5. bei einem lokal importierten Image eine Portainer-Option zum erneuten Abrufen des Images nicht aktivieren,
@@ -691,19 +693,20 @@ Notwendige Schemaerweiterungen werden von der Anwendung beim Start automatisch d
 
 Das Docker-Volume sollte bei einem normalen Versionswechsel nicht gelöscht oder neu angelegt werden.
 
-### 11.3 Besonderheiten beim Update auf 1.0.2
+### 11.3 Besonderheiten beim Update auf 1.6.1
 
-Beim ersten Start von 1.0.2 erweitert FinanzLab die vorhandene Datenbank automatisch. Bestehende Haushalte, Konten, Kontostände, Einnahmen, Ausgaben, Kredite und Umbuchungen bleiben erhalten.
+Vor dem ersten Start von Version 1.6.1 erstellt FinanzLab automatisch eine Datenbanksicherung. Bestehende Haushalte, Konten, Kontostände, Einnahmen, Ausgaben, Kredite, manuelle Tilgungen und eingetragene Sollzinssätze bleiben erhalten.
 
 Nach dem Update:
 
-1. im Fußbereich **Version 1.0.2** kontrollieren,
-2. unter **Einnahmen** die neuen Bereiche **Aktiv** und **Archiv** prüfen,
-3. unter **Einstellungen** die EnergyLab-Verbindung einrichten,
-4. einmal manuell synchronisieren,
-5. die importierten Zahlungen in **Ausgaben** und **Vorschau** kontrollieren.
+1. im Fußbereich **Version 1.6.1** kontrollieren,
+2. die Seite **Zinsen** öffnen,
+3. unter **Einbezogene Kredite** prüfen, ob die aktiven Kredite vorausgewählt sind,
+4. testweise einen archivierten Kredit auswählen und die Werte unter **Zinsen je Kredit** kontrollieren,
+5. prüfen, ob **Zinsen Girokonto** unabhängig von der Kreditauswahl unverändert bleiben,
+6. bei automatisch berechneten Konsumkrediten kontrollieren, ob der Produktpreis als Anfangssaldo verwendet wird.
 
-Bereits manuell in FinanzLab angelegte Strom-, Gas-, Wasser- oder Abwasserzahlungen werden absichtlich nicht automatisch gelöscht oder mit EnergyLab-Positionen zusammengeführt. Dadurch gehen keine eigenen Daten verloren. Falls dieselbe Zahlung nach der ersten Synchronisation doppelt erscheint, die bisherige manuelle Position nach der Kontrolle deaktivieren, beenden oder löschen. Die mit **EnergyLab** gekennzeichnete Position bleibt bestehen.
+Archivierte Kredite werden nicht ungefragt in die Zinsauswertung aufgenommen. Ihre Zinshistorie wird erst einbezogen, wenn der jeweilige Kredit ausdrücklich ausgewählt wird. Bei manuell archivierten Krediten endet die Hochrechnung am Archivierungsdatum.
 
 ---
 
@@ -840,7 +843,7 @@ Bei einem selbst gebauten Image sicherstellen, dass wirklich das neue Tag verwen
 Beispiel:
 
 ```text
-finanzlab:1.0.2
+finanzlab:1.6.1
 ```
 
 In Portainer anschließend den Stack ausdrücklich neu deployen. Nur das Erstellen eines neuen Images ersetzt keinen bereits laufenden Container automatisch.
@@ -900,7 +903,7 @@ Danach sind die Daten aus `finanzlab_data` gelöscht.
 Optional kann das Image entfernt werden:
 
 ```bash
-docker image rm finanzlab:1.0.2
+docker image rm finanzlab:1.6.1
 ```
 
 ### Portainer

@@ -1,6 +1,6 @@
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **1.0.2**
+Gültig für Version **1.6.1**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
@@ -74,13 +74,13 @@ Für eine Portainer-Installation wird das fertig gebaute Docker-Image aus dem Gi
 
 Vorgehen:
 
-1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v1.0.2-amd64.tar.gz` importieren,
+1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v1.6.1-amd64.tar.gz` importieren,
 2. unter **Stacks → Add stack** einen Stack mit dem Inhalt aus [`portainer-stack.yaml`](portainer-stack.yaml) anlegen,
 3. den Stack bereitstellen,
 4. den Zustand des Containers `finanzlab` kontrollieren,
 5. Port `8798` im Browser öffnen.
 
-Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:1.0.2` für `linux/amd64`. Das Quellarchiv `finanzlab-v1.0.2.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
+Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:1.6.1` für `linux/amd64`. Das Quellarchiv `finanzlab-v1.6.1.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
 
 Das Volume wird im Container unter `/data` eingebunden. Dort liegt insbesondere die Datenbankdatei `planner.db`.
 
@@ -109,6 +109,7 @@ Die Anwendung enthält folgende Seiten:
 | Einnahmen | Regelmäßige und einmalige Einnahmen, Archiv und historische Betragsänderungen |
 | Ausgaben | Manuelle und aus EnergyLab synchronisierte Ausgaben, optional mit einem Kredit und Tilgungsanteil verknüpft |
 | Kredite | Kreditstammdaten, offene Salden und vollständige Tilgungshistorie |
+| Zinsen | Auswertung bisheriger und geplanter Kreditzinsen sowie erfasster Girokontozinsen |
 | Umbuchungen | Geldbewegungen zwischen eigenen Konten |
 | Einstellungen | Haushalte, Personen, EnergyLab-Verbindung, Excel-Export und Datenprüfung |
 
@@ -153,7 +154,7 @@ Der Disporahmen wird als positiver Betrag eingegeben. Beispiel: `800,00 €` erl
 
 Sinkt ein simulierter Stand unter diesen Wert, zeigt die Anwendung eine Warnung mit dem überschrittenen Betrag. Die Warnung erscheint auch in der Monatsvorschau und im Excel-Export.
 
-Zins- und Dispozinsberechnungen sind nicht Bestandteil der Anwendung.
+Eine automatische Berechnung von Dispozinsen ist nicht Bestandteil der Anwendung. Kreditzinsen und manuell erfasste Girokontozinsen werden auf der eigenen Seite **Zinsen** ausgewertet.
 
 ### 5.6 Konto löschen
 
@@ -267,7 +268,7 @@ Unter **Kredite** werden drei Arten verwaltet:
 - Kredit
 - Geliehen
 
-Beim Anlegen werden Bezeichnung, Art, Anfangssaldo und optional eine Notiz gespeichert. Ein Klick auf den Kredit öffnet den aktuellen Saldo und die vollständige Zahlungshistorie.
+Beim Anlegen werden Bezeichnung, Art, Anfangssaldo, Zahlungsplan und optional der Sollzinssatz gespeichert. Bei einem Konsumkredit können zusätzlich Anbieter, Produktpreis, Finanzierungspreis und Ratenaufpreis eingetragen werden. Ein Klick auf den Kredit öffnet den aktuellen Saldo und die vollständige Zahlungshistorie.
 
 Über der Kreditliste stehen die Filter **Alle**, **Konsumkredit**, **Kredit** und **Geliehen**. Die Zahl im jeweiligen Filter zeigt, wie viele Kredite dieser Art vorhanden sind. Der gewählte Filter wirkt nur auf die Liste; die drei Summenkarten darüber zeigen weiterhin jederzeit Anzahl und offenen Gesamtsaldo aller Kreditarten.
 
@@ -287,6 +288,45 @@ Alle manuellen und über Ausgaben geplanten Tilgungen werden in Datumsreihenfolg
 Ist bei einer noch offenen Restschuld die nächste geplante Rate zu hoch, wird die letzte Kontobelastung automatisch auf die Restschuld begrenzt. Beispiel: Bei einer geplanten Rate von `400,00 €`, einem Tilgungsanteil von `320,00 €` und nur noch `100,00 €` Restschuld werden genau `100,00 €` vom Konto abgebucht und `100,00 €` getilgt. Ab diesem Termin beträgt der offene Kreditsaldo `0,00 €`; spätere Raten entfallen.
 
 Ist für die verknüpfte Ausgabe ein Enddatum hinterlegt und verbleiben nach der letzten vorgesehenen Rate nur noch **0,01 € bis 2,99 €**, wird dieser Kleinbetrag automatisch der Schlussrate zugeschlagen. Bei einer geplanten Schlussrate von `84,64 €` und einer Restschuld von `84,66 €` werden deshalb `84,66 €` abgebucht und getilgt. Der Kredit endet bei `0,00 €`. Bei exakt `3,00 €` oder mehr sowie bei Zahlungsplänen ohne Enddatum erfolgt keine automatische Erhöhung.
+
+### 8.1 Automatische Zins- und Tilgungsberechnung
+
+Ist **Zins und Tilgung automatisch berechnen** aktiviert, ermittelt FinanzLab bei jeder Rate den Zinsanteil aus dem aktuellen offenen Saldo und dem Sollzinssatz. Der übrige Teil der Rate tilgt den Kredit. Bereits manuell erfasste Zins- oder Tilgungswerte bleiben beim Bearbeiten unverändert.
+
+Bei Konsumkrediten wird der **Produktpreis** als verzinslicher Anfangssaldo verwendet. **Finanzierungspreis** und **Ratenaufpreis** sind Gesamt- und Kontrollwerte und werden nicht nochmals verzinst. FinanzLab vergleicht Monatsrate mal Zahlungsanzahl zuzüglich einer möglichen Schlussrate mit dem Finanzierungspreis. Übliche Abweichungen von wenigen Cent durch gerundete Monatsraten werden akzeptiert.
+
+Beispiel für eine PayPal-Ratenzahlung:
+
+- Produktpreis: `519,99 €`
+- Finanzierungspreis: `586,29 €`
+- Ratenaufpreis: `66,01 €`
+- 24 Raten zu `24,43 €`
+- Sollzins: `11,8033 %`
+
+Der verzinsliche Anfangssaldo beträgt `519,99 €`. Die 24 Raten werden gegen den Finanzierungspreis plausibilisiert; der Finanzierungspreis selbst erhält keinen zweiten Zinsaufschlag.
+
+### 8.2 Manuelle Tilgung und Kreditaufstockung
+
+Eine positive manuelle Tilgung verringert die Restschuld. Ein negativer Betrag wird als **Kreditaufstockung** behandelt und erhöht die Restschuld. Das ist bei Konsumkrediten, Krediten und geliehenen Beträgen möglich. Nachfolgende automatisch berechnete Zinsen verwenden den dadurch geänderten Saldo.
+
+### 8.3 Archivierte Kredite
+
+Ein vollständig getilgter Kredit wird automatisch archiviert. Ein Kredit kann außerdem im Bearbeitungsdialog manuell archiviert und später wieder aktiviert werden. Archivierte Kredite werden nicht in aktive Kreditsummen oder die Kreditsimulation der Vorschau aufgenommen.
+
+### 8.4 Zinsauswertung
+
+Auf der Seite **Zinsen** stehen oben vier Werte:
+
+- **Kreditzinsen:** bis heute berechnete Zinsen der ausgewählten Kredite;
+- **Geplante Kreditzinsen:** noch erwartete Zinsen der ausgewählten aktiven Kredite;
+- **Zinsen Girokonto:** als Kontoausgaben erfasste Girokontozinsen;
+- **Zinsen gesamt:** bisherige Kreditzinsen der Auswahl zuzüglich Girokontozinsen.
+
+Unter **Einbezogene Kredite** lassen sich aktive und archivierte Kredite einzeln auswählen. Beim Öffnen eines Haushalts sind die aktiven Kredite vorausgewählt. Archivierte Kredite tragen den Zusatz **Archiv** und werden erst nach dem Setzen ihres Hakens angezeigt und eingerechnet. Die Auswahl beeinflusst **Zinsen je Kredit**, **Kreditzinsen**, **Geplante Kreditzinsen** und den Kreditanteil von **Zinsen gesamt**. Girokontozinsen bleiben davon unabhängig.
+
+Bei automatisch archivierten Krediten kann so die abgeschlossene Zinshistorie erneut betrachtet werden. Bei manuell archivierten Krediten werden die bis zur Archivierung entstandenen Zinsen gezeigt; nach der Archivierung werden keine weiteren geplanten Zinsen hochgerechnet.
+
+Über **+ Girokontozinsen** wird ein positiver Zinsbetrag mit Datum und Konto erfasst. FinanzLab legt ihn als Ausgabe an und zeigt ihn in der Zinsauswertung als positiven Kostenwert.
 
 ## 9. Umbuchungen
 
@@ -504,7 +544,7 @@ docker compose up --build -d
 
 Die Anwendung führt notwendige Schemaanpassungen beim Start aus. Das persistente Daten-Volume darf beim Update nicht gelöscht werden.
 
-Bei Portainer wird das neue Image zuerst unter **Images → Import** eingespielt. Anschließend im bestehenden Stack die Zeile `image: finanzlab:1.0.2` setzen und den Stack neu bereitstellen. Der bestehende Stackname und das Volume müssen erhalten bleiben. Eine ausführliche Schrittfolge einschließlich Sicherung und Wiederherstellung steht in [INSTALLATION.md](INSTALLATION.md#11-aktualisieren-auf-eine-neue-version).
+Bei Portainer wird das neue Image zuerst unter **Images → Import** eingespielt. Anschließend im bestehenden Stack die Zeile `image: finanzlab:1.6.1` setzen und den Stack neu bereitstellen. Der bestehende Stackname und das Volume müssen erhalten bleiben. Eine ausführliche Schrittfolge einschließlich Sicherung und Wiederherstellung steht in [INSTALLATION.md](INSTALLATION.md#11-aktualisieren-auf-eine-neue-version).
 
 ## 17. Fehlerbehebung
 
@@ -562,7 +602,7 @@ Nicht enthalten sind insbesondere:
 
 - Online-Banking-Zugänge
 - automatische Bankabfragen
-- Zins- oder Dispozinsberechnungen
+- automatische Dispozinsberechnungen
 - Cloud-Synchronisierung persönlicher Haushaltsdaten
 
 ## 19. Autor und Unterstützung
