@@ -33,7 +33,7 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - vollständige Kredit-Historie aus verknüpften Ausgaben und manuellen Tilgungen
 - getrennter Abbuchungs- und Tilgungsbetrag für Annuitäten
 - automatische Kreditzinsberechnung ohne Doppelverzinsung des Finanzierungspreises
-- Zinsauswertung für bisherige und geplante Kreditzinsen, Girokontozinsen und deren Gesamtsumme
+- Zinsauswertung für bisherige und geplante Kreditzinsen, Girokontozinsen und deren Gesamtsumme mit auswählbaren aktiven und archivierten Krediten
 - negative manuelle Tilgungen als Kreditaufstockung für alle Kreditarten
 - zukünftige Tilgungen werden angezeigt, wirken aber erst ab ihrem Datum auf den Kreditsaldo
 - überzahlte Kredite bleiben bei einem offenen Saldo von 0,00 € und werden nicht als Forderung dargestellt

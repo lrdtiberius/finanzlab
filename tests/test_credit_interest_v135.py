@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.archive_support import install_repository_archive_support
 from app.infrastructure.repository import Repository
 
 
@@ -362,6 +363,31 @@ class CreditInterestTests(unittest.TestCase):
         self.assertTrue(any(item["source"] == "expense" and item["amount_cents"] == 250
             and item["credit_name"] == "Sollzinsen" for item in overview["bookings"]))
 
+    def test_interest_selection_filters_credit_rows_and_totals(self):
+        first = self.credit(name="Ausgewählter Kredit", opening_balance_cents=20_000)
+        second = self.credit(name="Nicht ausgewählter Kredit", opening_balance_cents=30_000)
+        self.rate(first["id"], amount_cents=10_000, recurrence="once")
+        self.rate(second["id"], amount_cents=10_000, recurrence="once")
+        selected = self.repo.list_interest(self.hid, "2026-01-31", [first["id"]])
+        self.assertEqual([first["id"]], [item["credit_id"] for item in selected["items"]])
+        self.assertEqual(200, selected["totals"]["credit_interest_cents"])
+        self.assertEqual(200, selected["totals"]["total_interest_cents"])
+        account = self.repo.create_account({
+            "household_id": self.hid, "name": "Giro", "owner": "A",
+            "anchor_date": "2026-01-01", "balance_cents": 0,
+        })["accounts"][0]
+        self.repo.create_cash_flow({
+            "household_id": self.hid, "kind": "expense", "name": "Girozinsen",
+            "category": "interest", "amount_cents": 250, "recurrence": "once",
+            "due_date": "2026-01-31", "account_id": account["id"], "owner": "A",
+            "active": True, "effective_from": "2026-01-01",
+        })
+        none = self.repo.list_interest(self.hid, "2026-01-31", [])
+        self.assertEqual([], none["items"])
+        self.assertEqual(0, none["totals"]["credit_interest_cents"])
+        self.assertEqual(250, none["totals"]["checking_account_interest_cents"])
+        self.assertEqual(250, none["totals"]["total_interest_cents"])
+
     def test_backdated_one_time_interest_expense_is_visible(self):
         account = self.repo.create_account({"household_id": self.hid, "name": "Sparkasse", "owner": "A",
             "anchor_date": "2026-09-01", "balance_cents": 0})["accounts"][0]
@@ -374,6 +400,87 @@ class CreditInterestTests(unittest.TestCase):
         booking = next(item for item in overview["bookings"] if item["source"] == "expense")
         self.assertEqual("2026-09-01", booking["booking_date"])
         self.assertEqual("Sparkasse", booking["account_name"])
+
+
+class ArchivedCreditInterestSelectionTests(unittest.TestCase):
+    def setUp(self):
+        class ArchivedRepository(Repository):
+            pass
+
+        install_repository_archive_support(ArchivedRepository)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = ArchivedRepository(Path(self.tmp.name) / "planner.db")
+        self.hid = self.repo.create_household(
+            {"name": "Archiv-Zins-Test", "mode": "single", "person_a": "Alex"}
+        )["id"]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_archived_credit_is_optional_and_included_when_selected(self):
+        credit = self.repo.create_credit({
+            "household_id": self.hid,
+            "name": "Abbezahlter Kredit",
+            "credit_type": "credit",
+            "opening_balance_cents": 5_000,
+            "interest_rate": "12",
+            "automatic_interest": True,
+        })
+        self.repo.create_cash_flow({
+            "household_id": self.hid,
+            "kind": "expense",
+            "name": "Letzte Kreditrate",
+            "category": "credit",
+            "amount_cents": 5_050,
+            "credit_reduction_cents": 1,
+            "credit_id": credit["id"],
+            "recurrence": "once",
+            "due_date": "2026-01-15",
+            "effective_from": "2026-01-01",
+            "active": True,
+            "owner": "A",
+        })
+
+        default = self.repo.list_interest(self.hid, "2026-01-31")
+        self.assertEqual([], default["items"])
+
+        selected = self.repo.list_interest(self.hid, "2026-01-31", [credit["id"]])
+        self.assertEqual([credit["id"]], [item["credit_id"] for item in selected["items"]])
+        self.assertEqual(50, selected["totals"]["credit_interest_cents"])
+        self.assertEqual(50, selected["totals"]["total_interest_cents"])
+
+    def test_manually_archived_credit_keeps_past_interest_but_not_future_interest(self):
+        credit = self.repo.create_credit({
+            "household_id": self.hid,
+            "name": "Manuell archivierter Kredit",
+            "credit_type": "credit",
+            "opening_balance_cents": 20_000,
+            "interest_rate": "12",
+            "automatic_interest": True,
+        })
+        self.repo.create_cash_flow({
+            "household_id": self.hid,
+            "kind": "expense",
+            "name": "Kreditrate",
+            "category": "credit",
+            "amount_cents": 10_000,
+            "credit_reduction_cents": 1,
+            "credit_id": credit["id"],
+            "recurrence": "monthly",
+            "due_date": "2026-01-15",
+            "effective_from": "2026-01-01",
+            "active": True,
+            "owner": "A",
+        })
+        self.repo.set_credit_archived(credit["id"], {
+            "household_id": self.hid,
+            "archived": True,
+        })
+
+        selected = self.repo.list_interest(self.hid, "2026-09-14", [credit["id"]])
+        self.assertEqual([credit["id"]], [item["credit_id"] for item in selected["items"]])
+        self.assertEqual(305, selected["totals"]["credit_interest_cents"])
+        self.assertEqual(0, selected["totals"]["planned_credit_interest_cents"])
 
 
 if __name__ == "__main__":

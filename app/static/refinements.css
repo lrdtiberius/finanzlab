@@ -42,3 +42,4 @@
 .credit-tabs{display:flex;gap:8px;margin:0 0 18px;border-bottom:1px solid var(--line)}.credit-tabs button{padding:10px 14px;border:0;border-bottom:3px solid transparent;background:transparent;color:var(--muted);font-weight:800}.credit-tabs button.active{border-bottom-color:var(--accent);color:var(--ink)}
 .notice.suggestion{background:#f2f0eb;border-color:#ded9cf;color:var(--muted)}
 .credit-payment-row.increase strong{color:var(--accent-dark)}
+.archived-choice{opacity:.72;border-style:dashed}

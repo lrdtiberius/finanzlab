@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.1
+
+- In der Zinsauswertung lassen sich aktive und archivierte Kredite einzeln auswählen.
+- Nur ausgewählte Kredite werden unter „Zinsen je Kredit“ angezeigt und in „Kreditzinsen“, „Geplante Kreditzinsen“ sowie „Zinsen gesamt“ eingerechnet.
+- Aktive Kredite sind beim Öffnen eines Haushalts vorausgewählt; archivierte Kredite können bei Bedarf zugeschaltet werden.
+- Girokontozinsen bleiben von der Kreditauswahl unabhängig und werden weiterhin in „Zinsen gesamt“ berücksichtigt.
+
 ## 1.6.0
 
 - Automatisch berechnete Konsumkredite verwenden den Produktpreis als verzinslichen Anfangssaldo; der Finanzierungspreis wird nicht erneut verzinst.

@@ -20,7 +20,7 @@ from app.domain.recurrence import (
     recurrence_dates,
 )
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -837,7 +837,8 @@ class Repository:
             con.execute("DELETE FROM credit_payments WHERE id=?",(payment_id,))
         return {"id":payment_id,"deleted":True}
 
-    def _credit_timelines(self,con,hid,through_date):
+    def _credit_timelines(self,con,hid,through_date,include_inactive_version_ids=None,
+            inactive_credit_cutoffs=None):
         """Build effective credit payments and account debits in date order.
 
         Manual payments are applied before linked expenses on the same day.
@@ -858,12 +859,20 @@ class Repository:
                 "label":row["note"] or "Manuelle Tilgung","source":"manual",
                 "source_id":row["id"],"occurrence_key":None,
             })
-        versions=con.execute("""SELECT f.id AS flow_id,COALESCE(v.name,f.name) AS label,
+        included_versions={str(version_id) for version_id in (include_inactive_version_ids or [])}
+        active_clause="v.active=1"
+        version_params=[]
+        if included_versions:
+            placeholders=",".join("?" for _ in included_versions)
+            active_clause=f"(v.active=1 OR v.id IN ({placeholders}))"
+            version_params=sorted(included_versions)
+        versions=con.execute(f"""SELECT v.id AS version_id,f.id AS flow_id,COALESCE(v.name,f.name) AS label,
                     v.amount_cents,v.credit_reduction_cents,v.credit_id,
                     v.version_from,v.version_to,v.stream_start,v.stream_end,v.due_date,v.recurrence
                 FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
                 WHERE f.household_id=? AND f.kind='expense' AND v.credit_id IS NOT NULL
-                  AND v.active=1 AND v.version_from<=?""",(hid,through_date)).fetchall()
+                  AND {active_clause} AND v.version_from<=?""",
+                [hid,*version_params,through_date]).fetchall()
         latest_monthly_plans={}
         for version in versions:
             if version["recurrence"]!="monthly" or not version["stream_end"] or not version["due_date"]:
@@ -890,6 +899,9 @@ class Repository:
                 continue
             for due in due_dates:
                 due_text=due.isoformat()
+                inactive_cutoff=(inactive_credit_cutoffs or {}).get(version["credit_id"])
+                if inactive_cutoff and due_text>inactive_cutoff:
+                    continue
                 events_by_credit.setdefault(version["credit_id"],[]).append({
                     "id":f"expense:{version['flow_id']}:{due_text}","date":due_text,
                     "requested_reduction_cents":int(version["credit_reduction_cents"] or 0),
@@ -1005,7 +1017,8 @@ class Repository:
             timelines[credit["id"]]={"credit":credit,"events":timeline,"remaining_balance_cents":remaining}
         return {"credits":timelines,"occurrences":occurrence_adjustments}
 
-    def list_credits(self,hid,as_of=None,through=None,simulate_future=False):
+    def list_credits(self,hid,as_of=None,through=None,simulate_future=False,
+            include_inactive_version_ids=None,inactive_credit_cutoffs=None):
         requested=as_of_date(as_of); actual_today=date.today().isoformat()
         cutoff=requested if simulate_future else min(requested,actual_today)
         default_through=add_months_anchored(actual_today,24).isoformat()
@@ -1023,7 +1036,8 @@ class Repository:
                     "SELECT MAX(payment_date) AS last_date FROM credit_payments WHERE household_id=?",(hid,)
                 ).fetchone()["last_date"]
                 if manual_end and manual_end>through_date: through_date=manual_end
-            schedule=self._credit_timelines(con,hid,through_date)
+            schedule=self._credit_timelines(con,hid,through_date,include_inactive_version_ids,
+                inactive_credit_cutoffs)
             result=[]
             for credit_id,timeline in schedule["credits"].items():
                 credit=dict(timeline["credit"])
@@ -1084,8 +1098,27 @@ class Repository:
         return {"as_of":cutoff,"today":actual_today,"through":through_date,"items":result,"groups":groups,
             "totals":{"count":len(result),"balance_cents":sum(item["remaining_balance_cents"] for item in result)}}
 
-    def list_interest(self,hid,as_of=None):
-        view=self.list_credits(hid,as_of)
+    def list_interest(self,hid,as_of=None,credit_ids=None):
+        credit_view=getattr(self,"list_credits_view",self.list_credits)
+        view=credit_view(hid,as_of)
+        active_credits=view.get("items",[])
+        all_credits=view.get("all_items",active_credits)
+        if credit_ids is None:
+            selected_credits=active_credits
+        else:
+            selected_ids={str(credit_id) for credit_id in credit_ids}
+            selected_credits=[credit for credit in all_credits if credit["id"] in selected_ids]
+        manually_archived={credit["id"]:str(credit.get("archived_at") or "").split("T",1)[0].split(" ",1)[0]
+            for credit in selected_credits if credit.get("archived") and credit.get("archive_reason")=="manual"}
+        if manually_archived:
+            with self.connect() as con:
+                placeholders=",".join("?" for _ in manually_archived)
+                saved_versions=con.execute(f"""SELECT s.version_id FROM credit_archive_flow_states s
+                    WHERE s.active=1 AND s.credit_id IN ({placeholders})""",sorted(manually_archived)).fetchall()
+            historical=self.list_credits(hid,as_of,include_inactive_version_ids=[row["version_id"] for row in saved_versions],
+                inactive_credit_cutoffs=manually_archived)
+            historical_by_id={credit["id"]:credit for credit in historical.get("items",[])}
+            selected_credits=[historical_by_id.get(credit["id"],credit) for credit in selected_credits]
         cutoff=view.get("as_of") or as_of_date(as_of)
         with self.connect() as con:
             bookings=[dict(row) for row in con.execute("""SELECT b.*,c.name AS credit_name,c.provider,
@@ -1144,10 +1177,10 @@ class Repository:
                 })
         bookings.extend(manual_bookings)
         bookings.sort(key=lambda item:(item.get("booking_date") or "",item.get("id") or ""),reverse=True)
-        by_credit={item["id"]:item for item in view.get("items",[])}
+        by_credit={item["id"]:item for item in selected_credits}
         for booking in bookings: booking["credit"] = by_credit.get(booking["credit_id"])
         rows=[]
-        for credit in view.get("items",[]):
+        for credit in selected_credits:
             expected_total=int(credit.get("interest_cents") or 0)+int(credit.get("future_interest_cents") or 0)
             rows.append({"credit_id":credit["id"],"name":credit["name"],"provider":credit.get("provider"),
                 "credit_type":credit["credit_type"],"calculated_interest_cents":int(credit.get("interest_cents") or 0),
