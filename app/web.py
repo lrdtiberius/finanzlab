@@ -19,7 +19,7 @@ ENERGYLAB = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FinanzLab/1.6.1"
+    server_version = "FinanzLab/1.7.1"
 
     def json_response(self, data, status=HTTPStatus.OK):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -50,7 +50,7 @@ class Handler(BaseHTTPRequestHandler):
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "1.6.1"})
+                return self.json_response({"status": "ok", "version": "1.7.1"})
             if path == "/api/households":
                 return self.json_response({"items": REPOSITORY.list_households()})
             if path == "/api/dashboard":
@@ -111,10 +111,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/interest":
                 hid = (query.get("household_id") or [""])[0]
                 as_of = (query.get("as_of") or [None])[0]
-                credit_selection = (query.get("credit_ids") or [None])[0]
-                credit_ids = (None if credit_selection is None else [] if credit_selection == "__none__"
-                    else [value for value in credit_selection.split(",") if value])
-                return self.json_response(REPOSITORY.list_interest(hid, as_of, credit_ids))
+                return self.json_response(REPOSITORY.list_interest(hid, as_of))
             if path.startswith("/api/credits/"):
                 parts = path.strip("/").split("/")
                 hid = (query.get("household_id") or [""])[0]

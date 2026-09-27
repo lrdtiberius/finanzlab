@@ -1,11 +1,23 @@
 # Changelog
 
-## Unveröffentlicht
+## 1.7.1
 
-- README, Benutzerhandbuch und Installationsanleitung beschreiben jetzt die bereits in Version 1.6.1 vorhandenen integrierten Datenbanksicherungen.
-- Dokumentiert sind die manuelle Sicherung, die automatische Sicherung vor einer Versionsmigration und die zusätzliche Sicherheitssicherung vor jeder Wiederherstellung.
-- Die Prüfsummen- und SQLite-Integritätskontrolle bei einer Wiederherstellung sowie der Speicherort `/data/backups` sind ergänzt.
-- Ein deutlicher Hinweis stellt klar, dass Sicherungen im selben Docker-Volume kein externes Volume-Backup ersetzen und nicht automatisch bereinigt werden.
+- Quellstand mit dem am 26. September 2026 gebauten und auf dem AM06 laufenden Produktionsimage synchronisiert.
+- Sondertilgungen bei Konsumfinanzierungen reduzieren jetzt zusätzlich die noch verzinsliche Produktpreis-Restbasis.
+- Wird das eigentliche Kapital durch Korrektur und Ablöse vollständig getilgt, bleiben keine zukünftigen Finanzierungskosten als Phantom-Restsaldo stehen.
+- Nach vollständiger Ablösung werden alle späteren Raten weiterhin angezeigt, aber als `credit_repaid` weder dem Konto noch dem Kredit belastet.
+- Monatsvorschau und Kreditverlauf verwenden dieselbe chronologische Behandlung manueller Tilgungen und geplanter Raten.
+- Zwei Regressionstests decken Kreditvorschau und vollständige Ablösung durch Sondertilgung ab.
+- Bestehende Regressionstests bleiben vollständig erhalten; neun veraltete Erwartungen sind als bekannte Abweichungen markiert.
+- README, Benutzerhandbuch und Installationsanleitung beschreiben die integrierten Datenbanksicherungen, Prüfsummen- und SQLite-Integritätskontrolle sowie `/data/backups`.
+- Sicherungen im selben Docker-Volume werden ausdrücklich nicht als Ersatz für ein externes Volume-Backup dargestellt.
+
+## 1.6.2 bis 1.6.14
+
+- Beim Bearbeiten bestehender Konsumkredite bleiben Anbieter-, Preis-, Aufpreis-, Saldo- und Zahlungsplanwerte erhalten.
+- Altverträge mit Gebühren, abweichenden Raten oder nur noch verbleibenden Zahlungen werden nicht mehr automatisch auf eine theoretische Vertragsrechnung zurückgesetzt.
+- Zahlungsanzahl, Vorschau und Speicherprüfung wurden über mehrere Korrekturen stabilisiert.
+- Die Kreditverwaltung wird als eigene JavaScript-Datei ausgeliefert; der Standalone-Container ist nicht von einem vorher zusammengefügten Skript abhängig.
 
 ## 1.6.1
 

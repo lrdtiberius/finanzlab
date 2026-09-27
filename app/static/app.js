@@ -131,17 +131,18 @@ $('#energylab-account-form').addEventListener('submit',async event=>{event.preve
 
 function selectCreditFormTab(name){$$('[data-credit-form-tab]').forEach(button=>button.classList.toggle('active',button.dataset.creditFormTab===name));$$('[data-credit-form-panel]').forEach(panel=>panel.hidden=panel.dataset.creditFormPanel!==name)}
 function inferInstallmentApr(principal,payment,count,balloon=0){if(!(principal>0&&payment>0&&Number.isInteger(count)&&count>0&&balloon>=0&&balloon<=principal))return null;const total=payment*count+balloon;if(total<principal)return null;if(total===principal)return 0;const presentValue=monthly=>{let discount=1,value=0;for(let index=0;index<count;index++){discount*=1+monthly;value+=payment/discount}return value+balloon/discount};let low=0,high=.01;while(presentValue(high)>principal&&high<10)high*=2;if(presentValue(high)>principal)return null;for(let index=0;index<96;index++){const middle=(low+high)/2;if(presentValue(middle)>principal)low=middle;else high=middle}return (low+high)/2*1200}
-function updateCreditPlanCheck(){const form=$('#credit-form').elements,count=Number(form.plan_count.value),first=form.plan_first_due.value,rate=euroCents(form.plan_amount.value||0),opening=Number(creditById(state.editingCreditId)?.remaining_balance_cents??euroCents(form.opening_balance.value||0)),contractPrincipal=euroCents(form.product_price?.value||0)||euroCents(form.opening_balance.value||0),financing=euroCents(form.financing_price?.value||0),balloon=euroCents(form.balloon_payment.value||0),enteredRate=String(form.interest_rate.value||'').replace(',','.'),automatic=form.automatic_interest.checked,inferred=automatic&&!enteredRate?inferInstallmentApr(contractPrincipal,rate,count,balloon):null,apr=enteredRate?Number(enteredRate):Number(inferred||0),target=$('#credit-plan-check'),interestHint=$('#credit-interest-hint');form.interest_rate.placeholder=inferred!=null?inferred.toFixed(4):'';form.interest_rate.dataset.calculated=inferred!=null?String(inferred):'';if(interestHint)interestHint.textContent=inferred!=null?`Vorschlag aus Zahlungsplan: ${inferred.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:4})} % p. a.`:enteredRate?'Manuell eingetragener Zinssatz.':'Noch nicht aus den Zahlungsdaten berechenbar.';let suggested=0,suggestionBalance=opening;while(suggestionBalance>balloon&&suggested<1200&&rate>0){const interest=automatic?Math.round(suggestionBalance*apr/1200):0,principal=Math.max(0,rate-interest);if(principal<=0){suggested=0;break}suggestionBalance=Math.max(balloon,suggestionBalance-principal);suggested++}form.plan_count.placeholder=suggested?String(suggested):'';if(!first||!Number.isInteger(count)||count<1){target.className='notice wide suggestion';target.textContent=suggested?`Vorschlag: ${suggested} monatliche Zahlungen${balloon?` bis zur vertraglichen Restschuld von ${eur(balloon)}`:''}.`:'Startdatum und Rate festlegen.';return}const scheduledTotal=rate*count+balloon,roundingDifference=financing?scheduledTotal-financing:0,roundingTolerance=Math.max(5,count);if(financing&&Math.abs(roundingDifference)>roundingTolerance){target.className='notice wide error';target.textContent=`Die Raten ergeben ${eur(scheduledTotal)}, der Finanzierungspreis beträgt ${eur(financing)}. Bitte Rate, Anzahl oder Finanzierungspreis prüfen.`;return}const end=addMonthsToDate(first,count-1);let remaining=opening;for(let index=0;index<count&&remaining>balloon;index++){const interest=automatic?Math.round(remaining*apr/1200):0;remaining=Math.max(balloon,remaining-Math.max(0,rate-interest))}const shortfall=Math.max(0,remaining-balloon),roundingNote=financing&&roundingDifference?` Rundungsdifferenz zum Finanzierungspreis: ${eur(Math.abs(roundingDifference))} (toleriert).`:'';target.className=`notice wide${shortfall>0?' error':' suggestion'}`;target.textContent=shortfall>0?`${count} Zahlungen reichen voraussichtlich nicht: Ziel-Restschuld um ${eur(shortfall)} verfehlt. Vorschlag: ${suggested||'–'} Zahlungen.`:`${count} Monatsraten bis ${dateLabel(end)} · danach vertragliche Restschuld ${eur(balloon)}.${roundingNote}${suggested&&suggested<count?` Rechnerisch genügen voraussichtlich ${suggested}.`:''}`}
-function openCredit(item=null){state.editingCreditId=item?.id||null;const form=$('#credit-form');form.reset(),plan=item?.payment_plan||null,accounts=state.dashboard.household.accounts,defaultAccount=accounts.find(account=>account.is_default)||accounts[0];form.elements.credit_type.value=item?.credit_type||'consumer_credit';form.elements.opening_balance.value=item?(Number(item.opening_balance_cents)/100).toFixed(2):'';form.elements.interest_rate.value=item?.interest_rate??'';form.elements.automatic_interest.checked=item?Boolean(item.automatic_interest):true;form.elements.name.value=item?.name||'';form.elements.note.value=item?.note||'';form.elements.archived.checked=Boolean(item?.archived);form.elements.balloon_payment.value=(Number(item?.balloon_payment_cents||0)/100).toFixed(2);form.elements.plan_account.innerHTML=accounts.map(account=>`<option value="${escapeHtml(account.id)}">${escapeHtml(account.name)}</option>`).join('');form.elements.plan_account.value=plan?.account_id||defaultAccount?.id||'';form.elements.plan_amount.value=plan?(Number(plan.amount_cents)/100).toFixed(2):'';form.elements.plan_first_due.value=plan?.due_date||today();form.elements.plan_count.value=plan?.occurrence_count||'';form.elements.plan_change_from.value=today();$('#credit-plan-change-field').hidden=!item;$('#credit-edit-payment-list').innerHTML=item?(item.payments.length?item.payments.map(creditPaymentRow).join(''):'<p class="empty">Noch keine Tilgungen vorhanden.</p>'):'<p class="empty">Die Tilgungshistorie steht nach dem Anlegen des Kredits zur Verfügung.</p>';$('#credit-archive-field').hidden=!item;$('#credit-dialog-title').textContent=item?'Kredit bearbeiten':'Kredit anlegen';$('#delete-credit').hidden=!item;$('#credit-error').hidden=true;selectCreditFormTab('data');updateCreditPlanCheck();$('#credit-dialog').showModal()}
+function updateCreditPlanCheck(){const form=$('#credit-form').elements,count=Number(form.plan_count.value),first=form.plan_first_due.value,rate=euroCents(form.plan_amount.value||0),formOpening=euroCents(form.opening_balance.value||0),storedRemaining=Number(creditById(state.editingCreditId)?.remaining_balance_cents??0),opening=Number(formOpening||storedRemaining||0),contractPrincipal=euroCents(form.product_price?.value||0)||formOpening||0,creditType=form.credit_type.value,financing=creditType==='consumer_credit'?euroCents(form.financing_price?.value||0):0,isConsumerFinancing=creditType==='consumer_credit'&&financing>0&&contractPrincipal>0,balloon=euroCents(form.balloon_payment.value||0),enteredRate=String(form.interest_rate.value||'').replace(',','.'),automatic=form.automatic_interest.checked,inferred=automatic&&!enteredRate?inferInstallmentApr(contractPrincipal,rate,count,balloon):null,apr=enteredRate?Number(enteredRate):Number(inferred||0),target=$('#credit-plan-check'),interestHint=$('#credit-interest-hint');form.interest_rate.placeholder=inferred!=null?inferred.toFixed(4):'';form.interest_rate.dataset.calculated=inferred!=null?String(inferred):'';if(interestHint)interestHint.textContent=inferred!=null?`Vorschlag aus Zahlungsplan: ${inferred.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:4})} % p. a.`:enteredRate?'Manuell eingetragener Zinssatz.':'Noch nicht aus den Zahlungsdaten berechenbar.';let suggested=0,suggestionBalance=opening;while(suggestionBalance>balloon&&suggested<1200&&rate>0){if(isConsumerFinancing){suggestionBalance=Math.max(balloon,suggestionBalance-rate);suggested++;continue}const interest=automatic?Math.round(suggestionBalance*apr/1200):0,principal=Math.max(0,rate-interest);if(principal<=0){suggested=0;break}suggestionBalance=Math.max(balloon,suggestionBalance-principal);suggested++}form.plan_count.placeholder=suggested?String(suggested):'';if(!first||!Number.isInteger(count)||count<1){target.className='notice wide suggestion';target.textContent=suggested?`Vorschlag: ${suggested} monatliche Zahlungen${balloon?` bis zur vertraglichen Restschuld von ${eur(balloon)}`:''}.`:'Startdatum und Rate festlegen.';return}const scheduledTotal=rate*count+balloon,comparisonBalance=isConsumerFinancing?opening:0,roundingDifference=comparisonBalance?scheduledTotal-comparisonBalance:0,roundingTolerance=1000;if(comparisonBalance&&Math.abs(roundingDifference)>roundingTolerance){target.className='notice wide error';target.textContent=isConsumerFinancing?`Die geplanten Zahlungen ergeben ${eur(scheduledTotal)}, der offene Finanzierungssaldo beträgt ${eur(comparisonBalance)}. Bitte Rate, Anzahl oder Anfangssaldo prüfen.`:`Die Raten ergeben ${eur(scheduledTotal)}, der Finanzierungspreis beträgt ${eur(comparisonBalance)}. Bitte Rate, Anzahl oder Finanzierungspreis prüfen.`;return}const end=addMonthsToDate(first,count-1);let remaining=opening;for(let index=0;index<count&&remaining>balloon;index++){if(isConsumerFinancing){remaining=Math.max(balloon,remaining-rate)}else{const interest=automatic?Math.round(remaining*apr/1200):0;remaining=Math.max(balloon,remaining-Math.max(0,rate-interest))}}const shortfall=Math.max(0,remaining-balloon),finalAdjustment=shortfall>0&&shortfall<=1000?shortfall:0,roundingNote=comparisonBalance&&roundingDifference?` Rundungsdifferenz: ${eur(Math.abs(roundingDifference))} (toleriert).`:'';target.className=`notice wide${shortfall>0&&!finalAdjustment?' error':' suggestion'}`;target.textContent=finalAdjustment?`${count} Monatsraten bis ${dateLabel(end)}. Die letzte Rate wird automatisch um ${eur(finalAdjustment)} auf ${eur(rate+finalAdjustment)} angepasst; danach beträgt die vertragliche Restschuld ${eur(balloon)}.`:shortfall>0?`${count} Zahlungen reichen voraussichtlich nicht: Ziel-Restschuld um ${eur(shortfall)} verfehlt. Vorschlag: ${suggested||'–'} Zahlungen.`:`${count} Monatsraten bis ${dateLabel(end)} · danach vertragliche Restschuld ${eur(balloon)}.${roundingNote}${suggested&&suggested<count?` Rechnerisch genügen voraussichtlich ${suggested}.`:''}`}
+function openCredit(item=null){state.editingCreditId=item?.id||null;const form=$('#credit-form');form.reset(),plan=item?.payment_plan||null,accounts=state.dashboard.household.accounts,defaultAccount=accounts.find(account=>account.is_default)||accounts[0];form.elements.credit_type.value=item?.credit_type||'consumer_credit';form.elements.opening_balance.value=item?(Number(item.opening_balance_cents)/100).toFixed(2):'';form.elements.interest_rate.value=item?.interest_rate??'';form.elements.automatic_interest.checked=item?Boolean(item.automatic_interest):true;form.elements.name.value=item?.name||'';form.elements.note.value=item?.note||'';form.elements.archived.checked=Boolean(item?.archived);form.elements.balloon_payment.value=(Number(item?.balloon_payment_cents||0)/100).toFixed(2);form.elements.plan_account.innerHTML=accounts.map(account=>`<option value="${escapeHtml(account.id)}">${escapeHtml(account.name)}</option>`).join('');form.elements.plan_account.value=plan?.account_id||defaultAccount?.id||'';form.elements.plan_amount.value=plan?(Number(plan.amount_cents)/100).toFixed(2):'';form.elements.plan_first_due.value=plan?.due_date||today();form.elements.plan_count.value=plan?.occurrence_count||'';form.elements.plan_change_from.value=today();$('#credit-plan-change-field').hidden=!item;$('#credit-edit-payment-list').innerHTML=item?(item.payments.length?item.payments.map(creditPaymentRow).join(''):'<p class="empty">Noch keine Tilgungen vorhanden.</p>'):'<p class="empty">Die Tilgungshistorie steht nach dem Anlegen des Kredits zur Verfügung.</p>';const editPaymentForm=$('#credit-edit-payment-form');editPaymentForm.querySelector('[name="payment_date"]').value=today();editPaymentForm.querySelector('[name="amount"]').value='';$('#credit-edit-payment-error').hidden=true;$('#credit-archive-field').hidden=!item;$('#credit-dialog-title').textContent=item?'Kredit bearbeiten':'Kredit anlegen';$('#delete-credit').hidden=!item;$('#credit-error').hidden=true;selectCreditFormTab('data');updateCreditPlanCheck();$('#credit-dialog').showModal()}
 async function openCreditDetail(creditId){const credit=await api(`/api/credits/${encodeURIComponent(creditId)}?household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(today())}`);state.currentCreditId=credit.id;$('#credit-detail-type').textContent=creditTypeLabels[credit.credit_type]||'KREDIT';$('#credit-detail-title').textContent=credit.name;$('#credit-detail-summary').innerHTML=summaryCard('Anfangssaldo',credit.opening_balance_cents)+summaryCard('Bisher getilgt',credit.paid_cents)+summaryCard('Offener Saldo',credit.remaining_balance_cents)+(credit.contractual_end_date?summaryCard('Vertragliches Ende',dateLabel(credit.contractual_end_date)):'')+(credit.expected_repayment_date?summaryCard('Voraussichtlich getilgt',dateLabel(credit.expected_repayment_date)):'');$('#credit-payment-list').innerHTML=credit.payments.length?credit.payments.map(creditPaymentRow).join(''):'<p class="empty">Noch keine Tilgungen vorhanden.</p>';const form=$('#credit-payment-form');form.reset();form.elements.payment_date.value=today();$('#credit-payment-error').hidden=true;if(!$('#credit-detail-dialog').open)$('#credit-detail-dialog').showModal()}
 $('#new-credit').addEventListener('click',()=>openCredit());
 $('[data-credit-form-tab="data"]').closest('.credit-tabs').addEventListener('click',event=>{const button=event.target.closest('[data-credit-form-tab]');if(button)selectCreditFormTab(button.dataset.creditFormTab)});
 ['plan_amount','plan_first_due','plan_count','opening_balance','balloon_payment','interest_rate','automatic_interest'].forEach(name=>$('#credit-form').elements[name].addEventListener('input',updateCreditPlanCheck));
 $('#credit-filter').addEventListener('click',event=>{const button=event.target.closest('[data-credit-filter]');if(!button)return;state.creditFilter=button.dataset.creditFilter;renderCredits()});
 $('#credit-list').addEventListener('click',event=>{const edit=event.target.closest('[data-edit-credit]');if(edit){const item=creditById(edit.dataset.editCredit);if(item)openCredit(item);return}const row=event.target.closest('[data-open-credit]');if(row){const item=creditById(row.dataset.openCredit);if(item)openCredit(item)}});
-$('#credit-form').addEventListener('submit',async event=>{if(window.finanzLabCreditSubmitV15)return;event.preventDefault();const form=event.currentTarget.elements,error=$('#credit-error'),button=event.submitter,creditId=state.editingCreditId,current=creditById(creditId),plan={amount_cents:euroCents(form.plan_amount.value),first_due_date:form.plan_first_due.value,occurrence_count:form.plan_count.value,account_id:form.plan_account.value,owner:'A',flow_id:current?.payment_plan?.flow_id,effective_from:form.plan_change_from.value||today()};if(!form.name.value||!form.opening_balance.value){error.textContent="Bitte die Kreditdaten vollständig ausfüllen.";error.hidden=false;selectCreditFormTab("data");return}if(!form.plan_amount.value||!form.plan_first_due.value||!form.plan_count.value||!form.plan_account.value){error.textContent="Bitte die Zahlungsdaten vollständig ausfüllen.";error.hidden=false;selectCreditFormTab("plan");return}error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,name:form.name.value,credit_type:form.credit_type.value,opening_balance_cents:euroCents(form.opening_balance.value),interest_rate:form.interest_rate.value,automatic_interest:form.automatic_interest.checked,note:form.note.value,balloon_payment_cents:euroCents(form.balloon_payment.value||0),payment_plan:plan};try{await api(creditId?`/api/credits/${encodeURIComponent(creditId)}`:'/api/credits',{method:creditId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(creditId){const flowPayload={household_id:state.currentId,kind:'expense',name:payload.name,category:payload.credit_type,amount_cents:plan.amount_cents,recurrence:'monthly',due_date:plan.first_due_date,duration_months:plan.occurrence_count,account_id:plan.account_id,credit_id:creditId,credit_reduction_cents:current?.payment_plan?'':'',owner:'A',active:true,effective_from:form.plan_change_from.value||today()};await api(current?.payment_plan?.flow_id?`/api/cash-flows/${encodeURIComponent(current.payment_plan.flow_id)}`:'/api/cash-flows',{method:current?.payment_plan?.flow_id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(flowPayload)});await api(`/api/credits/${encodeURIComponent(creditId)}/archive`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,archived:form.archived.checked})})}state.creditFilter=creditId&&form.archived.checked?'archive':payload.credit_type;$('#credit-dialog').close();state.editingCreditId=null;await loadAll();toast(creditId&&form.archived.checked?'Kredit wurde gespeichert und archiviert.':'Kredit und Zahlungsplan wurden gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
+$('#credit-edit-payment-submit').addEventListener('click',async event=>{const creditId=state.editingCreditId;if(!creditId)return;const area=$('#credit-edit-payment-form'),dateInput=area.querySelector('[name="payment_date"]'),amountInput=area.querySelector('[name="amount"]'),error=$('#credit-edit-payment-error'),button=event.currentTarget;if(!dateInput.value||!amountInput.value){error.textContent='Bitte Datum und Betrag angeben.';error.hidden=false;return}const amount=euroCents(amountInput.value);error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,payment_date:dateInput.value,amount_cents:amount,note:''};try{await api(`/api/credits/${encodeURIComponent(creditId)}/payments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await loadAll();const updated=creditById(creditId);$('#credit-edit-payment-list').innerHTML=updated&&updated.payments.length?updated.payments.map(creditPaymentRow).join(''):'<p class="empty">Noch keine Tilgungen vorhanden.</p>';amountInput.value='';dateInput.value=today();toast(amount<0?'Kreditaufstockung wurde gespeichert.':'Tilgung wurde gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
+$('#credit-form').addEventListener('submit',async event=>{if(window.finanzLabCreditSubmitV15)return;event.preventDefault();const form=event.currentTarget.elements,error=$('#credit-error'),button=event.submitter,creditId=state.editingCreditId,current=creditById(creditId),plan={amount_cents:euroCents(form.plan_amount.value),first_due_date:form.plan_first_due.value,occurrence_count:form.plan_count.value,account_id:form.plan_account.value,owner:'A',flow_id:current?.payment_plan?.flow_id,effective_from:form.plan_change_from.value||today()};if(!form.name.value||!form.opening_balance.value){error.textContent="Bitte die Kreditdaten vollständig ausfüllen.";error.hidden=false;selectCreditFormTab("data");return}if(!form.plan_amount.value||!form.plan_first_due.value||!form.plan_count.value||!form.plan_account.value){error.textContent="Bitte die Zahlungsdaten vollständig ausfüllen.";error.hidden=false;selectCreditFormTab("plan");return}error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,name:form.name.value,credit_type:form.credit_type.value,opening_balance_cents:euroCents(form.opening_balance.value),interest_rate:form.interest_rate.value,automatic_interest:form.automatic_interest.checked,note:form.note?.value||'',balloon_payment_cents:euroCents(form.balloon_payment.value||0),payment_plan:plan};try{await api(creditId?`/api/credits/${encodeURIComponent(creditId)}`:'/api/credits',{method:creditId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(creditId){const flowPayload={household_id:state.currentId,kind:'expense',name:payload.name,category:payload.credit_type,amount_cents:plan.amount_cents,recurrence:'monthly',due_date:plan.first_due_date,duration_months:plan.occurrence_count,account_id:plan.account_id,credit_id:creditId,credit_reduction_cents:current?.payment_plan?'':'',owner:'A',active:true,effective_from:form.plan_change_from.value||today()};await api(current?.payment_plan?.flow_id?`/api/cash-flows/${encodeURIComponent(current.payment_plan.flow_id)}`:'/api/cash-flows',{method:current?.payment_plan?.flow_id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(flowPayload)});await api(`/api/credits/${encodeURIComponent(creditId)}/archive`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,archived:form.archived.checked})})}state.creditFilter=creditId&&form.archived.checked?'archive':payload.credit_type;$('#credit-dialog').close();state.editingCreditId=null;await loadAll();toast(creditId&&form.archived.checked?'Kredit wurde gespeichert und archiviert.':'Kredit und Zahlungsplan wurden gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 $('#delete-credit').addEventListener('click',async()=>{const item=creditById(state.editingCreditId);if(!item||!confirm(`„${item.name}“ mit seiner Zahlungshistorie wirklich löschen? Verknüpfte Ausgaben bleiben als normale Ausgaben erhalten.`))return;try{await api(`/api/credits/${encodeURIComponent(item.id)}?household_id=${encodeURIComponent(state.currentId)}`,{method:'DELETE'});$('#credit-dialog').close();state.editingCreditId=null;state.previewCreditIds=state.previewCreditIds.filter(id=>id!==item.id);await loadAll();toast('Kredit wurde gelöscht.')}catch(err){toast(err.message)}});
-$('#credit-payment-form').addEventListener('submit',async event=>{event.preventDefault();if(!state.currentCreditId)return;const form=event.currentTarget.elements,error=$('#credit-payment-error'),button=event.submitter,amount=euroCents(form.amount.value);error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,payment_date:form.payment_date.value,amount_cents:amount,note:form.note.value};try{await api(`/api/credits/${encodeURIComponent(state.currentCreditId)}/payments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await loadAll();await openCreditDetail(state.currentCreditId);toast(amount<0?'Kreditaufstockung wurde gespeichert.':'Tilgung wurde gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
+$('#credit-payment-form').addEventListener('submit',async event=>{event.preventDefault();if(!state.currentCreditId)return;const form=event.currentTarget.elements,error=$('#credit-payment-error'),button=event.submitter,amount=euroCents(form.amount.value);error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,payment_date:form.payment_date.value,amount_cents:amount,note:form.note?.value||''};try{await api(`/api/credits/${encodeURIComponent(state.currentCreditId)}/payments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await loadAll();await openCreditDetail(state.currentCreditId);toast(amount<0?'Kreditaufstockung wurde gespeichert.':'Tilgung wurde gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 $('#credit-payment-list').addEventListener('click',async event=>{const button=event.target.closest('[data-delete-credit-payment]');if(!button||!state.currentCreditId)return;if(!confirm('Diese manuelle Tilgung oder Kreditaufstockung wirklich löschen?'))return;try{await api(`/api/credits/${encodeURIComponent(state.currentCreditId)}/payments/${encodeURIComponent(button.dataset.deleteCreditPayment)}?household_id=${encodeURIComponent(state.currentId)}`,{method:'DELETE'});await loadAll();await openCreditDetail(state.currentCreditId);toast('Tilgung wurde gelöscht.')}catch(err){toast(err.message)}});
 
 function openTransfer(item=null){const accounts=state.dashboard.household.accounts;if(accounts.length<2){toast('Für eine Umbuchung werden mindestens zwei Konten benötigt.');showView('accounts');return}state.editingTransferId=item?.id||null;const form=$('#transfer-form');form.reset();const options=accounts.map(account=>`<option value="${escapeHtml(account.id)}">${escapeHtml(account.name)}</option>`).join('');$('#transfer-source').innerHTML=options;$('#transfer-target').innerHTML=options;const defaultAccount=accounts.find(account=>account.is_default)||accounts[0];form.elements.source_account_id.value=item?.source_account_id||defaultAccount.id;form.elements.target_account_id.value=item?.target_account_id||accounts.find(account=>account.id!==form.elements.source_account_id.value).id;form.elements.name.value=item?.name||'Umbuchung';form.elements.amount.value=item?(Number(item.amount_cents)/100).toFixed(2):'';form.elements.due_date.value=item?.due_date||state.asOf;form.elements.recurrence.value=item?.recurrence||'once';form.elements.end_date.value=item?.end_date||'';form.elements.occurrence_count.value=item?.occurrence_count||'';form.elements.active.checked=item?Boolean(item.active):true;$('#transfer-dialog-title').textContent=item?'Umbuchung bearbeiten':'Umbuchung anlegen';$('#delete-transfer').hidden=!item;$('#transfer-error').hidden=true;$('#transfer-dialog').showModal()}
@@ -159,3 +160,221 @@ $('#open-excel-export').addEventListener('click',()=>{const form=$('#excel-expor
 $('#excel-export-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,error=$('#excel-export-error'),button=event.submitter;error.hidden=true;button.disabled=true;button.textContent='Excel wird erstellt …';try{const query=new URLSearchParams({household_id:state.currentId,from_month:form.from_month.value,through_month:form.through_month.value});const response=await fetch(`/api/export.xlsx?${query}`);if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||'Der Excel-Export konnte nicht erstellt werden.')}const blob=await response.blob(),disposition=response.headers.get('Content-Disposition')||'',match=disposition.match(/filename="([^"]+)"/),filename=match?.[1]||`Haushaltsplaner-${form.from_month.value}-bis-${form.through_month.value}.xlsx`,url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=filename;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);$('#excel-export-dialog').close();toast('Die Excel-Arbeitsmappe wurde erstellt.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false;button.textContent='Excel herunterladen'}});
 $$('[data-close]').forEach(button=>button.addEventListener('click',()=>document.getElementById(button.dataset.close).close()));
 boot().catch(error=>{$('#app').hidden=false;toast(`Die Anwendung konnte nicht gestartet werden: ${error.message}`)});
+
+;(()=>{const marker="finanzlab-1.6.3-opening-default";
+function bindOpeningDefaultFromFinancing(){
+  const form=document.querySelector('#credit-form');
+  if(!form||form.dataset.openingDefaultBound)return;
+  form.dataset.openingDefaultBound='1';
+
+  const els=form.elements;
+  const opening=els.opening_balance;
+  if(!opening)return;
+
+  opening.addEventListener('input',()=>{opening.dataset.manual='1';});
+
+  const apply=()=>{
+    const type=els.credit_type&&els.credit_type.value;
+    const financing=typeof euroCents==='function'?euroCents(els.financing_price&&els.financing_price.value||0):0;
+    if(type!=='consumer_credit'||!financing||state.editingCreditId)return;
+    if(!opening.value||opening.dataset.autoFromFinancing==='1'){
+      opening.value=(financing/100).toFixed(2);
+      opening.dataset.autoFromFinancing='1';
+      try{updateCreditPlanCheck();}catch(e){}
+    }
+  };
+
+  ['credit_type','financing_price','product_price','installment_surcharge'].forEach(name=>{
+    const el=els[name];
+    if(!el)return;
+    el.addEventListener('input',()=>setTimeout(apply,0));
+    el.addEventListener('change',()=>setTimeout(apply,0));
+  });
+
+  setTimeout(apply,0);
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bindOpeningDefaultFromFinancing);
+else bindOpeningDefaultFromFinancing();
+})();
+
+/* finanzlab-1.6.5-form-opening-check */
+
+
+
+
+
+;(()=>{const marker="finanzlab-1.6.12-credit-plan-helper";
+function bindCreditPlanHelper1612(){
+  const form=document.querySelector('#credit-form');
+  if(!form||form.dataset.creditPlanHelper1612)return;
+  form.dataset.creditPlanHelper1612='1';
+
+  const els=form.elements;
+  const product=els.product_price;
+  const financing=els.financing_price;
+  const surcharge=els.installment_surcharge;
+  const opening=els.opening_balance;
+  const planAmount=els.plan_amount;
+  const planCount=els.plan_count;
+  const balloon=els.balloon_payment;
+
+  if(!product||!financing||!opening||!planAmount||!planCount)return;
+
+  const cents=value=>typeof euroCents==='function'
+    ? euroCents(value||0)
+    : (Math.round(Number(String(value||'0').replace(',','.'))*100)||0);
+
+  const money=c=>((c||0)/100).toFixed(2);
+  const isConsumer=()=>els.credit_type&&els.credit_type.value==='consumer_credit';
+
+  const setOpeningByScript=(valueCents)=>{
+    opening.dataset.settingFromScript='1';
+    try{
+      opening.value=valueCents ? money(valueCents) : '';
+    }finally{
+      setTimeout(()=>{opening.dataset.settingFromScript='';},0);
+    }
+  };
+
+  opening.addEventListener('input',()=>{
+    if(opening.dataset.settingFromScript==='1')return;
+    opening.dataset.manual='1';
+    opening.dataset.autoFromFinancing='0';
+    opening.dataset.manualCents=String(cents(opening.value));
+  },true);
+
+  const syncCreditData=(source)=>{
+    if(!isConsumer())return;
+
+    const productCents=cents(product.value);
+    let financingCents=cents(financing.value);
+    const surchargeCents=surcharge?cents(surcharge.value):0;
+
+    if(source==='surcharge'&&productCents>0){
+      financingCents=productCents+surchargeCents;
+      financing.value=money(financingCents);
+    }
+
+    if(financingCents>0&&productCents>0&&surcharge){
+      surcharge.value=money(Math.max(0,financingCents-productCents));
+    }
+
+    // Produktpreis allein setzt den Anfangssaldo nicht.
+    if(financingCents<=0){
+      if(opening.dataset.manual!=='1' || cents(opening.value)<=100){
+        setOpeningByScript(0);
+        opening.dataset.autoFromFinancing='0';
+      }
+      return;
+    }
+
+    // Manuell gesetzter Anfangssaldo gewinnt immer.
+    if(opening.dataset.manual==='1'){
+      const manualCents=Number(opening.dataset.manualCents||0);
+      if(Number.isFinite(manualCents)&&manualCents>=0){
+        setOpeningByScript(manualCents);
+        opening.dataset.autoFromFinancing='0';
+      }
+      return;
+    }
+
+    setOpeningByScript(financingCents);
+    opening.dataset.autoFromFinancing='1';
+  };
+
+  const planBase=()=>{
+    const openingCents=cents(opening.value);
+    const financingCents=cents(financing.value);
+    const base=openingCents||financingCents||0;
+    const balloonCents=balloon?cents(balloon.value):0;
+    return Math.max(0,base-balloonCents);
+  };
+
+  const recalcPlanFromRate=()=>{
+    const base=planBase();
+    const rate=cents(planAmount.value);
+    if(base<=0||rate<=0)return;
+
+    const count=Math.max(1,Math.ceil(base/rate));
+    planCount.value=String(count);
+
+    try{if(typeof updateCreditPlanCheck==='function')updateCreditPlanCheck();}catch(e){}
+  };
+
+  const recalcPlanFromCount=()=>{
+    const base=planBase();
+    const count=Number(planCount.value||0);
+    if(base<=0||!Number.isFinite(count)||count<1)return;
+
+    const rate=Math.ceil(base/count);
+    planAmount.value=money(rate);
+
+    try{if(typeof updateCreditPlanCheck==='function')updateCreditPlanCheck();}catch(e){}
+  };
+
+  const settle=source=>{
+    syncCreditData(source);
+    try{if(typeof updateCreditPlanCheck==='function')updateCreditPlanCheck();}catch(e){}
+  };
+
+  const later=source=>{
+    setTimeout(()=>settle(source),0);
+    setTimeout(()=>settle(source),40);
+    setTimeout(()=>settle(source),120);
+  };
+
+  ['input','change'].forEach(ev=>{
+    product.addEventListener(ev,()=>later('product'));
+    financing.addEventListener(ev,()=>later('financing'));
+
+    if(surcharge){
+      surcharge.addEventListener(ev,()=>later('surcharge'));
+    }
+
+    planAmount.addEventListener(ev,()=>setTimeout(recalcPlanFromRate,0));
+    planCount.addEventListener(ev,()=>setTimeout(recalcPlanFromCount,0));
+
+    if(balloon){
+      balloon.addEventListener(ev,()=>{
+        if(cents(planAmount.value)>0)setTimeout(recalcPlanFromRate,0);
+        else if(Number(planCount.value||0)>0)setTimeout(recalcPlanFromCount,0);
+      });
+    }
+  });
+
+  if(els.credit_type){
+    els.credit_type.addEventListener('change',()=>later('type'));
+  }
+
+  document.addEventListener('click',event=>{
+    if(event.target&&event.target.matches('[data-credit-form-tab]'))later('tab');
+  });
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bindCreditPlanHelper1612);
+else bindCreditPlanHelper1612();
+})();
+
+;(()=>{const marker="finanzlab-1.6.13-save-validation-fix";
+function hideLegacyFinancingError1613(){
+  const legacy='Monatsrate, Zahlungsanzahl und Schlussrate passen nicht zum Finanzierungspreis.';
+  const replacement='Hinweis: Finanzierungspreis und Zahlungsplan werden getrennt behandelt.';
+
+  const clean=()=>{
+    document.querySelectorAll('*').forEach(el=>{
+      if(el.childElementCount)return;
+      if((el.textContent||'').trim()===legacy){
+        el.textContent=replacement;
+        el.classList.remove('error');
+        el.classList.add('suggestion');
+        el.style.display='none';
+      }
+    });
+  };
+
+  const observer=new MutationObserver(()=>clean());
+  observer.observe(document.body,{childList:true,subtree:true,characterData:true});
+  clean();
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',hideLegacyFinancingError1613);
+else hideLegacyFinancingError1613();
+})();

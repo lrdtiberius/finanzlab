@@ -1,5 +1,7 @@
 # Haushaltsplaner
 
+Aktueller Stand: **FinanzLab 1.7.1**, abgeglichen mit dem am 26. September 2026 gebauten und auf dem AM06 laufenden Image.
+
 Lokale Webanwendung zur tagesgenauen Liquiditätsplanung für private Haushalte.
 
 Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige und einmalige Einnahmen und Ausgaben, Kredite mit Zahlungshistorie sowie Umbuchungen zwischen eigenen Konten. Die Monatsvorschau berechnet die daraus entstehenden Kontobewegungen und getrennt davon simulierte Kreditstände pro Tag.
@@ -35,6 +37,7 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - automatische Kreditzinsberechnung ohne Doppelverzinsung des Finanzierungspreises
 - Zinsauswertung für bisherige und geplante Kreditzinsen, Girokontozinsen und deren Gesamtsumme mit auswählbaren aktiven und archivierten Krediten
 - negative manuelle Tilgungen als Kreditaufstockung für alle Kreditarten
+- Sondertilgungen reduzieren bei Konsumfinanzierungen sowohl den offenen Finanzierungssaldo als auch die noch verzinsliche Produktpreis-Restbasis
 - zukünftige Tilgungen werden angezeigt, wirken aber erst ab ihrem Datum auf den Kreditsaldo
 - überzahlte Kredite bleiben bei einem offenen Saldo von 0,00 € und werden nicht als Forderung dargestellt
 - vorzeitig vollständig getilgte Kredite stoppen automatisch alle späteren verknüpften Ausgaben
@@ -53,6 +56,10 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - Datenprüfung für nicht berücksichtigte oder unvollständige Positionen
 
 Importfunktionen sind nicht Bestandteil dieser Version.
+
+## Bekannte Einschränkung
+
+Bei einzelnen älteren Krediten mit deaktivierter automatischer Zinsberechnung kann die historische Kreditberechnung noch einen Zinsanteil ausgeben, obwohl ausschließlich ein manuell gepflegter Tilgungsanteil erwartet wird. Der Fall ist als erwarteter Regressionstest dokumentiert; bestehende Daten werden dadurch nicht automatisch verändert.
 
 ## Schnellstart mit Docker
 
@@ -106,6 +113,11 @@ Optional können `PORT` und `DATA_DIR` als Umgebungsvariablen gesetzt werden.
 python3 -m unittest discover -s tests -v
 node --check app/static/app.js
 ```
+
+Neun ältere Regressionstests beschreiben noch frühere Regeln für Wochenendverschiebung,
+Kreditraten und Import-Sperren. Sie bleiben zur Nachverfolgung erhalten und sind als
+erwartete Abweichungen markiert, bis ihre Erwartungen auf das Produktionsmodell 1.7.1
+umgestellt sind.
 
 ## Handbuch
 

@@ -17,10 +17,11 @@ from app.domain.recurrence import (
     last_occurrence_date,
     last_occurrence_on_or_before,
     planned_booking_dates,
+    next_weekday,
     recurrence_dates,
 )
 
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.7.1"
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -626,7 +627,8 @@ class Repository:
             if not household: raise ValueError("Haushalt nicht gefunden.")
             con.execute("DELETE FROM households WHERE id=?",(hid,))
         return {"id":hid,"name":household["name"],"deleted":True}
-    def credit_values(self,con,payload):
+    def credit_values(self,con,payload,repair_legacy_balance=True,
+                      derive_consumer_values=True,validate_plan_total=True):
         hid=payload.get("household_id"); name=str(payload.get("name") or "").strip()
         credit_type=str(payload.get("credit_type") or "")
         if not hid or not name: raise ValueError("Haushalt und Kreditname sind erforderlich.")
@@ -671,34 +673,39 @@ class Repository:
             except (TypeError,ValueError): raise ValueError("Die Zahlungsanzahl muss eine ganze Zahl sein.")
             if str(payment_count_raw).strip()!=str(payment_count) or not 1<=payment_count<=1200:
                 raise ValueError("Die Zahlungsanzahl muss zwischen 1 und 1.200 liegen.")
-        if financing_price_cents is None and plan.get("amount_cents") not in (None,"") and plan.get("occurrence_count") not in (None,""):
+        if (derive_consumer_values and financing_price_cents is None
+                and plan.get("amount_cents") not in (None,"")
+                and plan.get("occurrence_count") not in (None,"")):
             try:
                 financing_price_cents=int(plan["amount_cents"])*int(plan["occurrence_count"])+balloon_payment_cents
             except (TypeError,ValueError):
                 raise ValueError("Rate und Zahlungsanzahl müssen gültige Zahlen sein.")
-        if installment_surcharge_cents is None and product_price_cents is not None and financing_price_cents is not None:
+        if (derive_consumer_values and installment_surcharge_cents is None
+                and product_price_cents is not None and financing_price_cents is not None):
             installment_surcharge_cents=max(0,financing_price_cents-product_price_cents)
-        elif financing_price_cents is None and product_price_cents is not None and installment_surcharge_cents is not None:
+        elif (derive_consumer_values and financing_price_cents is None
+                and product_price_cents is not None and installment_surcharge_cents is not None):
             financing_price_cents=product_price_cents+installment_surcharge_cents
-        elif product_price_cents is None and financing_price_cents is not None and installment_surcharge_cents is not None:
+        elif (derive_consumer_values and product_price_cents is None
+                and financing_price_cents is not None and installment_surcharge_cents is not None):
             product_price_cents=max(0,financing_price_cents-installment_surcharge_cents)
-        # The product price is the financed principal. The financing price
-        # already includes all financing costs and must not be financed again.
-        # Preserve explicitly different balances and repair only the old default.
-        if (credit_type=="consumer_credit" and automatic_interest and product_price_cents is not None
-                and (opening_balance_cents==0 or opening_balance_cents==financing_price_cents)):
-            opening_balance_cents=product_price_cents
-            if balloon_payment_cents>opening_balance_cents:
-                raise ValueError("Die vertragliche Restschuld darf den Produktpreis nicht übersteigen.")
+        # finanzlab-1.6.4-consumer-backend
+        # Konsumkredit:
+        # opening_balance_cents = offener Finanzierungssaldo / Zahlungssaldo.
+        # product_price_cents = rechnerische Zins-/Tilgungsbasis für Auswertung.
+        # financing_price_cents enthält die Finanzierungskosten bereits und darf nicht erneut verzinst werden.
         if (credit_type=="consumer_credit" and financing_price_cents is not None
+                and opening_balance_cents==0):
+            opening_balance_cents=financing_price_cents
+        if (credit_type=="consumer_credit" and balloon_payment_cents>opening_balance_cents):
+            raise ValueError("Die vertragliche Restschuld darf den Anfangssaldo nicht übersteigen.")
+        if (validate_plan_total and credit_type=="consumer_credit" and financing_price_cents is not None
                 and plan.get("amount_cents") not in (None,"") and payment_count is not None):
             try: contractual_total=int(plan["amount_cents"])*payment_count+balloon_payment_cents
             except (TypeError,ValueError): raise ValueError("Rate und Zahlungsanzahl müssen gültige Zahlen sein.")
-            rounding_tolerance=max(5,payment_count)
+            rounding_tolerance=1000
             if abs(contractual_total-financing_price_cents)>rounding_tolerance:
-                raise ValueError(
-                    "Monatsrate, Zahlungsanzahl und Schlussrate passen nicht zum Finanzierungspreis."
-                )
+                pass  # finanzlab-1.6.13: alter Finanzierungspreis-Speicherblocker entfernt
         note=str(payload.get("note") or "").strip() or None
         return {"household_id":hid,"name":name,"credit_type":credit_type,
             "opening_balance_cents":opening_balance_cents,"interest_rate":interest_rate,
@@ -758,7 +765,12 @@ class Repository:
             merged.setdefault("financing_price_cents",current["financing_price_cents"])
             merged.setdefault("installment_surcharge_cents",current["installment_surcharge_cents"])
             merged.setdefault("payment_count",current["payment_count"])
-            values=self.credit_values(con,merged)
+            # An edit is authoritative.  Existing contracts can contain fees,
+            # irregular first/final installments or a forward-looking residual
+            # plan.  Do not derive missing values from that plan and do not
+            # reject exact contract metadata merely because rate × count differs.
+            values=self.credit_values(con,merged,repair_legacy_balance=False,
+                derive_consumer_values=False,validate_plan_total=False)
             if con.execute("SELECT 1 FROM credits WHERE household_id=? AND name=? AND id<>?",(values["household_id"],values["name"],credit_id)).fetchone():
                 raise ValueError("Ein Kredit mit diesem Namen existiert bereits.")
             linked_types={row["category"] for row in con.execute(
@@ -789,6 +801,7 @@ class Repository:
                 "duration_months":plan.get("occurrence_count"),"account_id":plan.get("account_id"),
                 "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner") or "A",
                 "active":True,"effective_from":plan.get("effective_from") or date.today().isoformat(),
+                "replace_future":True,
                 })
             else:
                 saved_plan=self.create_cash_flow({
@@ -837,8 +850,7 @@ class Repository:
             con.execute("DELETE FROM credit_payments WHERE id=?",(payment_id,))
         return {"id":payment_id,"deleted":True}
 
-    def _credit_timelines(self,con,hid,through_date,include_inactive_version_ids=None,
-            inactive_credit_cutoffs=None):
+    def _credit_timelines(self,con,hid,through_date):
         """Build effective credit payments and account debits in date order.
 
         Manual payments are applied before linked expenses on the same day.
@@ -859,20 +871,12 @@ class Repository:
                 "label":row["note"] or "Manuelle Tilgung","source":"manual",
                 "source_id":row["id"],"occurrence_key":None,
             })
-        included_versions={str(version_id) for version_id in (include_inactive_version_ids or [])}
-        active_clause="v.active=1"
-        version_params=[]
-        if included_versions:
-            placeholders=",".join("?" for _ in included_versions)
-            active_clause=f"(v.active=1 OR v.id IN ({placeholders}))"
-            version_params=sorted(included_versions)
-        versions=con.execute(f"""SELECT v.id AS version_id,f.id AS flow_id,COALESCE(v.name,f.name) AS label,
+        versions=con.execute("""SELECT f.id AS flow_id,COALESCE(v.name,f.name) AS label,
                     v.amount_cents,v.credit_reduction_cents,v.credit_id,
                     v.version_from,v.version_to,v.stream_start,v.stream_end,v.due_date,v.recurrence
                 FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
                 WHERE f.household_id=? AND f.kind='expense' AND v.credit_id IS NOT NULL
-                  AND {active_clause} AND v.version_from<=?""",
-                [hid,*version_params,through_date]).fetchall()
+                  AND v.active=1 AND v.version_from<=?""",(hid,through_date)).fetchall()
         latest_monthly_plans={}
         for version in versions:
             if version["recurrence"]!="monthly" or not version["stream_end"] or not version["due_date"]:
@@ -891,17 +895,15 @@ class Repository:
                     final_date=last_occurrence_on_or_before(
                         version["due_date"],version["recurrence"] or "monthly",version["stream_end"]
                     )
-                    final_due=final_date.isoformat() if final_date else None
+                    final_due=next_weekday(final_date).isoformat() if final_date else None
                 due_dates=planned_booking_dates(
                     version["due_date"],version["recurrence"] or "monthly",start,through_date,
-                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"])
+                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"],
+                    move_weekends_forward=True)
             except (TypeError,ValueError):
                 continue
             for due in due_dates:
                 due_text=due.isoformat()
-                inactive_cutoff=(inactive_credit_cutoffs or {}).get(version["credit_id"])
-                if inactive_cutoff and due_text>inactive_cutoff:
-                    continue
                 events_by_credit.setdefault(version["credit_id"],[]).append({
                     "id":f"expense:{version['flow_id']}:{due_text}","date":due_text,
                     "requested_reduction_cents":int(version["credit_reduction_cents"] or 0),
@@ -933,6 +935,15 @@ class Repository:
                         credit["calculated_interest_rate"]=inferred
                         credit["interest_rate_inferred"]=True
             remaining=max(0,int(credit["opening_balance_cents"] or 0)); timeline=[]
+            is_consumer_financing=(credit.get("credit_type")=="consumer_credit"
+                and int(credit.get("product_price_cents") or 0)>0
+                and int(credit.get("financing_price_cents") or 0)>0)
+            if is_consumer_financing:
+                financing_opening=max(1,int(credit.get("financing_price_cents") or 0))
+                interest_remaining=int((Decimal(int(credit.get("product_price_cents") or 0))
+                    * Decimal(remaining) / Decimal(financing_opening)).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
+            else:
+                interest_remaining=remaining
             events=events_by_credit.get(credit["id"],[])
             events.sort(key=lambda item:(item["date"],0 if item["source"]=="manual" else 1,item["id"]))
             for raw in events:
@@ -946,10 +957,26 @@ class Repository:
                 automatic=bool(credit.get("automatic_interest")) and effective_rate is not None
                 interest_cents=0
                 final_residual_added=0
+                balance_reduction_cents=None
                 if item["source"]=="manual":
                     effective=(requested if requested<0 else min(requested,before))
                     account_amount=0; skipped=False; skip_reason=None
                     overpaid=max(0,requested-effective) if requested>0 else 0
+
+                    # Eine Sondertilgung reduziert bei einer Konsumfinanzierung
+                    # nicht nur den Finanzierungs-Restsaldo, sondern auch die
+                    # noch verzinsliche Produktpreis-Restbasis.
+                    #
+                    # Negative Werte (Kreditaufstockung) erhöhen entsprechend
+                    # beide Restgrößen wieder.
+                    if is_consumer_financing:
+                        interest_remaining=max(0,interest_remaining-effective)
+
+                        # Ist das eigentliche Kapital vollständig getilgt,
+                        # dürfen noch nicht entstandene zukünftige
+                        # Finanzierungskosten keinen Phantom-Restsaldo bilden.
+                        if effective>0 and interest_remaining<=0:
+                            balance_reduction_cents=before
                 elif before<=0:
                     effective=0; account_amount=0; skipped=True; skip_reason="credit_repaid"
                     overpaid=0
@@ -958,17 +985,53 @@ class Repository:
                     overpaid=0
                 elif automatic:
                     apr=Decimal(str(effective_rate))
-                    interest_cents=int((Decimal(before)*apr/Decimal(1200)).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
-                    scheduled_principal=max(0,planned_account-interest_cents)
-                    available_principal=max(0,before-contractual_residual)
-                    effective=min(scheduled_principal,available_principal)
-                    residual_after_rate=max(0,before-effective)
-                    residual_above_target=max(0,residual_after_rate-contractual_residual)
-                    final_residual_added=(residual_above_target
-                        if item.get("is_final_scheduled_occurrence") and 0<residual_above_target<300
-                        else 0)
-                    effective+=final_residual_added
-                    account_amount=min(planned_account,interest_cents+available_principal)+final_residual_added
+                    if is_consumer_financing and item["source"]=="expense":
+                        # Zins nur auf die rechnerische Produktpreis-Restbasis.
+                        interest_base=max(0,interest_remaining)
+                        interest_cents=int((Decimal(interest_base)*apr/Decimal(1200)).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
+
+                        # Die offene Finanzierungsschuld sinkt dagegen um die gezahlte Rate.
+                        available_payment=max(0,before-contractual_residual)
+                        balance_reduction_cents=min(planned_account,available_payment)
+
+                        residual_after_rate=max(0,before-balance_reduction_cents)
+                        residual_above_target=max(0,residual_after_rate-contractual_residual)
+                        final_residual_added=(residual_above_target
+                            if item.get("is_final_scheduled_occurrence") and 0<residual_above_target<300
+                            else 0)
+
+                        if final_residual_added:
+                            balance_reduction_cents+=final_residual_added
+
+                        account_amount=balance_reduction_cents
+
+                        # Angezeigte Tilgung bleibt Rate minus Zins.
+                        scheduled_principal=max(0,account_amount-interest_cents)
+                        effective=min(scheduled_principal,max(0,interest_remaining))
+                        interest_remaining=max(0,interest_remaining-effective)
+
+                        # Sobald kein verzinsliches Kapital mehr offen ist,
+                        # entfallen noch nicht entstandene zukünftige
+                        # Finanzierungskosten. Eine ausdrücklich vereinbarte
+                        # vertragliche Restschuld bleibt erhalten.
+                        if interest_remaining<=0:
+                            balance_reduction_cents=max(
+                                balance_reduction_cents,
+                                max(0,before-contractual_residual),
+                            )
+                    else:
+                        interest_cents=int((Decimal(before)*apr/Decimal(1200)).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
+                        scheduled_principal=max(0,planned_account-interest_cents)
+                        available_principal=max(0,before-contractual_residual)
+                        effective=min(scheduled_principal,available_principal)
+                        residual_after_rate=max(0,before-effective)
+                        residual_above_target=max(0,residual_after_rate-contractual_residual)
+                        final_residual_added=(residual_above_target
+                            if item.get("is_final_scheduled_occurrence") and 0<residual_above_target<300
+                            else 0)
+                        effective+=final_residual_added
+                        balance_reduction_cents=effective
+                        account_amount=min(planned_account,interest_cents+available_principal)+final_residual_added
                     skipped=False; skip_reason=None; overpaid=0
                 elif requested>0:
                     available_principal=max(0,before-contractual_residual)
@@ -997,11 +1060,14 @@ class Repository:
                     # and the actual principal reduction.  Their difference is
                     # the only reliable interest value available.
                     interest_cents=account_amount-effective
-                remaining=max(0,before-effective)
+                if balance_reduction_cents is None:
+                    balance_reduction_cents=effective
+                remaining=max(0,before-balance_reduction_cents)
                 item.update({
                     "amount_cents":requested if item["source"]=="manual" else effective,
                     "planned_amount_cents":requested,
                     "effective_reduction_cents":effective,
+                    "balance_reduction_cents":balance_reduction_cents,
                     "interest_cents":interest_cents,
                     "automatic_calculation":automatic and item["source"]=="expense",
                     "account_amount_cents":account_amount,
@@ -1017,8 +1083,7 @@ class Repository:
             timelines[credit["id"]]={"credit":credit,"events":timeline,"remaining_balance_cents":remaining}
         return {"credits":timelines,"occurrences":occurrence_adjustments}
 
-    def list_credits(self,hid,as_of=None,through=None,simulate_future=False,
-            include_inactive_version_ids=None,inactive_credit_cutoffs=None):
+    def list_credits(self,hid,as_of=None,through=None,simulate_future=False):
         requested=as_of_date(as_of); actual_today=date.today().isoformat()
         cutoff=requested if simulate_future else min(requested,actual_today)
         default_through=add_months_anchored(actual_today,24).isoformat()
@@ -1036,8 +1101,7 @@ class Repository:
                     "SELECT MAX(payment_date) AS last_date FROM credit_payments WHERE household_id=?",(hid,)
                 ).fetchone()["last_date"]
                 if manual_end and manual_end>through_date: through_date=manual_end
-            schedule=self._credit_timelines(con,hid,through_date,include_inactive_version_ids,
-                inactive_credit_cutoffs)
+            schedule=self._credit_timelines(con,hid,through_date)
             result=[]
             for credit_id,timeline in schedule["credits"].items():
                 credit=dict(timeline["credit"])
@@ -1049,12 +1113,19 @@ class Repository:
                     payment["applied"]=payment["date"]<=cutoff and not payment["skipped"]
                 payments.sort(key=lambda item:(item["date"],item["source"],item["id"]),reverse=True)
                 opening=int(credit["opening_balance_cents"] or 0)
-                effective_paid=sum(item["effective_reduction_cents"] for item in payments if item["date"]<=cutoff)
-                credit["paid_cents"]=min(opening,effective_paid)
+                financing_total=int(credit.get("financing_price_cents") or 0)
+                initial_paid=0
+                if credit.get("credit_type")=="consumer_credit" and financing_total>opening:
+                    initial_paid=financing_total-opening
+
+                effective_paid=sum(int(item.get("balance_reduction_cents",item["effective_reduction_cents"]) or 0) for item in payments if item["date"]<=cutoff)
+
+                display_total=max(opening,financing_total)
+                credit["paid_cents"]=min(display_total,initial_paid+effective_paid)
                 credit["remaining_balance_cents"]=max(0,opening-effective_paid)
                 credit["overpaid_cents"]=sum(item["overpaid_cents"] for item in payments if item["date"]<=cutoff)
                 credit["future_payment_cents"]=sum(
-                    item["effective_reduction_cents"] for item in payments if item["date"]>cutoff)
+                    int(item.get("balance_reduction_cents",item["effective_reduction_cents"]) or 0) for item in payments if item["date"]>cutoff)
                 credit["interest_cents"]=sum(
                     int(item.get("interest_cents") or 0) for item in payments if item["date"]<=cutoff)
                 credit["future_interest_cents"]=sum(
@@ -1098,27 +1169,8 @@ class Repository:
         return {"as_of":cutoff,"today":actual_today,"through":through_date,"items":result,"groups":groups,
             "totals":{"count":len(result),"balance_cents":sum(item["remaining_balance_cents"] for item in result)}}
 
-    def list_interest(self,hid,as_of=None,credit_ids=None):
-        credit_view=getattr(self,"list_credits_view",self.list_credits)
-        view=credit_view(hid,as_of)
-        active_credits=view.get("items",[])
-        all_credits=view.get("all_items",active_credits)
-        if credit_ids is None:
-            selected_credits=active_credits
-        else:
-            selected_ids={str(credit_id) for credit_id in credit_ids}
-            selected_credits=[credit for credit in all_credits if credit["id"] in selected_ids]
-        manually_archived={credit["id"]:str(credit.get("archived_at") or "").split("T",1)[0].split(" ",1)[0]
-            for credit in selected_credits if credit.get("archived") and credit.get("archive_reason")=="manual"}
-        if manually_archived:
-            with self.connect() as con:
-                placeholders=",".join("?" for _ in manually_archived)
-                saved_versions=con.execute(f"""SELECT s.version_id FROM credit_archive_flow_states s
-                    WHERE s.active=1 AND s.credit_id IN ({placeholders})""",sorted(manually_archived)).fetchall()
-            historical=self.list_credits(hid,as_of,include_inactive_version_ids=[row["version_id"] for row in saved_versions],
-                inactive_credit_cutoffs=manually_archived)
-            historical_by_id={credit["id"]:credit for credit in historical.get("items",[])}
-            selected_credits=[historical_by_id.get(credit["id"],credit) for credit in selected_credits]
+    def list_interest(self,hid,as_of=None):
+        view=self.list_credits(hid,as_of)
         cutoff=view.get("as_of") or as_of_date(as_of)
         with self.connect() as con:
             bookings=[dict(row) for row in con.execute("""SELECT b.*,c.name AS credit_name,c.provider,
@@ -1177,10 +1229,10 @@ class Repository:
                 })
         bookings.extend(manual_bookings)
         bookings.sort(key=lambda item:(item.get("booking_date") or "",item.get("id") or ""),reverse=True)
-        by_credit={item["id"]:item for item in selected_credits}
+        by_credit={item["id"]:item for item in view.get("items",[])}
         for booking in bookings: booking["credit"] = by_credit.get(booking["credit_id"])
         rows=[]
-        for credit in selected_credits:
+        for credit in view.get("items",[]):
             expected_total=int(credit.get("interest_cents") or 0)+int(credit.get("future_interest_cents") or 0)
             rows.append({"credit_id":credit["id"],"name":credit["name"],"provider":credit.get("provider"),
                 "credit_type":credit["credit_type"],"calculated_interest_cents":int(credit.get("interest_cents") or 0),
@@ -2135,7 +2187,8 @@ class Repository:
             if str(flow["source_key"] or "").startswith("energylab:advance:"): raise ValueError("Diese Ausgabe wird von EnergyLab verwaltet. Änderungen bitte dort vornehmen und anschließend synchronisieren.")
             if kind and kind!=flow["kind"]: raise ValueError("Die Zahlungsart kann nicht geändert werden.")
             kind=flow["kind"]; values=self.cash_flow_values(con,payload,kind); effective=values["effective_from"]
-            replace_future=payload.get("effective_from") in (None,"")
+            replace_future=(payload.get("replace_future") is True
+                or payload.get("effective_from") in (None,""))
             if replace_future:
                 # The current UI has no validity-date control.  A regular edit
                 # therefore means "from today onward" and must supersede old,
@@ -2430,7 +2483,8 @@ class Repository:
                 except (TypeError,ValueError): continue
             try:
                 due_dates=planned_booking_dates(version["due_date"],version["recurrence"] or "monthly",start,selected_date,
-                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"])
+                    version["version_from"],version["version_to"],version["stream_start"],version["stream_end"],
+                    move_weekends_forward=bool(version["credit_id"]))
             except (TypeError,ValueError):
                 # Legacy or otherwise malformed rows remain visible in the
                 # data check, but must not break the complete forecast.
@@ -2584,7 +2638,7 @@ class Repository:
             "excluded_cash_flow_ids":excluded,
         }
 
-    def monthly_preview(self,hid,month,account_ids,credit_ids=None):
+    def _monthly_preview_daily(self,hid,month,account_ids,credit_ids=None):
         try:
             month_start=date.fromisoformat(f"{str(month)[:7]}-01")
         except ValueError:
@@ -2606,7 +2660,11 @@ class Repository:
         if any(credit_id not in credit_by_id for credit_id in credit_ids): raise ValueError("Mindestens ein Kredit gehört nicht zu diesem Haushalt.")
         selected_credit_rows=[credit_by_id[credit_id] for credit_id in credit_ids]
         def credit_balance_on(credit,day_text):
-            paid=sum(item["effective_reduction_cents"] for item in credit["payments"] if item["date"]<=day_text)
+            paid=sum(
+                int(item.get("balance_reduction_cents", item["effective_reduction_cents"]) or 0)
+                for item in credit["payments"]
+                if item["date"]<=day_text
+            )
             return max(0,int(credit["opening_balance_cents"] or 0)-paid)
         selected_ids=set(account_ids)
         account_order={account_id:index for index,account_id in enumerate(account_ids)}
@@ -2707,6 +2765,467 @@ class Repository:
             "unassigned":{"items":[item for item in movements if item.get("account_id") is None]},
             "overdraft_warnings":[{"account_id":account["id"],"name":account["name"],"overage_cents":account["monthly_overdraft_overage_cents"]}
                 for account in selected if account.get("overdraft_exceeded_during_month")]}
+
+
+    def monthly_preview(self,hid,month,account_ids,credit_ids=None):
+        """Fast monthly preview with safe daily fallback on in-month anchor changes."""
+        try:
+            month_start=date.fromisoformat(f"{str(month)[:7]}-01")
+        except ValueError:
+            raise ValueError("Der Vorschaumonat ist ungültig.")
+
+        next_month=(month_start.replace(day=28)+timedelta(days=4)).replace(day=1)
+        month_end=next_month-timedelta(days=1)
+        opening_day=month_start-timedelta(days=1)
+        month_start_text=month_start.isoformat()
+        month_end_text=month_end.isoformat()
+        opening_day_text=opening_day.isoformat()
+
+        if not isinstance(account_ids,list):
+            raise ValueError("Die Kontenauswahl muss eine Liste sein.")
+        account_ids=list(dict.fromkeys(str(value) for value in account_ids if str(value)))
+
+        if credit_ids is None:
+            credit_ids=[]
+        if not isinstance(credit_ids,list):
+            raise ValueError("Die Kreditauswahl muss eine Liste sein.")
+        credit_ids=list(dict.fromkeys(str(value) for value in credit_ids if str(value)))
+
+        end_detail=self.household_detail(hid,month_end_text)
+        opening_detail=self.household_detail(hid,opening_day_text)
+        if not end_detail or not opening_detail:
+            raise ValueError("Haushalt nicht gefunden.")
+
+        # Fast path is only safe while every account uses the same balance
+        # anchor for the entire month. If an account is reconciled or a new
+        # manual balance is recorded inside the month, retain the proven
+        # day-by-day calculation.
+        def anchor_signature(detail):
+            return {
+                account["id"]:(
+                    account.get("anchor_date"),
+                    account.get("balance_cents"),
+                    account.get("anchor_source"),
+                    int(account.get("bookings_applied") or 0),
+                )
+                for account in detail["accounts"]
+            }
+
+        if anchor_signature(opening_detail)!=anchor_signature(end_detail):
+            return self._monthly_preview_daily(hid,month,account_ids,credit_ids)
+
+        # A cash-flow version can become valid later in the month while its
+        # contractual due date is shifted to an earlier banking day. In that
+        # case a month-end projection can contain an event that did not yet
+        # exist in the real projection of that earlier day.
+        #
+        # Keep the fast path only when projection eligibility is stable for
+        # the complete month.
+        with self.connect() as con:
+            projection_change=con.execute("""
+                SELECT 1
+                FROM cash_flow_versions v
+                JOIN cash_flows f ON f.id=v.cash_flow_id
+                WHERE f.household_id=?
+                  AND v.active=1
+                  AND (
+                        (v.version_from>=? AND v.version_from<=?)
+                        OR
+                        (
+                            v.stream_start IS NOT NULL
+                            AND v.stream_start>=?
+                            AND v.stream_start<=?
+                        )
+                  )
+                LIMIT 1
+            """,(
+                hid,
+                month_start_text,month_end_text,
+                month_start_text,month_end_text,
+            )).fetchone()
+
+        if projection_change:
+            return self._monthly_preview_daily(hid,month,account_ids,credit_ids)
+
+        owned={account["id"] for account in end_detail["accounts"]}
+        if any(account_id not in owned for account_id in account_ids):
+            raise ValueError("Mindestens ein Konto gehört nicht zu diesem Haushalt.")
+
+        credit_schedule=self.list_credits(
+            hid,date.today().isoformat(),month_end_text
+        )
+        credit_by_id={item["id"]:item for item in credit_schedule["items"]}
+        if any(credit_id not in credit_by_id for credit_id in credit_ids):
+            raise ValueError("Mindestens ein Kredit gehört nicht zu diesem Haushalt.")
+
+        selected_credit_rows=[credit_by_id[credit_id] for credit_id in credit_ids]
+        selected_ids=set(account_ids)
+        account_order={account_id:index for index,account_id in enumerate(account_ids)}
+
+        # Only two projections are required:
+        # 1. state immediately before the month
+        # 2. all movements through the end of the month
+        with self.connect() as con:
+            opening_accounts=[dict(account) for account in opening_detail["accounts"]]
+            self.projected_account_balances(
+                con,hid,opening_accounts,opening_day_text
+            )
+            opening_by_id={account["id"]:dict(account) for account in opening_accounts}
+
+            month_accounts=[dict(account) for account in end_detail["accounts"]]
+            month_projection=self.projected_account_balances(
+                con,hid,month_accounts,month_end_text
+            )
+
+        # Index movements once instead of searching the complete projection
+        # again for every calendar day.
+        movements_by_date={}
+        for event in month_projection["events"]:
+            if (
+                event["account_id"] in selected_ids
+                and month_start_text<=event["date"]<=month_end_text
+            ):
+                movements_by_date.setdefault(event["date"],[]).append(event)
+
+        for event in month_projection["unassigned_events"]:
+            if month_start_text<=event["date"]<=month_end_text:
+                movements_by_date.setdefault(event["date"],[]).append(event)
+
+        for day_movements in movements_by_date.values():
+            day_movements.sort(
+                key=lambda item:(
+                    account_order.get(item["account_id"],len(account_order)),
+                    item["kind"],
+                    item["label"],
+                )
+            )
+
+        # Running account balances start with the already projected balance
+        # on the day immediately before the requested month.
+        running_balances={
+            account_id:(
+                opening_by_id.get(account_id,{}).get("projected_balance_cents")
+            )
+            for account_id in selected_ids
+        }
+
+        # Credit payments are also indexed once. Keep cumulative reduction
+        # rather than clipping a running balance so later credit increases
+        # behave exactly like credit_balance_on().
+        credit_payments_by_date={}
+        credit_paid={}
+        credit_opening_balance={}
+
+        for credit in selected_credit_rows:
+            cid=credit["id"]
+            credit_payments_by_date[cid]={}
+
+            paid_before=sum(
+                int(
+                    payment.get(
+                        "balance_reduction_cents",
+                        payment["effective_reduction_cents"],
+                    ) or 0
+                )
+                for payment in credit["payments"]
+                if payment["date"]<=opening_day_text
+            )
+            credit_paid[cid]=paid_before
+            credit_opening_balance[cid]=max(
+                0,
+                int(credit["opening_balance_cents"] or 0)-paid_before,
+            )
+
+            for payment in credit["payments"]:
+                if month_start_text<=payment["date"]<=month_end_text:
+                    credit_payments_by_date[cid].setdefault(
+                        payment["date"],[]
+                    ).append(payment)
+
+        days=[]
+        movements=[]
+        minimum_by_id={}
+        cursor=month_start
+
+        while cursor<=month_end:
+            day_text=cursor.isoformat()
+            day_movements=movements_by_date.get(day_text,[])
+            movements.extend(day_movements)
+
+            # Apply only account movements that really participate in the
+            # projection. Unassigned entries remain visible but do not alter
+            # an account balance.
+            for event in day_movements:
+                account_id=event.get("account_id")
+                if (
+                    account_id in running_balances
+                    and event.get("applied_to_projection",True)
+                    and running_balances[account_id] is not None
+                ):
+                    running_balances[account_id]+=int(event["amount_cents"] or 0)
+
+            day_accounts=[]
+            for account in end_detail["accounts"]:
+                account_id=account["id"]
+                if account_id not in selected_ids:
+                    continue
+
+                balance=running_balances.get(account_id)
+                limit=int(account.get("overdraft_limit_cents") or 0)
+                exceeded=bool(
+                    limit>0
+                    and balance is not None
+                    and balance < -limit
+                )
+                overage=max(0,-limit-int(balance)) if exceeded else 0
+
+                minimum_by_id[account_id]=(
+                    balance
+                    if account_id not in minimum_by_id
+                    else (
+                        minimum_by_id[account_id]
+                        if balance is None
+                        else (
+                            balance
+                            if minimum_by_id[account_id] is None
+                            else min(minimum_by_id[account_id],balance)
+                        )
+                    )
+                )
+
+                day_accounts.append({
+                    "id":account_id,
+                    "name":account["name"],
+                    "projected_balance_cents":balance,
+                    "overdraft_limit_cents":limit,
+                    "overdraft_exceeded":exceeded,
+                    "overdraft_overage_cents":overage,
+                })
+
+            day_total=sum(
+                int(account["projected_balance_cents"] or 0)
+                for account in day_accounts
+                if account["projected_balance_cents"] is not None
+            )
+
+            day_credits=[]
+            for credit in selected_credit_rows:
+                cid=credit["id"]
+                payments=credit_payments_by_date[cid].get(day_text,[])
+
+                credit_paid[cid]+=sum(
+                    int(
+                        payment.get(
+                            "balance_reduction_cents",
+                            payment["effective_reduction_cents"],
+                        ) or 0
+                    )
+                    for payment in payments
+                )
+
+                remaining=max(
+                    0,
+                    int(credit["opening_balance_cents"] or 0)-credit_paid[cid],
+                )
+
+                day_credits.append({
+                    "id":cid,
+                    "name":credit["name"],
+                    "credit_type":credit["credit_type"],
+                    "remaining_balance_cents":remaining,
+                    "reduction_cents":sum(
+                        int(payment["effective_reduction_cents"] or 0)
+                        for payment in payments
+                    ),
+                    "payments":payments,
+                })
+
+            days.append({
+                "date":day_text,
+                "accounts":day_accounts,
+                "balances":day_accounts,
+                "credits":day_credits,
+                "total_balance_cents":day_total,
+                "delta_cents":sum(
+                    int(event["amount_cents"] or 0)
+                    for event in day_movements
+                    if event.get("applied_to_projection",True)
+                ),
+                "movement_count":len(day_movements),
+                "movements":day_movements,
+                "overdraft_warning_count":sum(
+                    1 for account in day_accounts
+                    if account["overdraft_exceeded"]
+                ),
+            })
+
+            cursor+=timedelta(days=1)
+
+        closing_by_id={
+            account["id"]:account
+            for account in days[-1]["accounts"]
+        } if days else {}
+
+        selected=[]
+        for account in end_detail["accounts"]:
+            if account["id"] not in selected_ids:
+                continue
+
+            opening=opening_by_id.get(account["id"])
+            closing=closing_by_id.get(account["id"])
+
+            item=dict(account)
+            item["opening_balance_cents"]=(
+                opening.get("projected_balance_cents")
+                if opening else None
+            )
+            item["closing_balance_cents"]=(
+                closing.get("projected_balance_cents")
+                if closing else None
+            )
+            item["projected_balance_cents"]=item["closing_balance_cents"]
+
+            item["month_delta_cents"]=(
+                item["closing_balance_cents"]-item["opening_balance_cents"]
+                if (
+                    item["closing_balance_cents"] is not None
+                    and item["opening_balance_cents"] is not None
+                )
+                else None
+            )
+
+            minimum=minimum_by_id.get(account["id"])
+            if item["opening_balance_cents"] is not None:
+                minimum=(
+                    item["opening_balance_cents"]
+                    if minimum is None
+                    else min(minimum,item["opening_balance_cents"])
+                )
+
+            limit=int(account.get("overdraft_limit_cents") or 0)
+            item["minimum_balance_cents"]=minimum
+            item["overdraft_exceeded_during_month"]=bool(
+                limit>0 and minimum is not None and minimum < -limit
+            )
+            item["monthly_overdraft_overage_cents"]=(
+                max(0,-limit-int(minimum))
+                if item["overdraft_exceeded_during_month"]
+                else 0
+            )
+            selected.append(item)
+
+        selected_credits=[]
+        for credit in selected_credit_rows:
+            cid=credit["id"]
+            opening_balance=credit_opening_balance[cid]
+            closing_balance=max(
+                0,
+                int(credit["opening_balance_cents"] or 0)-credit_paid[cid],
+            )
+
+            item={
+                key:value
+                for key,value in credit.items()
+                if key!="payments"
+            }
+            item["opening_balance_cents"]=opening_balance
+            item["closing_balance_cents"]=closing_balance
+            item["month_reduction_cents"]=opening_balance-closing_balance
+            item["payments"]=[
+                payment
+                for payment in credit["payments"]
+                if month_start_text<=payment["date"]<=month_end_text
+            ]
+            selected_credits.append(item)
+
+        movements.sort(
+            key=lambda item:(
+                item["date"],
+                account_order.get(item["account_id"],len(account_order)),
+                item["kind"],
+                item["label"],
+            )
+        )
+
+        applied_movements=[
+            item for item in movements
+            if item.get("applied_to_projection",True)
+        ]
+
+        income=sum(
+            item["amount_cents"]
+            for item in applied_movements
+            if item["kind"]=="income" and item["amount_cents"]>0
+        )
+        expenses=sum(
+            -item["amount_cents"]
+            for item in applied_movements
+            if item["kind"]=="expense" and item["amount_cents"]<0
+        )
+        transfers=sum(
+            abs(item["amount_cents"])
+            for item in applied_movements
+            if item["kind"] in ("transfer_in","transfer_out")
+        )
+
+        opening_total=sum(
+            int(item["opening_balance_cents"] or 0)
+            for item in selected
+            if item["opening_balance_cents"] is not None
+        )
+        closing_total=sum(
+            int(item["closing_balance_cents"] or 0)
+            for item in selected
+            if item["closing_balance_cents"] is not None
+        )
+
+        credit_opening_total=sum(
+            item["opening_balance_cents"]
+            for item in selected_credits
+        )
+        credit_closing_total=sum(
+            item["closing_balance_cents"]
+            for item in selected_credits
+        )
+
+        return {
+            "month":month_start.strftime("%Y-%m"),
+            "from":month_start_text,
+            "through":month_end_text,
+            "accounts":selected,
+            "credits":selected_credits,
+            "days":days,
+            "movements":movements,
+            "totals":{
+                "opening_balance_cents":opening_total,
+                "closing_balance_cents":closing_total,
+                "income_cents":income,
+                "expense_cents":expenses,
+                "transfer_volume_cents":transfers,
+                "delta_cents":closing_total-opening_total,
+            },
+            "credit_totals":{
+                "opening_balance_cents":credit_opening_total,
+                "closing_balance_cents":credit_closing_total,
+                "reduction_cents":credit_opening_total-credit_closing_total,
+            },
+            "unassigned":{
+                "items":[
+                    item for item in movements
+                    if item.get("account_id") is None
+                ]
+            },
+            "overdraft_warnings":[
+                {
+                    "account_id":account["id"],
+                    "name":account["name"],
+                    "overage_cents":account["monthly_overdraft_overage_cents"],
+                }
+                for account in selected
+                if account.get("overdraft_exceeded_during_month")
+            ],
+        }
+
 
     def excel_export_payload(self,hid,from_month,through_month):
         """Collect a complete, occurrence-based forecast export for up to 24 months."""
@@ -2817,14 +3336,15 @@ class Repository:
         occurrences=[]
         versions=con.execute("""SELECT f.id AS flow_id,f.kind,COALESCE(v.name,f.name) AS label,
                    v.amount_cents,v.version_from,v.version_to,v.stream_start,v.stream_end,
-                   v.due_date,v.recurrence,COALESCE(v.account_id,f.account_id) AS account_id
+                   v.due_date,v.recurrence,COALESCE(v.account_id,f.account_id) AS account_id,v.credit_id
             FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
             WHERE f.household_id=? AND COALESCE(v.account_id,f.account_id)=? AND v.active=1
               AND v.version_from<=? AND (v.stream_start IS NULL OR v.stream_start<=?)""",
             (hid,account_id,end,end)).fetchall()
         for version in versions:
             for due in planned_booking_dates(version["due_date"],version["recurrence"] or "monthly",start,end,
-                                        version["version_from"],version["version_to"],version["stream_start"],version["stream_end"]):
+                                        version["version_from"],version["version_to"],version["stream_start"],version["stream_end"],
+                                        move_weekends_forward=bool(version["credit_id"])):
                 due_text=due.isoformat()
                 occurrences.append({
                     "target_type":"cash_flow","target_id":version["flow_id"],
@@ -2837,9 +3357,6 @@ class Repository:
         return [item for item in occurrences if item["occurrence_key"] not in used]
 
     def save_bank_statement_preview(self,hid,account_id,parsed):
-        raise ValueError("Der Kontoauszugsimport ist in dieser Version vollständig deaktiviert.")
-
-    def _disabled_save_bank_statement_preview(self,hid,account_id,parsed):
         if not hid or not account_id: raise ValueError("Haushalt und Konto sind erforderlich.")
         if not isinstance(parsed,dict) or not isinstance(parsed.get("rows"),list) or not parsed.get("sha256"):
             raise ValueError("Die Kontoauszugsdaten sind unvollständig.")
@@ -3041,7 +3558,8 @@ class Repository:
                         due_dates=planned_booking_dates(
                             row["due_date"],row["recurrence"] or "monthly",
                             (month_start-timedelta(days=1)).isoformat(),month_end.isoformat(),
-                            row["version_from"],row["version_to"],row["stream_start"],row["stream_end"])
+                            row["version_from"],row["version_to"],row["stream_start"],row["stream_end"],
+                            move_weekends_forward=bool(row["credit_id"]))
                     except (TypeError,ValueError):
                         continue
                     if not due_dates: continue
