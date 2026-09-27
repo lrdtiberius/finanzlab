@@ -48,6 +48,7 @@ Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige u
 - dauerhaft gespeicherter Erledigt-Status je konkreter Bewegung; erledigte Vorgänge bleiben sichtbar und werden nicht erneut simuliert
 - strukturierter Excel-Export mit Monats-/Tagesvorschau, Krediten, Tilgungshistorie, Bewegungen und sämtlichen Eingaben
 - automatische EnergyLab-Synchronisation der vertraglichen Strom-, Gas-, Wasser- und Abwasserzahlungen einschließlich Laufzeit, Zahlungsrhythmus, Änderung, Konto und Zahlungstag
+- integrierte SQLite-Sicherungen mit manueller Erstellung, geprüfter Wiederherstellung und zusätzlicher Sicherheitssicherung vor jedem Restore
 - Warnung bei Überschreitung eines hinterlegten Disporahmens
 - Datenprüfung für nicht berücksichtigte oder unvollständige Positionen
 
@@ -72,6 +73,8 @@ http://localhost:8798
 Von einem anderen Gerät im Netzwerk wird `localhost` durch die IP-Adresse oder den Hostnamen des Docker-Rechners ersetzt.
 
 Der Port kann in `compose.yaml` angepasst werden. Die Anwendungsdaten liegen ausschließlich im Docker-Volume `finanzlab_data` und gehören nicht zum Repository.
+
+Unter **Einstellungen → Sicherungen** kann FinanzLab konsistente Datenbankkopien anlegen und wiederherstellen. Diese Dateien liegen im Unterordner `backups` desselben Daten-Volumes. Sie schützen vor fehlerhaften Änderungen, ersetzen aber kein zusätzliches Backup des Volumes auf einem anderen Datenträger.
 
 Für Portainer, Standalone-Builds, Updates, Datensicherung und eine vollständige Ersteinrichtung siehe **[INSTALLATION.md](INSTALLATION.md)**.
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unveröffentlicht
+
+- README, Benutzerhandbuch und Installationsanleitung beschreiben jetzt die bereits in Version 1.6.1 vorhandenen integrierten Datenbanksicherungen.
+- Dokumentiert sind die manuelle Sicherung, die automatische Sicherung vor einer Versionsmigration und die zusätzliche Sicherheitssicherung vor jeder Wiederherstellung.
+- Die Prüfsummen- und SQLite-Integritätskontrolle bei einer Wiederherstellung sowie der Speicherort `/data/backups` sind ergänzt.
+- Ein deutlicher Hinweis stellt klar, dass Sicherungen im selben Docker-Volume kein externes Volume-Backup ersetzen und nicht automatisch bereinigt werden.
+
 ## 1.6.1
 
 - In der Zinsauswertung lassen sich aktive und archivierte Kredite einzeln auswählen.

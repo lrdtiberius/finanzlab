@@ -515,7 +515,31 @@ Alle Anwendungsdaten liegen im konfigurierten Docker-Volume unter `/data`. Die z
 /data/planner.db
 ```
 
-Für eine konsistente Sicherung sollte der Container vor dem Kopieren der Datenbank gestoppt werden.
+### 15.1 Integrierte Sicherungen
+
+Unter **Einstellungen → Sicherungen** stehen die von FinanzLab verwalteten Datenbanksicherungen. Mit **Jetzt sichern** wird eine konsistente SQLite-Kopie der laufenden Datenbank erstellt. Der Container muss dafür nicht angehalten werden.
+
+FinanzLab erstellt außerdem automatisch:
+
+- einmalig vor der ersten Datenbankmigration einer neuen Anwendungsversion eine Sicherung, sofern bereits eine Datenbank vorhanden ist;
+- vor jeder Wiederherstellung eine zusätzliche Sicherheitssicherung des aktuellen Zustands.
+
+Die Liste zeigt Dateiname, Grund, Zeitpunkt, Größe und gegebenenfalls den Zeitpunkt einer Wiederherstellung. **Wiederherstellen** ersetzt den aktuellen Datenbankinhalt durch die ausgewählte Sicherung. Vorher verlangt die Oberfläche eine Bestätigung.
+
+Vor der Wiederherstellung prüft FinanzLab:
+
+- ob die Sicherungsdatei vorhanden ist,
+- ob ihre SHA-256-Prüfsumme noch stimmt,
+- ob die SQLite-Integritätsprüfung erfolgreich ist,
+- ob die für FinanzLab erforderlichen Kerntabellen vorhanden sind.
+
+Die Sicherungsdateien liegen unter `/data/backups` und damit im selben Docker-Volume wie die aktive Datenbank. Es gibt keine automatische Löschung alter Sicherungen. Der verfügbare Speicher sollte deshalb regelmäßig kontrolliert werden.
+
+> Die integrierten Sicherungen helfen bei Bedienfehlern und fehlgeschlagenen Änderungen. Sie schützen nicht vor Verlust oder Beschädigung des gesamten Docker-Volumes. Deshalb zusätzlich regelmäßig ein externes Volume-Backup anlegen.
+
+### 15.2 Externes Volume-Backup
+
+Für eine konsistente externe Sicherung sollte der Container vor dem Kopieren des gesamten Volumes gestoppt werden.
 
 Beispiel mit Docker Compose:
 
@@ -523,7 +547,7 @@ Beispiel mit Docker Compose:
 docker compose stop haushaltsplaner
 ```
 
-Danach das Volume beziehungsweise die Datei `planner.db` mit der vorhandenen Backup-Lösung sichern und den Dienst wieder starten:
+Danach das gesamte Volume einschließlich `planner.db` und `backups` mit der vorhandenen Backup-Lösung sichern und den Dienst wieder starten:
 
 ```bash
 docker compose start haushaltsplaner

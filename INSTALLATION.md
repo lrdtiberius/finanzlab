@@ -712,7 +712,25 @@ Archivierte Kredite werden nicht ungefragt in die Zinsauswertung aufgenommen. Ih
 
 ## 12. Datensicherung und Wiederherstellung
 
-### 12.1 Backup des Docker-Volumes
+### 12.1 Integrierte Datenbanksicherungen
+
+Unter **Einstellungen → Sicherungen** kann mit **Jetzt sichern** eine konsistente Kopie der laufenden SQLite-Datenbank erstellt werden. Der Container muss dafür nicht gestoppt werden.
+
+Die Anwendung legt Sicherungen im Daten-Volume unter folgendem Pfad ab:
+
+```text
+/data/backups
+```
+
+Vor der ersten Datenbankmigration einer neuen Anwendungsversion wird bei einer vorhandenen Datenbank einmalig automatisch eine Sicherung erstellt. Vor jeder Wiederherstellung legt FinanzLab zusätzlich eine Sicherheitssicherung des aktuellen Datenbestands an.
+
+Beim Wiederherstellen kontrolliert die Anwendung die gespeicherte SHA-256-Prüfsumme, die SQLite-Integrität und die erforderlichen FinanzLab-Tabellen. Eine fehlende, veränderte oder ungeeignete Datei wird abgewiesen.
+
+Alte Sicherungen werden nicht automatisch gelöscht. Ihre Zahl und der freie Speicherplatz des Volumes sollten daher regelmäßig kontrolliert werden.
+
+> Die integrierten Sicherungen liegen im selben Volume wie `planner.db`. Sie ersetzen kein externes Backup, weil bei Verlust des Volumes auch diese Sicherungen verloren gehen.
+
+### 12.2 Backup des Docker-Volumes
 
 Für eine konsistente Sicherung wird der Container zuerst gestoppt. Das folgende Beispiel übernimmt das tatsächlich am Container `finanzlab` eingebundene Volume. Dadurch funktioniert es auch, wenn Docker Compose oder Portainer dem Volume-Namen einen Projektpräfix vorangestellt hat.
 
@@ -730,7 +748,7 @@ docker start finanzlab
 
 Die erzeugte Datei liegt anschließend im aktuellen Verzeichnis.
 
-### 12.2 Backup kontrollieren
+### 12.3 Backup kontrollieren
 
 ```bash
 tar -tzf finanzlab-backup.tar.gz
@@ -738,7 +756,7 @@ tar -tzf finanzlab-backup.tar.gz
 
 Darin sollte unter anderem `planner.db` sichtbar sein.
 
-### 12.3 Wiederherstellung
+### 12.4 Wiederherstellung des Docker-Volumes
 
 Vor einer Wiederherstellung die Anwendung stoppen:
 
