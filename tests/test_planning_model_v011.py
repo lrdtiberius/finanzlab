@@ -293,7 +293,6 @@ class PlanningModelV011Tests(unittest.TestCase):
         self.assertEqual("expense", expense["kind"])
         self.assertEqual("credit", expense["category"])
 
-    @unittest.expectedFailure
     def test_credit_history_annuity_split_and_preview_are_separate_from_accounts(self):
         today = date.today()
         tomorrow = today + timedelta(days=1)
@@ -753,7 +752,10 @@ class PlanningModelV011Tests(unittest.TestCase):
         future_dashboard=self.repository.dashboard(self.household_id,"2026-11-20")
         balances={group["credit_type"]:group["balance_cents"]
             for group in future_dashboard["credit_summary"]["groups"]}
-        self.assertEqual({"consumer_credit":0,"credit":0,"borrowed":0},balances)
+        self.assertEqual(
+            {"consumer_credit":0,"credit":0,"borrowed":0,"mortgage":0},
+            balances,
+        )
 
     @unittest.expectedFailure
     def test_regular_edit_removes_hidden_future_override_from_credit_expense(self):

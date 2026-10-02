@@ -19,7 +19,7 @@ ENERGYLAB = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FinanzLab/1.7.1"
+    server_version = "FinanzLab/2.1.1"
 
     def json_response(self, data, status=HTTPStatus.OK):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -50,9 +50,12 @@ class Handler(BaseHTTPRequestHandler):
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "1.7.1"})
+                return self.json_response({"status": "ok", "version": "2.1.1"})
             if path == "/api/households":
                 return self.json_response({"items": REPOSITORY.list_households()})
+            if path == "/api/categories":
+                hid = (query.get("household_id") or [""])[0]
+                return self.json_response(REPOSITORY.list_categories(hid))
             if path == "/api/dashboard":
                 hid = (query.get("household_id") or [""])[0]
                 as_of = (query.get("as_of") or [None])[0]
@@ -91,6 +94,21 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts) != 5:
                     return self.json_response({"error": "Nicht gefunden."}, 404)
                 return self.json_response(REPOSITORY.get_energylab_billing_snapshot(hid, parts[4]))
+            if path == "/api/dashboard/outlook":
+                hid = (query.get("household_id") or [""])[0]
+                base_month = (query.get("base_month") or [None])[0]
+                months = (query.get("months") or ["6"])[0]
+                account_ids = []
+                for value in query.get("account_id", []) + query.get("account_ids", []):
+                    account_ids.extend(
+                        part.strip() for part in value.split(",") if part.strip()
+                    )
+                return self.json_response(
+                    REPOSITORY.liquidity_outlook(
+                        hid, base_month, months,
+                        account_ids if account_ids else None,
+                    )
+                )
             if path == "/api/backups":
                 return self.json_response({"items": REPOSITORY.list_backups()})
             if path == "/api/bank-statements":
@@ -165,6 +183,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_response(REPOSITORY.create_household(self.read_json()), 201)
             if path == "/api/accounts":
                 return self.json_response(REPOSITORY.create_account(self.read_json()), 201)
+            if path == "/api/categories":
+                return self.json_response(REPOSITORY.create_category(self.read_json()), 201)
             if path == "/api/cash-flows":
                 return self.json_response(REPOSITORY.create_cash_flow(self.read_json()), 201)
             if path == "/api/integrations/energylab":
@@ -239,6 +259,11 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts) != 6:
                     return self.json_response({"error": "Nicht gefunden."}, 404)
                 return self.json_response(REPOSITORY.update_energylab_cash_flow_account(parts[4], self.read_json()))
+            if path.startswith("/api/categories/"):
+                category_id = path.removeprefix("/api/categories/")
+                if not category_id or "/" in category_id:
+                    return self.json_response({"error": "Nicht gefunden."}, 404)
+                return self.json_response(REPOSITORY.update_category(category_id, self.read_json()))
             if path.startswith("/api/accounts/"):
                 account_id = path.removeprefix("/api/accounts/")
                 if not account_id or "/" in account_id:
@@ -270,6 +295,11 @@ class Handler(BaseHTTPRequestHandler):
         path, query = parsed.path, parse_qs(parsed.query)
         hid = (query.get("household_id") or [""])[0]
         try:
+            if path.startswith("/api/categories/"):
+                category_id = path.removeprefix("/api/categories/")
+                if not category_id or "/" in category_id:
+                    return self.json_response({"error": "Nicht gefunden."}, 404)
+                return self.json_response(REPOSITORY.delete_category(hid, category_id))
             if path.startswith("/api/accounts/") and "/balances/" in path:
                 parts = path.strip("/").split("/")
                 if len(parts) != 5:

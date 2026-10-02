@@ -42,26 +42,29 @@ def install_repository_archive_support(Repository):
             for row in rows
         }
 
-    def sync_credit_archives(self, hid):
+    def sync_credit_archives(self, hid, current=None):
         if not hid:
             return
-        current = original_list_credits(self, hid, date.today().isoformat())
+        # Wenn der Aufrufer die Kredite ohnehin gerade berechnet hat, dieses
+        # Ergebnis wiederverwenden. Zuvor wurde die komplette Tilgungsplanung
+        # für denselben Request häufig zwei- bis dreimal aufgebaut.
+        current = current or original_list_credits(self, hid, date.today().isoformat())
         states = archive_states(self, hid)
-        with self.lock, self.connect() as con:
-            for credit in current.get("items", []):
-                state = states.get(credit["id"], {})
-                remaining = int(credit.get("remaining_balance_cents") or 0)
-                reason = state.get("archive_reason")
-                if remaining <= 0 and not state.get("archived"):
-                    con.execute(
-                        "UPDATE credits SET archived=1,archived_at=?,archive_reason='paid' WHERE id=? AND household_id=?",
-                        (_now(), credit["id"], hid),
-                    )
-                elif remaining > 0 and state.get("archived") and reason == "paid":
-                    con.execute(
-                        "UPDATE credits SET archived=0,archived_at=NULL,archive_reason=NULL WHERE id=? AND household_id=?",
-                        (credit["id"], hid),
-                    )
+        changes=[]
+        for credit in current.get("items", []):
+            state = states.get(credit["id"], {})
+            remaining = int(credit.get("remaining_balance_cents") or 0)
+            reason = state.get("archive_reason")
+            if remaining <= 0 and not state.get("archived"):
+                changes.append((1,_now(),"paid",credit["id"],hid))
+            elif remaining > 0 and state.get("archived") and reason == "paid":
+                changes.append((0,None,None,credit["id"],hid))
+        if changes:
+            with self.lock, self.connect() as con:
+                con.executemany(
+                    "UPDATE credits SET archived=?,archived_at=?,archive_reason=? WHERE id=? AND household_id=?",
+                    changes,
+                )
 
     def decorate_credit(self, hid, credit):
         state = archive_states(self, hid).get(credit["id"], {})
@@ -72,8 +75,8 @@ def install_repository_archive_support(Repository):
         return item
 
     def list_credits_view(self, hid, as_of=None, through=None, simulate_future=False):
-        sync_credit_archives(self, hid)
         result = original_list_credits(self, hid, as_of, through, simulate_future)
+        sync_credit_archives(self, hid, result)
         states = archive_states(self, hid)
         all_items = []
         for credit in result.get("items", []):
@@ -86,7 +89,7 @@ def install_repository_archive_support(Repository):
         active = [item for item in all_items if not item["archived"]]
         archived = [item for item in all_items if item["archived"]]
         groups = []
-        for credit_type in ("consumer_credit", "credit", "borrowed"):
+        for credit_type in ("consumer_credit", "credit", "borrowed", "mortgage"):
             matching = [item for item in active if item["credit_type"] == credit_type]
             groups.append({
                 "credit_type": credit_type,
@@ -106,8 +109,11 @@ def install_repository_archive_support(Repository):
         return view
 
     def credit_detail(self, hid, credit_id, as_of=None):
-        sync_credit_archives(self, hid)
-        credit = original_credit_detail(self, hid, credit_id, as_of)
+        result = original_list_credits(self, hid, as_of)
+        sync_credit_archives(self, hid, result)
+        credit = next((item for item in result.get("items", []) if item.get("id")==credit_id), None)
+        if not credit:
+            raise ValueError("Kredit nicht gefunden.")
         return decorate_credit(self, hid, credit)
 
     def set_credit_archived(self, credit_id, payload):
@@ -156,18 +162,23 @@ def install_repository_archive_support(Repository):
         return credit_detail(self, hid, credit_id, date.today().isoformat())
 
     def dashboard(self, hid, as_of=None):
-        result = original_dashboard(self, hid, as_of)
+        result = original_dashboard(self, hid, as_of, include_credit_summary=False)
         view = list_credits_view(self, hid, as_of, simulate_future=True)
         result["credit_summary"] = {
             "as_of": view.get("as_of"),
             "today": view.get("today"),
-            "groups": view.get("groups", []),
-            "totals": view.get("totals", {}),
+            "groups": [group for group in view.get("groups", []) if group.get("credit_type") != "mortgage"],
+            "totals": {
+                "count": sum(group.get("count",0) for group in view.get("groups", []) if group.get("credit_type") != "mortgage"),
+                "balance_cents": sum(group.get("balance_cents",0) for group in view.get("groups", []) if group.get("credit_type") != "mortgage"),
+            },
         }
         return result
 
     def monthly_preview(self, hid, month, account_ids, credit_ids):
-        sync_credit_archives(self, hid)
+        # Der normale /api/credits-Ladevorgang synchronisiert den Archivstatus.
+        # Für jede Monatsvorschau erneut alle Kreditpläne aufzubauen war teuer
+        # und ändert das Ergebnis der Kontenprojektion nicht.
         states = archive_states(self, hid)
         active_credit_ids = [credit_id for credit_id in credit_ids if not states.get(credit_id, {}).get("archived")]
         return original_monthly_preview(self, hid, month, account_ids, active_credit_ids)
@@ -196,15 +207,13 @@ def install_web_archive_support(Handler):
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "1.7.1"})
+                return self.json_response({"status": "ok", "version": "2.1.1"})
             if path == "/api/credits":
                 hid = (query.get("household_id") or [""])[0]
                 as_of = (query.get("as_of") or [None])[0]
                 return self.json_response(repository().list_credits_view(hid, as_of))
             if path == "/app.js":
-                core = (static_root / "app.js").read_bytes()
-                patch = (static_root / "credit-archive.js").read_bytes()
-                data = core + b"\n\n" + patch
+                data = (static_root / "app.js").read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/javascript; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")

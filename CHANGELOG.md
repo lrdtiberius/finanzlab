@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.1.1
+
+- Die 6-Monats-Liquiditätsvorschau unterstützt eine Auswahl der normalen Bankkonten und zeigt für jedes ausgewählte Konto eine eigene Prognose zur Monatsmitte und zum Monatsende.
+- ING Giro und Sparkasse können einzeln oder gemeinsam angezeigt werden; die Auswahl wird pro Haushalt im Browser gespeichert.
+- Rahmenkredite bleiben von Auswahl und Liquiditätsvorschau ausgeschlossen.
+- Auswahlbezogene Vorschauen werden lokal zwischengespeichert und beim Neuladen im Hintergrund aktualisiert.
+- API und Benutzeroberfläche schützen vor ungültigen, fremden oder als Rahmenkredit geführten Konten.
+- Automatische Updatesicherungen verwenden bei einem nicht beschreibbaren `backups`-Ordner einen NFS-kompatiblen Ersatzordner `.finanzlab-backups`.
+- Das Dockerfile startet FinanzLab weiterhin ohne Root-Rechte mit der produktiven UID/GID `10001:10001` und ist damit mit dem bestehenden NFS-Datenvolume kompatibel.
+- Kredit-Zeitachsen initialisieren die Wochenendregel nun für jeden Zahlungsplan und brechen bei Plänen ohne Enddatum nicht mehr ab.
+- Der Quellstand ist mit dem am 2. Oktober 2026 produktiv geprüften Stand 2.1.1 synchronisiert.
+
 ## 1.7.1
 
 - Quellstand mit dem am 26. September 2026 gebauten und auf dem AM06 laufenden Produktionsimage synchronisiert.

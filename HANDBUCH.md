@@ -1,6 +1,6 @@
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **1.7.1**
+Gültig für Version **2.1.1**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
@@ -74,13 +74,13 @@ Für eine Portainer-Installation wird das fertig gebaute Docker-Image aus dem Gi
 
 Vorgehen:
 
-1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v1.7.1-amd64.tar.gz` importieren,
+1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v2.1.1-amd64.tar.gz` importieren,
 2. unter **Stacks → Add stack** einen Stack mit dem Inhalt aus [`portainer-stack.yaml`](portainer-stack.yaml) anlegen,
 3. den Stack bereitstellen,
 4. den Zustand des Containers `finanzlab` kontrollieren,
 5. Port `8798` im Browser öffnen.
 
-Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:1.7.1` für `linux/amd64`. Das Quellarchiv `finanzlab-v1.7.1.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
+Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:2.1.1` für `linux/amd64`. Das Quellarchiv `finanzlab-v2.1.1.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
 
 Das Volume wird im Container unter `/data` eingebunden. Dort liegt insbesondere die Datenbankdatei `planner.db`.
 
@@ -570,7 +570,7 @@ docker compose up --build -d
 
 Die Anwendung führt notwendige Schemaanpassungen beim Start aus. Das persistente Daten-Volume darf beim Update nicht gelöscht werden.
 
-Bei Portainer wird das neue Image zuerst unter **Images → Import** eingespielt. Anschließend im bestehenden Stack die Zeile `image: finanzlab:1.7.1` setzen und den Stack neu bereitstellen. Der bestehende Stackname und das Volume müssen erhalten bleiben. Eine ausführliche Schrittfolge einschließlich Sicherung und Wiederherstellung steht in [INSTALLATION.md](INSTALLATION.md#11-aktualisieren-auf-eine-neue-version).
+Bei Portainer wird das neue Image zuerst unter **Images → Import** eingespielt. Anschließend im bestehenden Stack die Zeile `image: finanzlab:2.1.1` setzen und den Stack neu bereitstellen. Der bestehende Stackname und das Volume müssen erhalten bleiben. Eine ausführliche Schrittfolge einschließlich Sicherung und Wiederherstellung steht in [INSTALLATION.md](INSTALLATION.md#11-aktualisieren-auf-eine-neue-version).
 
 ## 17. Fehlerbehebung
 

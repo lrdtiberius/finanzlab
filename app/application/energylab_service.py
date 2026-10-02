@@ -13,7 +13,7 @@ class EnergyLabService:
             raise ValueError("Die EnergyLab-Verbindung ist nicht aktiviert.")
         request = urllib.request.Request(
             config["base_url"].rstrip("/") + "/api/personallab",
-            headers={"Accept": "application/json", "User-Agent": "FinanzLab/1.7.1"},
+            headers={"Accept": "application/json", "User-Agent": "FinanzLab/1.8.1"},
         )
         try:
             with urllib.request.urlopen(request, timeout=10) as response:

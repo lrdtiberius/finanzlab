@@ -1,6 +1,6 @@
 # Haushaltsplaner
 
-Aktueller Stand: **FinanzLab 1.7.1**, abgeglichen mit dem am 26. September 2026 gebauten und auf dem AM06 laufenden Image.
+Aktueller Stand: **FinanzLab 2.1.1**, abgeglichen mit dem am 2. Oktober 2026 gebauten und auf dem AM06 laufenden Image.
 
 Lokale Webanwendung zur tagesgenauen Liquiditätsplanung für private Haushalte.
 
@@ -116,7 +116,7 @@ node --check app/static/app.js
 
 Neun ältere Regressionstests beschreiben noch frühere Regeln für Wochenendverschiebung,
 Kreditraten und Import-Sperren. Sie bleiben zur Nachverfolgung erhalten und sind als
-erwartete Abweichungen markiert, bis ihre Erwartungen auf das Produktionsmodell 1.7.1
+erwartete Abweichungen markiert, bis ihre Erwartungen auf das Produktionsmodell 2.1.1
 umgestellt sind.
 
 ## Handbuch

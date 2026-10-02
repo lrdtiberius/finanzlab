@@ -21,7 +21,20 @@ from app.domain.recurrence import (
     recurrence_dates,
 )
 
-APP_VERSION = "1.7.1"
+APP_VERSION = "2.1.1"
+
+SYSTEM_CATEGORIES = {
+    "income": [
+        ("salary", "Gehalt"), ("pension", "Rente"), ("benefit", "Leistung"),
+        ("family", "Familie"), ("other_income", "Sonstige Einnahme"),
+    ],
+    "expense": [
+        ("housing", "Wohnen"), ("energy", "Energie"), ("insurance", "Versicherung"),
+        ("food", "Lebensmittel"), ("mobility", "Mobilität"), ("consumer_credit", "Konsumkredit"),
+        ("credit", "Kredit"), ("borrowed", "Geliehen"), ("mortgage", "Darlehen"), ("interest", "Zinsen"),
+        ("leisure", "Freizeit"), ("other_expense", "Sonstige Ausgabe"),
+    ],
+}
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -37,6 +50,7 @@ CREATE TABLE IF NOT EXISTS accounts(
  name TEXT NOT NULL, owner_scope TEXT NOT NULL, owner_person_id TEXT REFERENCES persons(id),
  kind TEXT NOT NULL DEFAULT 'checking', currency TEXT NOT NULL DEFAULT 'EUR',
  overdraft_limit_cents INTEGER, overdraft_apr TEXT, is_default INTEGER NOT NULL DEFAULT 0,
+ linked_account_id TEXT,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  UNIQUE(household_id,name));
 CREATE TABLE IF NOT EXISTS account_versions(
@@ -306,6 +320,14 @@ def normalized_match_tokens(*values):
     ignored={"gmbh","ag","kg","se","energie","energylab","zahlung","abschlag","rechnung"}
     return result-ignored
 
+
+def previous_friday(value):
+    """Wochenenddatum auf den vorherigen Werktag verschieben."""
+    if value is None:
+        return None
+    days_back = max(0, value.weekday() - 4)
+    return value.fromordinal(value.toordinal() - days_back)
+
 class Repository:
     def __init__(self, path=None):
         if path is None:
@@ -326,7 +348,7 @@ class Repository:
         marker.write_text(APP_VERSION+"\n",encoding="utf-8")
 
     def _upgrade_marker(self):
-        return Path(self.path).resolve().parent/"backups"/f".finanzlab-upgrade-{APP_VERSION}.done"
+        return self._backup_directory()/f".finanzlab-upgrade-{APP_VERSION}.done"
 
     def _prepare_upgrade_backup(self):
         """Create one consistent safety copy before this release migrates an existing database."""
@@ -349,7 +371,7 @@ class Repository:
         }
     @contextmanager
     def connect(self):
-        con=sqlite3.connect(self.path); con.row_factory=sqlite3.Row; con.execute("PRAGMA foreign_keys=ON")
+        con=sqlite3.connect(self.path); con.row_factory=sqlite3.Row; con.execute("PRAGMA foreign_keys=ON"); con.execute("PRAGMA busy_timeout=5000")
         try: yield con; con.commit()
         except Exception: con.rollback(); raise
         finally: con.close()
@@ -377,6 +399,19 @@ class Repository:
             self.ensure_column(con,"credits","financing_price_cents","INTEGER")
             self.ensure_column(con,"credits","installment_surcharge_cents","INTEGER")
             self.ensure_column(con,"credits","payment_count","INTEGER")
+            self.ensure_column(con,"credits","credit_subtype","TEXT")
+            self.ensure_column(con,"credits","original_principal_cents","INTEGER")
+            self.ensure_column(con,"credits","balance_as_of","TEXT")
+            self.ensure_column(con,"credits","effective_interest_rate","TEXT")
+            self.ensure_column(con,"credits","repayment_rate","TEXT")
+            self.ensure_column(con,"credits","fixed_interest_until","TEXT")
+            self.ensure_column(con,"credits","special_repayment_percent","TEXT")
+            con.execute("""CREATE TABLE IF NOT EXISTS custom_categories(
+                id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL CHECK(kind IN('income','expense')), key TEXT NOT NULL, name TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(household_id,kind,key), UNIQUE(household_id,kind,name))""")
+            con.execute("CREATE INDEX IF NOT EXISTS custom_categories_household ON custom_categories(household_id,kind,active,name)")
             con.execute("""CREATE TABLE IF NOT EXISTS credit_interest_bookings(
                 id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
                 credit_id TEXT NOT NULL REFERENCES credits(id) ON DELETE CASCADE,
@@ -386,6 +421,8 @@ class Repository:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
             con.execute("CREATE INDEX IF NOT EXISTS credit_interest_bookings_dates ON credit_interest_bookings(household_id,booking_date)")
             self.ensure_column(con,"accounts","is_default","INTEGER NOT NULL DEFAULT 0")
+            self.ensure_column(con,"accounts","kind","TEXT NOT NULL DEFAULT 'checking'")
+            self.ensure_column(con,"accounts","linked_account_id","TEXT")
             self.ensure_column(con,"balance_anchors","created_at","TEXT")
             self.ensure_column(con,"balance_anchors","bookings_applied","INTEGER NOT NULL DEFAULT 1")
             self.ensure_column(con,"transfers","end_date","TEXT")
@@ -421,6 +458,14 @@ class Repository:
                 )
             con.execute("UPDATE balance_anchors SET created_at=COALESCE(created_at,CURRENT_TIMESTAMP)")
             con.execute("CREATE INDEX IF NOT EXISTS cash_flow_versions_dates ON cash_flow_versions(cash_flow_id,version_from,version_to)")
+            # Performance-Indizes für die häufigen Dashboard-/Vorschau-Abfragen.
+            con.execute("CREATE INDEX IF NOT EXISTS cash_flows_household_kind ON cash_flows(household_id,kind)")
+            con.execute("CREATE INDEX IF NOT EXISTS cash_flow_versions_projection ON cash_flow_versions(cash_flow_id,active,version_from,stream_start)")
+            con.execute("CREATE INDEX IF NOT EXISTS cash_flow_versions_credit ON cash_flow_versions(credit_id,active,version_from)")
+            con.execute("CREATE INDEX IF NOT EXISTS credits_household_order ON credits(household_id,created_at,name)")
+            con.execute("CREATE INDEX IF NOT EXISTS bank_transactions_household_date ON bank_transactions(household_id,booking_date)")
+            con.execute("CREATE INDEX IF NOT EXISTS movement_completions_projection ON movement_completions(household_id,occurrence_date)")
+            con.execute("CREATE INDEX IF NOT EXISTS movement_amount_overrides_projection ON movement_amount_overrides(household_id,occurrence_date)")
             migration=con.execute("SELECT 1 FROM schema_migrations WHERE name='v0.11-remove-loans-and-validity'").fetchone()
             if not migration:
                 # Imported planning rows remain useful as ordinary income and
@@ -534,6 +579,8 @@ class Repository:
         anchor_date=as_of_date(payload.get("anchor_date"))
         try: balance_cents=int(payload.get("balance_cents") or 0)
         except (TypeError,ValueError): raise ValueError("Der Kontostand muss ein gültiger Geldwert sein.")
+        kind=str(payload.get("kind") or "checking").strip()
+        if kind not in ("checking","credit_line"): raise ValueError("Ungültige Kontoart.")
         with self.lock,self.connect() as con:
             people={r["slot"]:r["id"] for r in con.execute("SELECT id,slot FROM persons WHERE household_id=?",(hid,)).fetchall()}
             if not people: raise ValueError("Haushalt nicht gefunden.")
@@ -542,9 +589,18 @@ class Repository:
             else: raise ValueError("Ungültiger Kontobesitzer.")
             if con.execute("SELECT 1 FROM accounts WHERE household_id=? AND name=?",(hid,name)).fetchone(): raise ValueError("Ein Konto mit diesem Namen existiert bereits.")
             account_id=uid(); overdraft_limit_cents,overdraft_apr=overdraft_values(payload)
-            is_default=1 if payload.get("is_default") or not con.execute("SELECT 1 FROM accounts WHERE household_id=?",(hid,)).fetchone() else 0
+            linked_account_id=str(payload.get("linked_account_id") or "").strip() or None
+            if kind=="credit_line":
+                if overdraft_limit_cents<=0: raise ValueError("Für einen Rahmenkredit muss ein Kreditlimit größer als 0,00 € hinterlegt werden.")
+                if balance_cents < -overdraft_limit_cents: raise ValueError("Der Kontostand darf das Kreditlimit nicht überschreiten.")
+                linked=con.execute("SELECT id,kind FROM accounts WHERE id=? AND household_id=?",(linked_account_id,hid)).fetchone() if linked_account_id else None
+                if not linked or linked["kind"]=="credit_line": raise ValueError("Für den Rahmenkredit muss ein normales Verrechnungskonto ausgewählt werden.")
+                is_default=0
+            else:
+                linked_account_id=None
+                is_default=1 if payload.get("is_default") or not con.execute("SELECT 1 FROM accounts WHERE household_id=?",(hid,)).fetchone() else 0
             if is_default: con.execute("UPDATE accounts SET is_default=0 WHERE household_id=?",(hid,))
-            con.execute("INSERT INTO accounts(id,household_id,name,owner_scope,owner_person_id,overdraft_limit_cents,overdraft_apr,is_default) VALUES(?,?,?,?,?,?,?,?)",(account_id,hid,name,scope,owner_id,overdraft_limit_cents,overdraft_apr,is_default))
+            con.execute("INSERT INTO accounts(id,household_id,name,owner_scope,owner_person_id,kind,overdraft_limit_cents,overdraft_apr,is_default,linked_account_id) VALUES(?,?,?,?,?,?,?,?,?,?)",(account_id,hid,name,scope,owner_id,kind,overdraft_limit_cents,overdraft_apr,is_default,linked_account_id))
             con.execute("INSERT INTO account_versions VALUES(?,?,?,?,?,?,?,?,?,?)",(uid(),hid,account_id,name,scope,owner_id,overdraft_limit_cents,overdraft_apr,timestamp(),None))
             con.execute("INSERT INTO balance_anchors(id,household_id,account_id,anchor_date,balance_cents,bookings_applied) VALUES(?,?,?,?,?,?)",(uid(),hid,account_id,anchor_date,balance_cents,1 if payload.get("bookings_applied") else 0))
         return self.household_detail(hid,anchor_date)
@@ -557,20 +613,46 @@ class Repository:
         with self.lock,self.connect() as con:
             current=con.execute("SELECT * FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone()
             if not current: raise ValueError("Konto nicht gefunden.")
+            kind=str(payload.get("kind") or current["kind"] or "checking").strip()
+            if kind not in ("checking","credit_line"): raise ValueError("Ungültige Kontoart.")
+            linked_account_id=str(payload.get("linked_account_id") or "").strip() or None
             people={r["slot"]:r["id"] for r in con.execute("SELECT id,slot FROM persons WHERE household_id=?",(hid,)).fetchall()}
             if owner=="joint": scope="joint"; owner_id=None
             elif owner in people: scope="person"; owner_id=people[owner]
             else: raise ValueError("Ungültiger Kontobesitzer.")
             duplicate=con.execute("SELECT 1 FROM accounts WHERE household_id=? AND name=? AND id<>?",(hid,name,account_id)).fetchone()
             if duplicate: raise ValueError("Ein Konto mit diesem Namen existiert bereits.")
+            if kind=="credit_line":
+                if con.execute("SELECT 1 FROM accounts WHERE household_id=? AND kind='credit_line' AND linked_account_id=? AND id<>?",(hid,account_id,account_id)).fetchone():
+                    raise ValueError("Dieses Konto ist bereits Verrechnungskonto eines anderen Rahmenkredits und kann daher nicht selbst als Rahmenkredit markiert werden.")
+                if overdraft_limit_cents<=0: raise ValueError("Für einen Rahmenkredit muss ein Kreditlimit größer als 0,00 € hinterlegt werden.")
+                if balance_cents < -overdraft_limit_cents: raise ValueError("Der Kontostand darf das Kreditlimit nicht überschreiten.")
+                linked=con.execute("SELECT id,kind FROM accounts WHERE id=? AND household_id=?",(linked_account_id,hid)).fetchone() if linked_account_id else None
+                if not linked or linked["id"]==account_id or linked["kind"]=="credit_line":
+                    raise ValueError("Für den Rahmenkredit muss ein anderes normales Verrechnungskonto ausgewählt werden.")
+                assigned=con.execute("""SELECT 1 FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
+                    WHERE f.household_id=? AND v.account_id=? LIMIT 1""",(hid,account_id)).fetchone()
+                if assigned: raise ValueError("Ein Rahmenkredit darf nicht direkt Einnahmen, Ausgaben oder Kreditraten zugeordnet sein. Bitte diese Positionen zuerst auf das Girokonto umstellen.")
+                invalid_transfer=con.execute("""SELECT 1 FROM transfers WHERE household_id=? AND active=1
+                    AND (source_account_id=? OR target_account_id=?)
+                    AND NOT ((source_account_id=? AND target_account_id=?) OR (source_account_id=? AND target_account_id=?)) LIMIT 1""",
+                    (hid,account_id,account_id,account_id,linked_account_id,linked_account_id,account_id)).fetchone()
+                if invalid_transfer: raise ValueError("Aktive Umbuchungen des Rahmenkredits müssen ausschließlich über das gewählte Verrechnungskonto laufen.")
+                is_default=0
+            else:
+                linked_account_id=None
+                is_default=1 if payload.get("is_default") else int(current["is_default"] or 0)
             open_version=con.execute("SELECT id FROM account_versions WHERE account_id=? AND valid_to IS NULL",(account_id,)).fetchone()
             if open_version:
                 con.execute("UPDATE account_versions SET valid_to=? WHERE id=?",(changed_at,open_version["id"]))
             else:
                 con.execute("INSERT INTO account_versions VALUES(?,?,?,?,?,?,?,?,?,?)",(uid(),hid,account_id,current["name"],current["owner_scope"],current["owner_person_id"],int(current["overdraft_limit_cents"] or 0),str(current["overdraft_apr"] or "0"),current["created_at"],changed_at))
-            is_default=1 if payload.get("is_default") else int(current["is_default"] or 0)
-            if is_default: con.execute("UPDATE accounts SET is_default=0 WHERE household_id=? AND id<>?",(hid,account_id))
-            con.execute("UPDATE accounts SET name=?,owner_scope=?,owner_person_id=?,overdraft_limit_cents=?,overdraft_apr=?,is_default=? WHERE id=? AND household_id=?",(name,scope,owner_id,overdraft_limit_cents,overdraft_apr,is_default,account_id,hid))
+            if kind=="credit_line" and int(current["is_default"] or 0) and linked_account_id:
+                con.execute("UPDATE accounts SET is_default=0 WHERE household_id=?",(hid,))
+                con.execute("UPDATE accounts SET is_default=1 WHERE id=? AND household_id=?",(linked_account_id,hid))
+            elif is_default:
+                con.execute("UPDATE accounts SET is_default=0 WHERE household_id=? AND id<>?",(hid,account_id))
+            con.execute("UPDATE accounts SET name=?,owner_scope=?,owner_person_id=?,kind=?,overdraft_limit_cents=?,overdraft_apr=?,is_default=?,linked_account_id=? WHERE id=? AND household_id=?",(name,scope,owner_id,kind,overdraft_limit_cents,overdraft_apr,is_default,linked_account_id,account_id,hid))
             con.execute("INSERT INTO account_versions VALUES(?,?,?,?,?,?,?,?,?,?)",(uid(),hid,account_id,name,scope,owner_id,overdraft_limit_cents,overdraft_apr,changed_at,None))
             con.execute("UPDATE account_reconciliations SET status='superseded' WHERE account_id=? AND balance_date=? AND status='active'",(account_id,anchor_date))
             con.execute("""INSERT INTO balance_anchors(id,household_id,account_id,anchor_date,balance_cents,bookings_applied) VALUES(?,?,?,?,?,?)
@@ -600,6 +682,8 @@ class Repository:
         with self.lock,self.connect() as con:
             account=con.execute("SELECT id,name,is_default FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone()
             if not account: raise ValueError("Konto nicht gefunden.")
+            if con.execute("SELECT 1 FROM accounts WHERE household_id=? AND kind='credit_line' AND linked_account_id=?",(hid,account_id)).fetchone():
+                raise ValueError("Dieses Konto ist als Verrechnungskonto eines Rahmenkredits verknüpft und kann nicht gelöscht werden.")
             flow_count=con.execute("""SELECT COUNT(DISTINCT f.id) FROM cash_flows f
                 LEFT JOIN cash_flow_versions v ON v.cash_flow_id=f.id
                 WHERE f.household_id=? AND (f.account_id=? OR v.account_id=?)""",(hid,account_id,account_id)).fetchone()[0]
@@ -632,8 +716,9 @@ class Repository:
         hid=payload.get("household_id"); name=str(payload.get("name") or "").strip()
         credit_type=str(payload.get("credit_type") or "")
         if not hid or not name: raise ValueError("Haushalt und Kreditname sind erforderlich.")
-        if credit_type not in ("consumer_credit","credit","borrowed"):
-            raise ValueError("Die Kreditart muss Konsumkredit, Kredit oder Geliehen sein.")
+        if credit_type not in ("consumer_credit","credit","borrowed","mortgage"):
+            raise ValueError("Die Kreditart muss Konsumkredit, Kredit, Geliehen oder Darlehen sein.")
+        stored_credit_type="credit" if credit_type=="mortgage" else credit_type
         if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone():
             raise ValueError("Haushalt nicht gefunden.")
         try: opening_balance_cents=int(payload.get("opening_balance_cents") or 0)
@@ -673,7 +758,7 @@ class Repository:
             except (TypeError,ValueError): raise ValueError("Die Zahlungsanzahl muss eine ganze Zahl sein.")
             if str(payment_count_raw).strip()!=str(payment_count) or not 1<=payment_count<=1200:
                 raise ValueError("Die Zahlungsanzahl muss zwischen 1 und 1.200 liegen.")
-        if (derive_consumer_values and financing_price_cents is None
+        if (derive_consumer_values and credit_type=="consumer_credit" and financing_price_cents is None
                 and plan.get("amount_cents") not in (None,"")
                 and plan.get("occurrence_count") not in (None,"")):
             try:
@@ -707,12 +792,42 @@ class Repository:
             if abs(contractual_total-financing_price_cents)>rounding_tolerance:
                 pass  # finanzlab-1.6.13: alter Finanzierungspreis-Speicherblocker entfernt
         note=str(payload.get("note") or "").strip() or None
-        return {"household_id":hid,"name":name,"credit_type":credit_type,
-            "opening_balance_cents":opening_balance_cents,"interest_rate":interest_rate,
+        credit_subtype="mortgage" if credit_type=="mortgage" else None
+        original_principal_cents=None; balance_as_of=None; effective_interest_rate=None
+        repayment_rate=None; fixed_interest_until=None; special_repayment_percent=None
+        if credit_type=="mortgage":
+            try: original_principal_cents=int(payload.get("original_principal_cents") or 0)
+            except (TypeError,ValueError): raise ValueError("Die ursprüngliche Darlehenssumme muss ein gültiger Geldwert sein.")
+            if original_principal_cents<=0: raise ValueError("Die ursprüngliche Darlehenssumme muss größer als 0,00 € sein.")
+            if opening_balance_cents<=0 or opening_balance_cents>original_principal_cents:
+                raise ValueError("Die aktuelle Restschuld muss größer als 0,00 € und darf nicht höher als die ursprüngliche Darlehenssumme sein.")
+            try: balance_as_of=date.fromisoformat(str(payload.get("balance_as_of") or "")).isoformat()
+            except ValueError: raise ValueError("Der Stichtag der Restschuld muss ein gültiges Datum sein.")
+            def percent_value(key,label,allow_zero=True):
+                raw=payload.get(key)
+                if raw in (None,""): return None
+                try: value=Decimal(str(raw).replace(",","."))
+                except (InvalidOperation,ValueError): raise ValueError(f"{label} muss eine gültige Prozentzahl sein.")
+                if not value.is_finite() or value<0 or (not allow_zero and value<=0):
+                    raise ValueError(f"{label} darf nicht negativ sein.")
+                return format(value.normalize(),"f")
+            effective_interest_rate=percent_value("effective_interest_rate","Der effektive Jahreszins")
+            repayment_rate=percent_value("repayment_rate","Der Tilgungssatz",False)
+            special_repayment_percent=percent_value("special_repayment_percent","Die Sondertilgung")
+            fixed_raw=payload.get("fixed_interest_until")
+            if fixed_raw not in (None,""):
+                try: fixed_interest_until=date.fromisoformat(str(fixed_raw)).isoformat()
+                except ValueError: raise ValueError("Das Ende der Zinsbindung muss ein gültiges Datum sein.")
+            automatic_interest=1
+            balloon_payment_cents=0
+        return {"household_id":hid,"name":name,"credit_type":credit_type,"stored_credit_type":stored_credit_type,
+            "credit_subtype":credit_subtype,"opening_balance_cents":opening_balance_cents,"interest_rate":interest_rate,
             "automatic_interest":automatic_interest,"balloon_payment_cents":balloon_payment_cents,"note":note,
             "provider":provider,"product_price_cents":product_price_cents,
             "financing_price_cents":financing_price_cents,"installment_surcharge_cents":installment_surcharge_cents,
-            "payment_count":payment_count}
+            "payment_count":payment_count,"original_principal_cents":original_principal_cents,"balance_as_of":balance_as_of,
+            "effective_interest_rate":effective_interest_rate,"repayment_rate":repayment_rate,
+            "fixed_interest_until":fixed_interest_until,"special_repayment_percent":special_repayment_percent}
     def create_credit(self,payload):
         with self.lock,self.connect() as con:
             values=self.credit_values(con,payload)
@@ -721,11 +836,14 @@ class Repository:
             credit_id=uid()
             con.execute("""INSERT INTO credits(id,household_id,name,credit_type,opening_balance_cents,
                 interest_rate,automatic_interest,balloon_payment_cents,note,provider,product_price_cents,
-                financing_price_cents,installment_surcharge_cents,payment_count) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (credit_id,values["household_id"],values["name"],values["credit_type"],values["opening_balance_cents"],
+                financing_price_cents,installment_surcharge_cents,payment_count,credit_subtype,original_principal_cents,
+                balance_as_of,effective_interest_rate,repayment_rate,fixed_interest_until,special_repayment_percent)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (credit_id,values["household_id"],values["name"],values["stored_credit_type"],values["opening_balance_cents"],
                  values["interest_rate"],values["automatic_interest"],values["balloon_payment_cents"],values["note"],
                  values["provider"],values["product_price_cents"],values["financing_price_cents"],values["installment_surcharge_cents"],
-                 values["payment_count"]))
+                 values["payment_count"],values["credit_subtype"],values["original_principal_cents"],values["balance_as_of"],
+                 values["effective_interest_rate"],values["repayment_rate"],values["fixed_interest_until"],values["special_repayment_percent"]))
             plan=payload.get("payment_plan")
             if plan:
                 plan_payload={
@@ -765,6 +883,14 @@ class Repository:
             merged.setdefault("financing_price_cents",current["financing_price_cents"])
             merged.setdefault("installment_surcharge_cents",current["installment_surcharge_cents"])
             merged.setdefault("payment_count",current["payment_count"])
+            merged.setdefault("original_principal_cents",current["original_principal_cents"])
+            merged.setdefault("balance_as_of",current["balance_as_of"])
+            merged.setdefault("effective_interest_rate",current["effective_interest_rate"])
+            merged.setdefault("repayment_rate",current["repayment_rate"])
+            merged.setdefault("fixed_interest_until",current["fixed_interest_until"])
+            merged.setdefault("special_repayment_percent",current["special_repayment_percent"])
+            if current["credit_subtype"]=="mortgage" and "credit_type" not in merged:
+                merged["credit_type"]="mortgage"
             # An edit is authoritative.  Existing contracts can contain fees,
             # irregular first/final installments or a forward-looking residual
             # plan.  Do not derive missing values from that plan and do not
@@ -779,11 +905,15 @@ class Repository:
                 raise ValueError("Die Kreditart kann wegen verknüpfter Ausgaben nicht geändert werden.")
             con.execute("""UPDATE credits SET name=?,credit_type=?,opening_balance_cents=?,interest_rate=?,
                 automatic_interest=?,balloon_payment_cents=?,note=?,provider=?,product_price_cents=?,
-                financing_price_cents=?,installment_surcharge_cents=? WHERE id=? AND household_id=?""",
-                (values["name"],values["credit_type"],values["opening_balance_cents"],values["interest_rate"],
+                financing_price_cents=?,installment_surcharge_cents=?,credit_subtype=?,original_principal_cents=?,
+                balance_as_of=?,effective_interest_rate=?,repayment_rate=?,fixed_interest_until=?,special_repayment_percent=?
+                WHERE id=? AND household_id=?""",
+                (values["name"],values["stored_credit_type"],values["opening_balance_cents"],values["interest_rate"],
                  values["automatic_interest"],values["balloon_payment_cents"],values["note"],values["provider"],
                  values["product_price_cents"],values["financing_price_cents"],values["installment_surcharge_cents"],
-                 credit_id,values["household_id"]))
+                 values["credit_subtype"],values["original_principal_cents"],values["balance_as_of"],
+                 values["effective_interest_rate"],values["repayment_rate"],values["fixed_interest_until"],
+                 values["special_repayment_percent"],credit_id,values["household_id"]))
         plan=payload.get("payment_plan")
         if plan:
             flow_id=plan.get("flow_id")
@@ -860,6 +990,10 @@ class Repository:
         credits=[dict(row) for row in con.execute(
             "SELECT * FROM credits WHERE household_id=? ORDER BY created_at,name",(hid,)
         ).fetchall()]
+        mortgage_credit_ids={
+            credit["id"] for credit in credits
+            if credit.get("credit_subtype")=="mortgage"
+        }
         events_by_credit={credit["id"]:[] for credit in credits}
         for row in con.execute("""SELECT * FROM credit_payments
                 WHERE household_id=? AND payment_date<=?
@@ -889,17 +1023,20 @@ class Repository:
             try:
                 start=(date.fromisoformat(version["due_date"])-timedelta(days=1)).isoformat()
                 final_due=None
+                move_weekends_forward=version["credit_id"] not in mortgage_credit_ids
                 if version["stream_end"] and (
                     version["version_to"] is None or version["version_to"]>version["stream_end"]
                 ):
                     final_date=last_occurrence_on_or_before(
                         version["due_date"],version["recurrence"] or "monthly",version["stream_end"]
                     )
-                    final_due=next_weekday(final_date).isoformat() if final_date else None
+                    final_due=(
+                        next_weekday(final_date) if move_weekends_forward else previous_friday(final_date)
+                    ).isoformat() if final_date else None
                 due_dates=planned_booking_dates(
                     version["due_date"],version["recurrence"] or "monthly",start,through_date,
                     version["version_from"],version["version_to"],version["stream_start"],version["stream_end"],
-                    move_weekends_forward=True)
+                    move_weekends_forward=move_weekends_forward)
             except (TypeError,ValueError):
                 continue
             for due in due_dates:
@@ -1105,6 +1242,13 @@ class Repository:
             result=[]
             for credit_id,timeline in schedule["credits"].items():
                 credit=dict(timeline["credit"])
+                if credit.get("credit_subtype")=="mortgage":
+                    credit["stored_credit_type"]=credit.get("credit_type")
+                    credit["credit_type"]="mortgage"
+                    principal=int(credit.get("original_principal_cents") or 0)
+                    try: special=Decimal(str(credit.get("special_repayment_percent") or "0"))
+                    except InvalidOperation: special=Decimal(0)
+                    credit["special_repayment_limit_cents"]=int((Decimal(principal)*special/Decimal(100)).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
                 payments=[dict(item) for item in timeline["events"]
                     if item["source"]=="manual" or int(item["planned_amount_cents"] or 0)>0
                     or item.get("automatic_calculation")]
@@ -1162,7 +1306,7 @@ class Repository:
                 credit["through"]=through_date
                 result.append(credit)
         groups=[]
-        for credit_type in ("consumer_credit","credit","borrowed"):
+        for credit_type in ("consumer_credit","credit","borrowed","mortgage"):
             matching=[item for item in result if item["credit_type"]==credit_type]
             groups.append({"credit_type":credit_type,"count":len(matching),
                 "balance_cents":sum(item["remaining_balance_cents"] for item in matching)})
@@ -1923,7 +2067,13 @@ class Repository:
             return self._billing_snapshot_from_row(con,row)
 
     def _backup_directory(self):
-        return Path(self.path).resolve().parent/"backups"
+        data_dir=Path(self.path).resolve().parent
+        candidates=(data_dir/"backups",data_dir/".finanzlab-backups")
+        for candidate in candidates:
+            try: candidate.mkdir(parents=True,exist_ok=True)
+            except OSError: continue
+            if os.access(candidate,os.R_OK|os.W_OK|os.X_OK): return candidate
+        raise PermissionError("Im FinanzLab-Datenvolume ist kein beschreibbarer Sicherungsordner verfügbar.")
 
     def create_backup(self,reason="manual"):
         backup_dir=self._backup_directory(); backup_dir.mkdir(parents=True,exist_ok=True)
@@ -2045,8 +2195,8 @@ class Repository:
         account_ids={account["id"] for account in detail["accounts"]}
         person_ids={person["id"] for person in detail["persons"]}
         with self.connect() as con:
-            credit_types={row["id"]:row["credit_type"] for row in con.execute(
-                "SELECT id,credit_type FROM credits WHERE household_id=?",(hid,)).fetchall()}
+            credit_types={row["id"]:("mortgage" if row["credit_subtype"]=="mortgage" else row["credit_type"]) for row in con.execute(
+                "SELECT id,credit_type,credit_subtype FROM credits WHERE household_id=?",(hid,)).fetchall()}
         items=[]
 
         def valid_date(value):
@@ -2079,7 +2229,7 @@ class Repository:
                     add("zero_amount","warning","Der Betrag ist 0,00 € und hat deshalb keine Auswirkung.")
                 if not int(flow.get("configured_active") or 0):
                     add("inactive","warning","Die Position ist deaktiviert und wird derzeit nicht berücksichtigt.")
-                if kind=="expense" and flow.get("category") in ("consumer_credit","credit","borrowed"):
+                if kind=="expense" and flow.get("category") in ("consumer_credit","credit","borrowed","mortgage"):
                     credit_id=flow.get("credit_id")
                     if not credit_id:
                         add("missing_credit","error","Für diese Kredit-Ausgabe ist kein Kredit ausgewählt.")
@@ -2153,15 +2303,19 @@ class Repository:
         elif owner in people: scope="person"; owner_id=people[owner]
         else: raise ValueError("Ungültiger Besitzer.")
         account_id=payload.get("account_id") or None
-        if account_id and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone(): raise ValueError("Das gewählte Konto gehört nicht zum Haushalt.")
+        if account_id:
+            account=con.execute("SELECT id,kind FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone()
+            if not account: raise ValueError("Das gewählte Konto gehört nicht zum Haushalt.")
+            if account["kind"]=="credit_line": raise ValueError("Ein Rahmenkredit kann nur über Umbuchungen bewegt werden. Einnahmen, Ausgaben und Kreditraten müssen über das verknüpfte Girokonto laufen.")
         credit_id=None; credit_reduction_cents=0
-        credit_categories=("consumer_credit","credit","borrowed")
+        credit_categories=("consumer_credit","credit","borrowed","mortgage")
         if kind=="expense" and category in credit_categories:
             credit_id=payload.get("credit_id") or None
             if not credit_id: raise ValueError("Für diese Ausgabenart muss ein Kredit ausgewählt werden.")
-            linked_credit=con.execute("SELECT credit_type FROM credits WHERE id=? AND household_id=?",(credit_id,hid)).fetchone()
+            linked_credit=con.execute("SELECT credit_type,credit_subtype FROM credits WHERE id=? AND household_id=?",(credit_id,hid)).fetchone()
             if not linked_credit: raise ValueError("Der gewählte Kredit gehört nicht zum Haushalt.")
-            if linked_credit["credit_type"]!=category: raise ValueError("Ausgabenart und Kreditart müssen übereinstimmen.")
+            effective_type="mortgage" if linked_credit["credit_subtype"]=="mortgage" else linked_credit["credit_type"]
+            if effective_type!=category: raise ValueError("Ausgabenart und Kreditart müssen übereinstimmen.")
             reduction_raw=payload.get("credit_reduction_cents")
             try: credit_reduction_cents=amount if reduction_raw in (None,"") else int(reduction_raw)
             except (TypeError,ValueError): raise ValueError("Der Tilgungsanteil muss ein gültiger Geldwert sein.")
@@ -2221,13 +2375,79 @@ class Repository:
             con.execute("DELETE FROM movement_completions WHERE household_id=? AND source_type='cash_flow' AND source_id=?",(hid,flow_id))
             con.execute("DELETE FROM cash_flows WHERE id=?",(flow_id,))
         return {"id":flow_id,"name":flow["name"],"deleted":True}
-    def transfer_values(self,con,payload):
+    def list_categories(self,hid):
+        with self.connect() as con:
+            if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone():
+                raise ValueError("Haushalt nicht gefunden.")
+            custom=[dict(row) for row in con.execute(
+                "SELECT id,key,kind,name,active FROM custom_categories WHERE household_id=? ORDER BY kind,name",(hid,)
+            ).fetchall()]
+        items=[]
+        for kind, values in SYSTEM_CATEGORIES.items():
+            for index,(key,name) in enumerate(values):
+                items.append({"id":f"system:{kind}:{key}","key":key,"kind":kind,"name":name,
+                    "is_system":True,"active":True,"sort_order":index})
+        for item in custom:
+            item.update({"is_system":False,"active":bool(item["active"]),"sort_order":1000})
+            items.append(item)
+        return {"items":items}
+
+    def create_category(self,payload):
+        hid=str(payload.get("household_id") or "").strip(); kind=str(payload.get("kind") or "").strip()
+        name=str(payload.get("name") or "").strip()
+        if kind not in ("income","expense") or not hid or not name:
+            raise ValueError("Haushalt, Bereich und Bezeichnung sind erforderlich.")
+        if len(name)>60: raise ValueError("Die Bezeichnung darf höchstens 60 Zeichen lang sein.")
+        key=f"custom_{uuid4().hex[:12]}"; category_id=uid()
+        with self.lock,self.connect() as con:
+            if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone(): raise ValueError("Haushalt nicht gefunden.")
+            if any(existing_name.casefold()==name.casefold() for _,existing_name in SYSTEM_CATEGORIES[kind]):
+                raise ValueError("Diese System-Art ist bereits vorhanden.")
+            if con.execute("SELECT 1 FROM custom_categories WHERE household_id=? AND kind=? AND lower(name)=lower(?)",(hid,kind,name)).fetchone():
+                raise ValueError("Eine Art mit dieser Bezeichnung existiert bereits.")
+            con.execute("INSERT INTO custom_categories(id,household_id,kind,key,name,active) VALUES(?,?,?,?,?,1)",(category_id,hid,kind,key,name))
+        return next(item for item in self.list_categories(hid)["items"] if item["id"]==category_id)
+
+    def update_category(self,category_id,payload):
+        hid=str(payload.get("household_id") or "").strip(); name=str(payload.get("name") or "").strip()
+        if category_id.startswith("system:"): raise ValueError("System-Arten können nicht geändert werden.")
+        if not hid or not name: raise ValueError("Haushalt und Bezeichnung sind erforderlich.")
+        active=0 if payload.get("active") in (False,0,"0") else 1
+        with self.lock,self.connect() as con:
+            row=con.execute("SELECT * FROM custom_categories WHERE id=? AND household_id=?",(category_id,hid)).fetchone()
+            if not row: raise ValueError("Art nicht gefunden.")
+            if any(existing_name.casefold()==name.casefold() for _,existing_name in SYSTEM_CATEGORIES[row["kind"]]):
+                raise ValueError("Diese System-Art ist bereits vorhanden.")
+            if con.execute("SELECT 1 FROM custom_categories WHERE household_id=? AND kind=? AND lower(name)=lower(?) AND id<>?",(hid,row["kind"],name,category_id)).fetchone():
+                raise ValueError("Eine Art mit dieser Bezeichnung existiert bereits.")
+            con.execute("UPDATE custom_categories SET name=?,active=? WHERE id=?",(name,active,category_id))
+        return next(item for item in self.list_categories(hid)["items"] if item["id"]==category_id)
+
+    def delete_category(self,hid,category_id):
+        if category_id.startswith("system:"): raise ValueError("System-Arten können nicht gelöscht werden.")
+        with self.lock,self.connect() as con:
+            row=con.execute("SELECT * FROM custom_categories WHERE id=? AND household_id=?",(category_id,hid)).fetchone()
+            if not row: raise ValueError("Art nicht gefunden.")
+            used=con.execute("SELECT 1 FROM cash_flows WHERE household_id=? AND category=? LIMIT 1",(hid,row["key"])).fetchone()
+            if used: raise ValueError("Diese Art wird bereits verwendet. Bitte stattdessen deaktivieren oder die betroffenen Positionen zuerst umstellen.")
+            con.execute("DELETE FROM custom_categories WHERE id=?",(category_id,))
+        return {"id":category_id,"deleted":True}
+
+    def transfer_values(self,con,payload,transfer_id=None):
         hid=payload.get("household_id"); source=payload.get("source_account_id"); target=payload.get("target_account_id")
         name=str(payload.get("name") or "Umbuchung").strip() or "Umbuchung"
         if not hid or not source or not target: raise ValueError("Haushalt, Quellkonto und Zielkonto sind erforderlich.")
         if source==target: raise ValueError("Quellkonto und Zielkonto müssen verschieden sein.")
-        accounts={row["id"] for row in con.execute("SELECT id FROM accounts WHERE household_id=?",(hid,)).fetchall()}
-        if source not in accounts or target not in accounts: raise ValueError("Beide Konten müssen zum Haushalt gehören.")
+        account_rows={row["id"]:dict(row) for row in con.execute("SELECT id,name,kind,linked_account_id,overdraft_limit_cents FROM accounts WHERE household_id=?",(hid,)).fetchall()}
+        if source not in account_rows or target not in account_rows: raise ValueError("Beide Konten müssen zum Haushalt gehören.")
+        source_account=account_rows[source]; target_account=account_rows[target]
+        line_accounts=[item for item in (source_account,target_account) if item.get("kind")=="credit_line"]
+        if len(line_accounts)>1: raise ValueError("Direkte Umbuchungen zwischen zwei Rahmenkrediten sind nicht erlaubt.")
+        if line_accounts:
+            line=line_accounts[0]
+            counterpart=target_account if source_account["id"]==line["id"] else source_account
+            if not line.get("linked_account_id") or counterpart["id"]!=line["linked_account_id"]:
+                raise ValueError(f"Rahmenkredit „{line['name']}“ darf nur mit seinem verknüpften Verrechnungskonto umgebucht werden.")
         try: amount=int(payload.get("amount_cents") or 0)
         except (TypeError,ValueError): raise ValueError("Der Betrag muss ein gültiger Geldwert sein.")
         if amount<=0: raise ValueError("Der Umbuchungsbetrag muss größer als 0,00 € sein.")
@@ -2255,10 +2475,21 @@ class Repository:
             expected_end=last_occurrence_date(due,recurrence,occurrence_count).isoformat()
             if end_date!=expected_end:
                 expected_label=date.fromisoformat(expected_end).strftime("%d.%m.%Y")
-                raise ValueError(
-                    f"Enddatum und Anzahl passen nicht zusammen. Bei {occurrence_count} "
-                    f"Ausführungen ist das Enddatum {expected_label}."
-                )
+                raise ValueError(f"Enddatum und Anzahl passen nicht zusammen. Bei {occurrence_count} Ausführungen ist das Enddatum {expected_label}.")
+        if source_account.get("kind")=="credit_line":
+            if recurrence!="once":
+                raise ValueError("Rahmenkredit-Auszahlungen werden einzeln erfasst. Für weitere Auszahlungen bitte jeweils eine weitere Umbuchung anlegen.")
+            limit=int(source_account.get("overdraft_limit_cents") or 0)
+            detail=self.household_detail(hid,due)
+            if not detail: raise ValueError("Haushalt nicht gefunden.")
+            self.projected_account_balances(con,hid,detail["accounts"],due,excluded_transfer_ids={transfer_id} if transfer_id else None)
+            line=next((item for item in detail["accounts"] if item["id"]==source),None)
+            balance=None if line is None else line.get("projected_balance_cents")
+            if balance is None: raise ValueError("Für den Rahmenkredit ist kein Kontostand verfügbar.")
+            available=max(0,limit-max(0,-int(balance)))
+            if amount>available:
+                available_label=f"{available/100:.2f}".replace(".",","); limit_label=f"{limit/100:.2f}".replace(".",",")
+                raise ValueError(f"Auszahlung nicht möglich: verfügbarer Kreditrahmen am {date.fromisoformat(due).strftime('%d.%m.%Y')} nur {available_label} €. Das Limit von {limit_label} € darf nicht überschritten werden.")
         active=0 if payload.get("active") in (False,0,"0") else 1
         return {"household_id":hid,"name":name,"source_account_id":source,"target_account_id":target,
             "amount_cents":amount,"recurrence":recurrence,"due_date":due,"end_date":end_date,
@@ -2278,7 +2509,7 @@ class Repository:
         return next(item for item in self.list_transfers(values["household_id"]) if item["id"]==transfer_id)
     def update_transfer(self,transfer_id,payload):
         with self.lock,self.connect() as con:
-            values=self.transfer_values(con,payload)
+            values=self.transfer_values(con,payload,transfer_id=transfer_id)
             if not con.execute("SELECT 1 FROM transfers WHERE id=? AND household_id=?",(transfer_id,values["household_id"])).fetchone(): raise ValueError("Umbuchung nicht gefunden.")
             con.execute("""UPDATE transfers SET name=?,source_account_id=?,target_account_id=?,amount_cents=?,recurrence=?,due_date=?,end_date=?,occurrence_count=?,active=?
                 WHERE id=? AND household_id=?""",(values["name"],values["source_account_id"],values["target_account_id"],values["amount_cents"],values["recurrence"],values["due_date"],values["end_date"],values["occurrence_count"],values["active"],transfer_id,values["household_id"]))
@@ -2362,7 +2593,7 @@ class Repository:
             people=con.execute("SELECT id,slot,display_name FROM persons WHERE household_id=? ORDER BY slot",(hid,)).fetchall()
             account_rows=con.execute("""SELECT a.id,COALESCE(v.name,a.name) AS name,COALESCE(v.owner_scope,a.owner_scope) AS owner_scope,
                 COALESCE(v.owner_person_id,a.owner_person_id) AS owner_person_id,
-                COALESCE(v.overdraft_limit_cents,a.overdraft_limit_cents) AS overdraft_limit_cents,a.is_default
+                COALESCE(v.overdraft_limit_cents,a.overdraft_limit_cents) AS overdraft_limit_cents,a.is_default,a.kind,a.linked_account_id
                 FROM accounts a
                 LEFT JOIN account_versions v ON v.id=(SELECT v2.id FROM account_versions v2 WHERE v2.account_id=a.id AND substr(v2.valid_from,1,10)<=? AND (v2.valid_to IS NULL OR substr(v2.valid_to,1,10)>?) ORDER BY v2.valid_from DESC LIMIT 1)
                 WHERE a.household_id=? ORDER BY a.created_at""",(selected_date,selected_date,hid)).fetchall()
@@ -2385,8 +2616,9 @@ class Repository:
                 item["bookings_applied"]=int(anchor["bookings_applied"]) if anchor else 0
                 accounts.append(item)
             return {**dict(household),"as_of":selected_date,"persons":[dict(x) for x in people],"accounts":accounts}
-    def projected_account_balances(self,con,hid,accounts,selected_date,excluded_cash_flow_ids=None):
+    def projected_account_balances(self,con,hid,accounts,selected_date,excluded_cash_flow_ids=None,excluded_transfer_ids=None):
         excluded_cash_flow_ids={str(value) for value in (excluded_cash_flow_ids or [])}
+        excluded_transfer_ids={str(value) for value in (excluded_transfer_ids or [])}
         account_by_id={account["id"]:account for account in accounts}
         projected={account["id"]:{
             "balance_cents":account["balance_cents"],"event_count":0,
@@ -2394,19 +2626,35 @@ class Repository:
         } for account in accounts}
         result={"event_count":0,"net_cents":0,"events":[],"unassigned_events":[]}
 
+        # Projektionen brauchen nur Bewegungen ab dem frühesten relevanten
+        # Kontostandanker. Frühere Bankumsätze wurden bereits im Anker
+        # berücksichtigt und verursachten bislang bei jedem Dashboard-Aufruf
+        # unnötige Vollscans über die komplette Import-Historie.
+        anchored_dates=[account.get("anchor_date") for account in accounts if account.get("anchor_date")]
+        month_start_text=date.fromisoformat(selected_date).replace(day=1).isoformat()
+        projection_start=min(anchored_dates+[month_start_text]) if anchored_dates else month_start_text
+        bank_start=min(anchored_dates) if anchored_dates else None
+
         matches=con.execute("""SELECT m.occurrence_key,m.target_type,m.target_id,m.planned_date,m.match_method,
                 t.id AS transaction_id,t.booking_date,t.amount_cents
             FROM bank_transaction_matches m JOIN bank_transactions t ON t.id=m.transaction_id
-            WHERE t.household_id=?""",(hid,)).fetchall()
+            WHERE t.household_id=? AND t.booking_date>=? AND t.booking_date<=?""",
+            (hid,projection_start,selected_date)).fetchall()
         matched_occurrences={row["occurrence_key"] for row in matches}
         completed_occurrences={row["occurrence_key"] for row in con.execute(
-            "SELECT occurrence_key FROM movement_completions WHERE household_id=?",(hid,)).fetchall()}
+            "SELECT occurrence_key FROM movement_completions WHERE household_id=? AND occurrence_date>=? AND occurrence_date<=?",
+            (hid,projection_start,selected_date)).fetchall()}
         amount_overrides={row["occurrence_key"]:int(row["amount_cents"]) for row in con.execute(
-            "SELECT occurrence_key,amount_cents FROM movement_amount_overrides WHERE household_id=?",(hid,)).fetchall()}
-        bank_actual_flow_ids={
-            row["target_id"] for row in matches
-            if row["target_type"]=="cash_flow" and row["match_method"]=="created-other-expense"
-        }
+            "SELECT occurrence_key,amount_cents FROM movement_amount_overrides WHERE household_id=? AND occurrence_date>=? AND occurrence_date<=?",
+            (hid,projection_start,selected_date)).fetchall()}
+        # Diese IDs müssen unabhängig vom aktuellen Projektionsfenster bekannt
+        # bleiben, damit aus Kontoauszügen erzeugte Klassifizierungs-Cashflows
+        # niemals zusätzlich als geplante Buchung materialisiert werden.
+        bank_actual_flow_ids={row["target_id"] for row in con.execute("""
+            SELECT DISTINCT m.target_id
+            FROM bank_transaction_matches m JOIN bank_transactions t ON t.id=m.transaction_id
+            WHERE t.household_id=? AND m.target_type='cash_flow' AND m.match_method='created-other-expense'
+        """,(hid,)).fetchall()}
 
         def add_event(account_id,event_date,amount_cents,kind,label,source_id,occurrence_key,origin,
                       show_on_anchor=False,completion_key=None,applied_override=None,event_meta=None):
@@ -2484,7 +2732,7 @@ class Repository:
             try:
                 due_dates=planned_booking_dates(version["due_date"],version["recurrence"] or "monthly",start,selected_date,
                     version["version_from"],version["version_to"],version["stream_start"],version["stream_end"],
-                    move_weekends_forward=bool(version["credit_id"]))
+                    move_weekends_forward=bool(version["credit_id"]) and version["category"]!="mortgage")
             except (TypeError,ValueError):
                 # Legacy or otherwise malformed rows remain visible in the
                 # data check, but must not break the complete forecast.
@@ -2522,6 +2770,7 @@ class Repository:
 
         transfers=con.execute("SELECT * FROM transfers WHERE household_id=? AND active=1",(hid,)).fetchall()
         for transfer in transfers:
+            if transfer["id"] in excluded_transfer_ids: continue
             starts=[]
             for account_id in (transfer["source_account_id"],transfer["target_account_id"]):
                 if account_id not in account_by_id or not account_by_id[account_id]["anchor_date"]: continue
@@ -2544,9 +2793,13 @@ class Repository:
                 add_event(transfer["target_account_id"],due_text,amount,"transfer_in",transfer["name"],transfer["id"],
                     f"{completion_key}:in","transfer",completion_key=completion_key)
 
-        bank_rows=con.execute("""SELECT t.*,m.target_type,m.target_id
-            FROM bank_transactions t LEFT JOIN bank_transaction_matches m ON m.transaction_id=t.id
-            WHERE t.household_id=? AND t.booking_date<=? ORDER BY t.booking_date,t.rowid""",(hid,selected_date)).fetchall()
+        if bank_start:
+            bank_rows=con.execute("""SELECT t.*,m.target_type,m.target_id
+                FROM bank_transactions t LEFT JOIN bank_transaction_matches m ON m.transaction_id=t.id
+                WHERE t.household_id=? AND t.booking_date>=? AND t.booking_date<=?
+                ORDER BY t.booking_date,t.rowid""",(hid,bank_start,selected_date)).fetchall()
+        else:
+            bank_rows=[]
         for row in bank_rows:
             if row["target_type"]=="cash_flow" and row["target_id"] in excluded_cash_flow_ids: continue
             amount=int(row["amount_cents"] or 0)
@@ -3227,6 +3480,124 @@ class Repository:
         }
 
 
+
+    def liquidity_outlook(self,hid,base_month=None,months=6,account_ids=None):
+        """Kontostände am 15. und Monatsende, getrennt nach Bankkonto."""
+        try:
+            base=date.fromisoformat(
+                f"{str(base_month or date.today().strftime('%Y-%m'))[:7]}-01"
+            )
+        except ValueError:
+            raise ValueError("Der Ausgangsmonat ist ungültig.")
+
+        try:
+            count=int(months)
+        except (TypeError,ValueError):
+            raise ValueError("Die Anzahl der Vorschaumonate ist ungültig.")
+
+        if count<1 or count>12:
+            raise ValueError(
+                "Es können zwischen 1 und 12 Vorschaumonate berechnet werden."
+            )
+
+        detail=self.household_detail(hid,base.isoformat())
+        if not detail:
+            raise ValueError("Haushalt nicht gefunden.")
+
+        liquid_accounts=[
+            account for account in detail["accounts"]
+            if account.get("kind")!="credit_line"
+        ]
+        liquid_by_id={account["id"]:account for account in liquid_accounts}
+
+        if account_ids is None:
+            selected_ids=[account["id"] for account in liquid_accounts]
+        else:
+            if not isinstance(account_ids,list):
+                raise ValueError("Die Kontenauswahl muss eine Liste sein.")
+            selected_ids=list(dict.fromkeys(
+                str(value) for value in account_ids if str(value)
+            ))
+
+        if not selected_ids:
+            raise ValueError("Mindestens ein Bankkonto muss ausgewählt werden.")
+        if len(selected_ids)>4:
+            raise ValueError(
+                "In der Liquiditätsvorschau können höchstens vier Konten ausgewählt werden."
+            )
+        if any(account_id not in liquid_by_id for account_id in selected_ids):
+            raise ValueError(
+                "Mindestens ein Konto gehört nicht zu diesem Haushalt oder ist ein Rahmenkredit."
+            )
+
+        selected_accounts=[liquid_by_id[account_id] for account_id in selected_ids]
+
+        def shift_month(first,offset):
+            index=first.year*12+(first.month-1)+offset
+            return date(index//12,index%12+1,1)
+
+        def projected_accounts(point):
+            point_detail=self.household_detail(hid,point.isoformat())
+            if not point_detail:
+                raise ValueError("Haushalt nicht gefunden.")
+            point_by_id={account["id"]:account for account in point_detail["accounts"]}
+            selected=[dict(point_by_id[account_id]) for account_id in selected_ids]
+
+            with self.connect() as con:
+                self.projected_account_balances(
+                    con,hid,selected,point.isoformat()
+                )
+
+            return {
+                account["id"]:account.get("projected_balance_cents")
+                for account in selected
+            }
+
+        items=[]
+
+        for offset in range(1,count+1):
+            month_start=shift_month(base,offset)
+            next_month=shift_month(month_start,1)
+            month_end=next_month-timedelta(days=1)
+            mid=month_start.replace(day=min(15,month_end.day))
+            mid_balances=projected_accounts(mid)
+            end_balances=projected_accounts(month_end)
+            account_items=[{
+                "account_id":account["id"],
+                "name":account["name"],
+                "mid_balance_cents":mid_balances.get(account["id"]),
+                "end_balance_cents":end_balances.get(account["id"]),
+            } for account in selected_accounts]
+
+            items.append({
+                "month":month_start.strftime("%Y-%m"),
+                "mid_date":mid.isoformat(),
+                "end_date":month_end.isoformat(),
+                "accounts":account_items,
+                # Summen bleiben für ältere API-Nutzer erhalten. Die Oberfläche
+                # stellt bewusst die einzelnen Konten dar.
+                "mid_balance_cents":sum(
+                    int(item["mid_balance_cents"] or 0)
+                    for item in account_items
+                    if item["mid_balance_cents"] is not None
+                ),
+                "end_balance_cents":sum(
+                    int(item["end_balance_cents"] or 0)
+                    for item in account_items
+                    if item["end_balance_cents"] is not None
+                ),
+            })
+
+        return {
+            "base_month":base.strftime("%Y-%m"),
+            "months":count,
+            "accounts":[
+                {"id":account["id"],"name":account["name"]}
+                for account in selected_accounts
+            ],
+            "items":items,
+        }
+
     def excel_export_payload(self,hid,from_month,through_month):
         """Collect a complete, occurrence-based forecast export for up to 24 months."""
         try:
@@ -3336,7 +3707,8 @@ class Repository:
         occurrences=[]
         versions=con.execute("""SELECT f.id AS flow_id,f.kind,COALESCE(v.name,f.name) AS label,
                    v.amount_cents,v.version_from,v.version_to,v.stream_start,v.stream_end,
-                   v.due_date,v.recurrence,COALESCE(v.account_id,f.account_id) AS account_id,v.credit_id
+                   v.due_date,v.recurrence,COALESCE(v.account_id,f.account_id) AS account_id,v.credit_id,
+                   COALESCE(v.category,f.category) AS category
             FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
             WHERE f.household_id=? AND COALESCE(v.account_id,f.account_id)=? AND v.active=1
               AND v.version_from<=? AND (v.stream_start IS NULL OR v.stream_start<=?)""",
@@ -3344,7 +3716,7 @@ class Repository:
         for version in versions:
             for due in planned_booking_dates(version["due_date"],version["recurrence"] or "monthly",start,end,
                                         version["version_from"],version["version_to"],version["stream_start"],version["stream_end"],
-                                        move_weekends_forward=bool(version["credit_id"])):
+                                        move_weekends_forward=bool(version["credit_id"]) and version["category"]!="mortgage"):
                 due_text=due.isoformat()
                 occurrences.append({
                     "target_type":"cash_flow","target_id":version["flow_id"],
@@ -3529,7 +3901,7 @@ class Repository:
                 WHERE i.household_id=? AND i.account_id=? GROUP BY i.id ORDER BY i.created_at DESC""",(hid,account_id)).fetchall()
             return [dict(row) for row in rows]
 
-    def dashboard(self,hid,as_of=None):
+    def dashboard(self,hid,as_of=None,include_credit_summary=True):
         selected_date=as_of_date(as_of)
         detail=self.household_detail(hid,selected_date)
         if not detail: raise KeyError("household")
@@ -3559,7 +3931,7 @@ class Repository:
                             row["due_date"],row["recurrence"] or "monthly",
                             (month_start-timedelta(days=1)).isoformat(),month_end.isoformat(),
                             row["version_from"],row["version_to"],row["stream_start"],row["stream_end"],
-                            move_weekends_forward=bool(row["credit_id"]))
+                            move_weekends_forward=bool(row["credit_id"]) and row["category"]!="mortgage")
                     except (TypeError,ValueError):
                         continue
                     if not due_dates: continue
@@ -3580,19 +3952,46 @@ class Repository:
                     if amount
                 ],[{"category":category,"amount_cents":amount} for category,amount in
                     sorted(category_totals.items(),key=lambda item:(-item[1],item[0])) if amount])
-            income_items,_=monthly_values("income"); expense_items,expense_categories=monthly_values("expense")
+            income_items,income_categories=monthly_values("income"); expense_items,expense_categories=monthly_values("expense")
             income=sum(item["amount_cents"] for item in income_items)
             expenses=sum(item["amount_cents"] for item in expense_items)
-            balances=sum((a["projected_balance_cents"] or 0) for a in detail["accounts"] if a["projected_balance_cents"] is not None)
+            liquid_accounts=[account for account in detail["accounts"] if account.get("kind")!="credit_line"]
+            credit_line_accounts=[account for account in detail["accounts"] if account.get("kind")=="credit_line"]
+            balances=sum((a["projected_balance_cents"] or 0) for a in liquid_accounts if a["projected_balance_cents"] is not None)
+        liquid_ids=[account["id"] for account in liquid_accounts]
+        if liquid_ids:
+            month_preview=self.monthly_preview(hid,selected_date[:7],liquid_ids,[])
+            # Für das Dashboard zählt die tatsächliche monatliche Bewegung der
+            # normalen Bankkonten. Interne Umbuchungen zwischen diesen Konten
+            # heben sich auf; Tilgungen/Auszahlungen eines separat geführten
+            # Rahmenkredits wirken dagegen bewusst auf die Liquidität.
+            liquidity_delta=sum(int(item.get("amount_cents") or 0) for item in month_preview.get("movements",[])
+                if item.get("applied_to_projection",True) and item.get("account_id") in set(liquid_ids))
+        else:
+            month_preview={"totals":{"delta_cents":0},"movements":[]}; liquidity_delta=0
+        operating_surplus=income-expenses
+        financing_effect=liquidity_delta-operating_surplus
+        for account in credit_line_accounts:
+            limit=int(account.get("overdraft_limit_cents") or 0)
+            balance=account.get("projected_balance_cents")
+            used=max(0,-int(balance or 0)) if balance is not None else None
+            account["credit_limit_cents"]=limit
+            account["credit_used_cents"]=used
+            account["credit_available_cents"]=max(0,limit-used) if used is not None else None
         warning_accounts=[account for account in detail["accounts"] if account.get("overdraft_exceeded")]
-        credit_summary=self.list_credits(hid,selected_date,simulate_future=True)
-        return {"as_of":selected_date,"household":detail,"metrics":{"balance_cents":balances,
-            "income_cents":income,"expenses_cents":expenses,"surplus_cents":income-expenses,
+        credit_summary=self.list_credits(hid,selected_date,simulate_future=True) if include_credit_summary else None
+        return {"as_of":selected_date,"month":selected_date[:7],"household":detail,"metrics":{"balance_cents":balances,
+            "income_cents":income,"expenses_cents":expenses,"surplus_cents":operating_surplus,
+            "operating_surplus_cents":operating_surplus,"liquidity_delta_cents":liquidity_delta,
+            "financing_effect_cents":financing_effect,"liquid_account_count":len(liquid_accounts),
+            "credit_line_count":len(credit_line_accounts),
             "unassigned_projection_count":unassigned_projection["event_count"],
             "unassigned_projection_cents":unassigned_projection["net_cents"],
             "overdraft_warning_count":len(warning_accounts)},
-            "breakdowns":{"income":income_items,"expenses":expense_items,"expense_categories":expense_categories},
-            "credit_summary":{"as_of":credit_summary["as_of"],"groups":credit_summary["groups"],"totals":credit_summary["totals"]},
-            "overdraft_warnings":[{"account_id":account["id"],"name":account["name"],
+            "breakdowns":{"income":income_items,"income_categories":income_categories,"expenses":expense_items,"expense_categories":expense_categories},
+            "credit_lines":credit_line_accounts,
+            "credit_summary":({"as_of":credit_summary["as_of"],"groups":credit_summary["groups"],"totals":credit_summary["totals"]}
+                if credit_summary is not None else None),
+            "overdraft_warnings":[{"account_id":account["id"],"name":account["name"],"kind":account.get("kind") or "checking",
                 "overage_cents":account["overdraft_overage_cents"],"projected_balance_cents":account["projected_balance_cents"],
                 "overdraft_limit_cents":account["overdraft_limit_cents"]} for account in warning_accounts]}

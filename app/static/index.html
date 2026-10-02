@@ -9,8 +9,8 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
   <link rel="manifest" href="/site.webmanifest">
   <title>Haushaltsplaner · by Lrd.Tiberius</title>
-  <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="refinements.css">
+  <link rel="stylesheet" href="styles.css?v=2.1.1">
+  <link rel="stylesheet" href="refinements.css?v=2.1.1">
 </head>
 <body>
   <div id="app" hidden>
@@ -39,19 +39,54 @@
       <section id="dashboard-view" class="view">
         <div class="hero">
           <div class="dashboard-hero-copy"><p class="eyebrow">PROGNOSTIZIERTE KONTEN GESAMT</p><h1 id="dashboard-balance">0,00 €</h1><p id="dashboard-balance-note">Noch kein Kontostand hinterlegt</p><div class="dashboard-quick-actions" aria-label="Schnellerfassung"><button id="dashboard-new-expense" class="button" type="button">+ Ausgabe hinzufügen</button><button id="dashboard-new-income" class="button secondary" type="button">+ Einnahme hinzufügen</button></div></div>
-          <div class="date-control"><span>Stichtag</span><button id="dashboard-prev" type="button">←</button><input id="dashboard-date" type="date"><button id="dashboard-next" type="button">→</button><button id="dashboard-today" class="secondary" type="button">Heute</button></div>
+          <div class="month-control dashboard-month-control"><span class="month-control-caption">Monat</span><button id="dashboard-prev" class="month-arrow" type="button" aria-label="Einen Monat zurück">←</button><label class="dashboard-month-picker" aria-label="Monat auswählen"><strong id="dashboard-month-label" class="dashboard-month-label" aria-live="polite"></strong><input id="dashboard-month" type="month" aria-label="Monat auswählen"></label><button id="dashboard-next" class="month-arrow" type="button" aria-label="Einen Monat vor">→</button><button id="dashboard-current" class="secondary" type="button">Aktueller Monat</button></div>
         </div>
         <div id="dashboard-warnings"></div>
         <div class="metric-grid four">
           <article class="metric"><span>Monatliche Einnahmen</span><strong id="dashboard-income">0,00 €</strong><small>im gewählten Monat fällig</small></article>
           <article class="metric"><span>Monatliche Ausgaben</span><strong id="dashboard-expenses">0,00 €</strong><small>im gewählten Monat fällig</small></article>
-          <article class="metric accent"><span>Monatlich frei</span><strong id="dashboard-surplus">0,00 €</strong><small>Einnahmen minus Ausgaben</small></article>
-          <article class="metric"><span>Konten</span><strong id="dashboard-account-count">0</strong><small>mit historisierten Ständen</small></article>
+          <article class="metric"><span>Operativ frei</span><strong id="dashboard-operating-surplus">0,00 €</strong><small>Einnahmen minus Ausgaben</small></article>
+          <article class="metric accent"><span>Liquiditätsänderung</span><strong id="dashboard-liquidity-delta">0,00 €</strong><small>Bankkonten inkl. Umbuchungen, ohne Rahmenkredit</small></article>
         </div>
+        <section id="dashboard-outlook-panel"
+                 class="panel liquidity-outlook-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">LIQUIDITÄTSVORSCHAU</p>
+              <h2>Nächste 6 Monate</h2>
+            </div>
+            <span class="badge">15. + Monatsende</span>
+          </div>
+
+          <div id="dashboard-outlook-selectors"
+               class="outlook-account-selectors"
+               role="group"
+               aria-label="Bankkonten für die Liquiditätsvorschau"></div>
+
+          <div id="dashboard-outlook-list"
+               class="liquidity-outlook-groups">
+            <p class="empty">Vorschau wird berechnet …</p>
+          </div>
+        </section>
+
+        <section id="dashboard-financing-panel"
+                 class="panel financing-panel"
+                 hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">FINANZIERUNGEN</p>
+              <h2>Rahmenkredit &amp; Darlehen</h2>
+            </div>
+            <span class="badge">separat von Bankkonten</span>
+          </div>
+
+          <div id="dashboard-financing-list"
+               class="financing-grid"></div>
+        </section>
         <section class="panel credit-dashboard-panel"><div class="section-heading"><div><p class="eyebrow">OFFENE KREDITSALDEN</p><h2>Kredite nach Art</h2></div><span id="dashboard-credit-as-of" class="badge"></span></div><div id="dashboard-credit-summary" class="summary-grid three"></div></section>
         <div class="dashboard-grid">
-          <section class="panel"><div class="section-heading"><div><p class="eyebrow">AUSWERTUNG</p><h2>Monatliche Aufteilung</h2></div><span id="dashboard-as-of" class="badge"></span></div><div id="dashboard-breakdowns" class="breakdown-grid"></div></section>
-          <aside class="panel"><div class="section-heading"><div><p class="eyebrow">KONTEN</p><h2>Kontostände</h2></div></div><div id="dashboard-account-list" class="account-list"></div></aside>
+          <section class="panel"><div class="section-heading"><div><p class="eyebrow">AUSWERTUNG</p><h2>Monatliche Kategorien</h2></div><span id="dashboard-as-of" class="badge"></span></div><p class="panel-copy">Nur Summen nach Kategorie. Einzelne Fälligkeiten und Tagesbewegungen stehen in der Vorschau.</p><div id="dashboard-breakdowns" class="breakdown-grid"></div></section>
+          <aside class="panel"><div class="section-heading"><div><p class="eyebrow">BANKKONTEN</p><h2>Kontostände zum Monatsende</h2></div></div><div id="dashboard-account-list" class="account-list"></div></aside>
         </div>
       </section>
 
@@ -98,43 +133,147 @@
       </section>
 
       <section id="settings-view" class="view" hidden>
-        <div class="page-heading"><p class="eyebrow">VERWALTUNG UND DATENPRÜFUNG</p><h1>Einstellungen</h1><p>Wechsle den Haushalt und finde Positionen, die wegen fehlerhafter oder fehlender Angaben nicht berücksichtigt werden.</p></div>
+        <div class="page-heading">
+          <p class="eyebrow">VERWALTUNG UND DATENPRÜFUNG</p>
+          <h1>Einstellungen</h1>
+          <p>Verwalte Export, Haushalt, Integrationen, Datenprüfung und eigene Einnahmen- und Ausgabenarten.</p>
+        </div>
+
         <div class="settings-grid">
-          <section class="panel"><div class="section-heading"><div><p class="eyebrow">HAUSHALT</p><h2>Aktiver Haushalt</h2></div></div><label class="stacked">Haushalt<select id="household-select"></select></label><div class="section-actions left"><button id="new-household" class="button secondary" type="button">+ Haushalt</button><button id="delete-household" class="button danger" type="button">Haushalt löschen</button></div></section>
-          <section class="panel"><div class="section-heading"><div><p class="eyebrow">PERSONEN</p><h2>Zuordnung</h2></div></div><div id="person-list" class="person-list"></div></section>
-          <section class="panel export-panel"><div class="section-heading"><div><p class="eyebrow">EXCEL-EXPORT</p><h2>Vorschau und Eingaben exportieren</h2></div></div><p class="panel-copy">Erstellt eine ordentlich formatierte Arbeitsmappe für Auswertung, Kontrolle und Sicherung deiner Finanzplanung.</p><div class="export-contents"><span><b>Planung</b><small>Monats-, Tages- und Kontovorschau</small></span><span><b>Finanzen</b><small>Konten, Einnahmen, Ausgaben und Umbuchungen</small></span><span><b>Historie</b><small>Kontostände, Kredite und Tilgungen</small></span></div><div class="section-actions left export-actions"><button id="open-excel-export" class="button" type="button">Excel erstellen</button></div></section>
-          <section class="panel energylab-panel"><div class="section-heading"><div><p class="eyebrow">AUTOMATISCHE AUSGABEN</p><h2>EnergyLab verbinden</h2></div></div><p class="panel-copy">Übernimmt ausschließlich die in EnergyLab hinterlegten Strom-, Gas-, Wasser- und Abwasserzahlungen mit ihren Vertragslaufzeiten, Rhythmen und Änderungen. Verbrauchskosten, Grundgebühr, Hochrechnung und Saldo werden nicht zusätzlich gebucht.</p><form id="energylab-form"><div class="form-grid"><label class="wide">EnergyLab-Adresse<input name="base_url" type="url" value="http://energylab:8090" placeholder="http://energylab:8090" required></label><label class="wide">Konto für die Zahlungen<select name="account_id" id="energylab-account"><option value="">Kein Konto zugeordnet</option></select></label><label class="wide">Zugriffsschlüssel für Ist-Zahlungen <span class="hint">optional</span><input name="callback_token" type="password" autocomplete="new-password" placeholder="Derselbe Schlüssel wie in EnergyLab"></label><label class="check wide"><input name="enabled" type="checkbox"> Beim Start und danach regelmäßig automatisch synchronisieren</label></div><div class="section-actions left"><button class="button" type="submit">Verbindung speichern</button><button id="energylab-preview" class="button secondary" type="button">Änderungen prüfen</button><button id="energylab-sync" class="button secondary" type="button">Jetzt synchronisieren</button></div><div id="energylab-status" class="notice" hidden></div><div id="energylab-sync-details" class="notice" hidden></div></form></section>
-          <section class="panel backup-panel"><div class="section-heading"><div><p class="eyebrow">DATENSICHERHEIT</p><h2>Sicherungen</h2></div><button id="create-backup" class="button secondary compact" type="button">Jetzt sichern</button></div><p class="panel-copy">Vor dem Wechsel auf Version 1.7.1 wird automatisch eine Datenbanksicherung angelegt. Vor jeder Wiederherstellung entsteht zusätzlich eine Sicherheitssicherung.</p><div id="backup-list" class="diagnostics-list"></div></section>
-          <section class="panel diagnostics-panel"><div class="section-heading"><div><p class="eyebrow">DATENPRÜFUNG</p><h2>Nicht berücksichtigte Einnahmen und Ausgaben</h2></div><span id="diagnostics-as-of" class="badge"></span></div><div id="diagnostics-summary" class="summary-grid compact"></div><div id="diagnostics-list" class="diagnostics-list"></div></section>
+
+          <section class="panel export-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">EXCEL-EXPORT</p>
+                <h2>Vorschau und Eingaben exportieren</h2>
+              </div>
+            </div>
+            <p class="panel-copy">Erstellt eine ordentlich formatierte Arbeitsmappe für Auswertung, Kontrolle und Sicherung deiner Finanzplanung.</p>
+            <div class="export-contents">
+              <span><b>Planung</b><small>Monats-, Tages- und Kontovorschau</small></span>
+              <span><b>Finanzen</b><small>Konten, Einnahmen, Ausgaben und Umbuchungen</small></span>
+              <span><b>Historie</b><small>Kontostände, Kredite und Tilgungen</small></span>
+            </div>
+            <div class="section-actions left export-actions">
+              <button id="open-excel-export" class="button" type="button">Excel erstellen</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="section-heading">
+              <div><p class="eyebrow">HAUSHALT</p><h2>Aktiver Haushalt</h2></div>
+            </div>
+            <label class="stacked">Haushalt<select id="household-select"></select></label>
+            <div class="section-actions left">
+              <button id="new-household" class="button secondary" type="button">+ Haushalt</button>
+              <button id="delete-household" class="button danger" type="button">Haushalt löschen</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="section-heading">
+              <div><p class="eyebrow">PERSONEN</p><h2>Zuordnung</h2></div>
+            </div>
+            <div id="person-list" class="person-list"></div>
+          </section>
+
+          <section class="panel energylab-panel">
+            <div class="section-heading">
+              <div><p class="eyebrow">AUTOMATISCHE AUSGABEN</p><h2>EnergyLab verbinden</h2></div>
+            </div>
+            <p class="panel-copy">Übernimmt ausschließlich die in EnergyLab hinterlegten Strom-, Gas-, Wasser- und Abwasserzahlungen mit ihren Vertragslaufzeiten, Rhythmen und Änderungen. Verbrauchskosten, Grundgebühr, Hochrechnung und Saldo werden nicht zusätzlich gebucht.</p>
+            <form id="energylab-form">
+              <div class="form-grid">
+                <label class="wide">EnergyLab-Adresse<input name="base_url" type="url" value="http://energylab:8090" placeholder="http://energylab:8090" required></label>
+                <label class="wide">Konto für die Zahlungen<select name="account_id" id="energylab-account"><option value="">Kein Konto zugeordnet</option></select></label>
+                <label class="wide">Zugriffsschlüssel für Ist-Zahlungen <span class="hint">optional</span><input name="callback_token" type="password" autocomplete="new-password" placeholder="Derselbe Schlüssel wie in EnergyLab"></label>
+                <label class="check wide"><input name="enabled" type="checkbox"> Beim Start und danach regelmäßig automatisch synchronisieren</label>
+              </div>
+              <div class="section-actions left">
+                <button class="button" type="submit">Verbindung speichern</button>
+                <button id="energylab-preview" class="button secondary" type="button">Änderungen prüfen</button>
+                <button id="energylab-sync" class="button secondary" type="button">Jetzt synchronisieren</button>
+              </div>
+              <div id="energylab-status" class="notice" hidden></div>
+              <div id="energylab-sync-details" class="notice" hidden></div>
+            </form>
+          </section>
+
+          <section class="panel backup-panel">
+            <div class="section-heading">
+              <div><p class="eyebrow">DATENSICHERHEIT</p><h2>Sicherungen</h2></div>
+              <button id="create-backup" class="button secondary compact" type="button">Jetzt sichern</button>
+            </div>
+            <p class="panel-copy">Vor dem Wechsel auf Version 2.1.1 wird automatisch eine Datenbanksicherung angelegt. Vor jeder Wiederherstellung entsteht zusätzlich eine Sicherheitssicherung.</p>
+            <div id="backup-list" class="diagnostics-list"></div>
+          </section>
+
+          <section class="panel diagnostics-panel">
+            <div class="section-heading">
+              <div><p class="eyebrow">DATENPRÜFUNG</p><h2>Nicht berücksichtigte Einnahmen und Ausgaben</h2></div>
+              <span id="diagnostics-as-of" class="badge"></span>
+            </div>
+            <div id="diagnostics-summary" class="summary-grid compact"></div>
+            <div id="diagnostics-list" class="diagnostics-list"></div>
+          </section>
+
+          <section class="panel categories-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">EINNAHMEN &amp; AUSGABEN</p>
+                <h2>Arten verwalten</h2>
+              </div>
+            </div>
+            <p class="panel-copy">System-Arten bleiben geschützt. Eigene Arten kannst du ergänzen, bearbeiten, deaktivieren oder löschen.</p>
+
+            <div id="category-settings-list" class="account-list compact-category-list"></div>
+
+            <form id="category-form" class="category-add-form">
+              <label>Bereich
+                <select name="kind">
+                  <option value="expense">Ausgabe</option>
+                  <option value="income">Einnahme</option>
+                </select>
+              </label>
+
+              <label>Neue Art
+                <input name="name" maxlength="60" required>
+              </label>
+
+              <button class="button compact" type="submit">Art hinzufügen</button>
+              <div id="category-error" class="notice error" hidden></div>
+            </form>
+          </section>
+
         </div>
       </section>
     </main>
 
-    <footer><span>Haushaltsplaner <b>by Lrd.Tiberius</b> · Version 1.7.1</span><a href="https://www.buymeacoffee.com/" target="_blank" rel="noreferrer">☕ Buy me a coffee</a></footer>
+    <footer><span>Haushaltsplaner <b>by Lrd.Tiberius</b> · Version 2.1.1</span><a href="https://www.buymeacoffee.com/" target="_blank" rel="noreferrer">☕ Buy me a coffee</a></footer>
   </div>
 
   <dialog id="setup-dialog" class="modal small-modal"><form id="setup-form"><div class="modal-head"><div><p class="eyebrow">HAUSHALT ANLEGEN</p><h2>Willkommen</h2></div><button id="close-setup" class="icon-button" type="button" data-close="setup-dialog">×</button></div><div class="form-grid"><label class="wide">Name des Haushalts<input name="name" required></label><fieldset class="wide"><legend>Haushaltsmodell</legend><label class="choice"><input type="radio" name="mode" value="single" checked> Einzelperson</label><label class="choice"><input type="radio" name="mode" value="couple"> Paar</label></fieldset><label>Name Person A<input name="person_a" required></label><label id="person-b-field" hidden>Name Person B<input name="person_b"></label><label class="wide">Erstes Konto <span class="hint">optional</span><input name="account_name"></label><label>Kontostand<input name="balance" type="number" step="0.01" value="0"></label><label>Stand vom<input name="anchor_date" type="date"></label><label>Disporahmen<input name="overdraft_limit" type="number" step="0.01" min="0" value="0"></label><label class="check wide"><input name="bookings_applied" type="checkbox"> Alle Buchungen des Stichtags sind bereits im Kontostand enthalten</label></div><div id="setup-error" class="notice error" hidden></div><div class="modal-actions"><button class="button" type="submit">Haushalt anlegen</button></div></form></dialog>
 
-  <dialog id="account-dialog" class="modal"><form id="account-form"><div class="modal-head"><div><p id="account-dialog-eyebrow" class="eyebrow">KONTO ANLEGEN</p><h2 id="account-dialog-title">Konto anlegen</h2></div><button class="icon-button" type="button" data-close="account-dialog">×</button></div><div class="form-grid"><label>Kontoname<input name="name" required></label><label>Besitzer<select name="owner" id="account-owner" required></select></label><label>Disporahmen<input name="overdraft_limit" type="number" min="0" step="0.01" value="0"></label><label class="check wide"><input name="is_default" type="checkbox"> Als Standardkonto für neue Einnahmen und Ausgaben verwenden</label></div><div class="balance-entry"><div><p class="eyebrow">KONTOSTAND ERFASSEN</p><h3>Neuer historischer Stand</h3></div><div class="form-grid"><label>Kontostand<input name="balance" type="number" step="0.01" required></label><label>Stand vom<input name="anchor_date" type="date" required></label><div class="checkbox-field wide"><label class="check"><input name="bookings_applied" type="checkbox"> Zahlungen an diesem Tag sind im Kontostand bereits enthalten</label><small id="account-bookings-hint" class="hint"></small></div></div></div><div id="account-history" class="history" hidden></div><div id="account-error" class="notice error" hidden></div><div class="modal-actions split"><button id="delete-account" class="button danger" type="button" hidden>Konto löschen</button><button id="account-submit" class="button" type="submit">Konto speichern</button></div></form></dialog>
+  <dialog id="account-dialog" class="modal"><form id="account-form"><div class="modal-head"><div><p id="account-dialog-eyebrow" class="eyebrow">KONTO ANLEGEN</p><h2 id="account-dialog-title">Konto anlegen</h2></div><button class="icon-button" type="button" data-close="account-dialog">×</button></div><div class="form-grid"><label>Kontoname<input name="name" required></label><label>Besitzer<select name="owner" id="account-owner" required></select></label><label id="account-limit-label">Disporahmen<input name="overdraft_limit" type="number" min="0" step="0.01" value="0"></label><label class="check wide"><input name="is_credit_line" type="checkbox"> Als Rahmenkredit / Kreditlinie kennzeichnen</label><label id="account-linked-field" class="wide" hidden>Verrechnungskonto<select name="linked_account_id"></select><small class="hint">Nur dieses Konto darf Geld an den Rahmenkredit überweisen oder daraus eine Auszahlung erhalten.</small></label><label id="account-default-field" class="check wide"><input name="is_default" type="checkbox"> Als Standardkonto für neue Einnahmen und Ausgaben verwenden</label><p class="hint wide">Rahmenkredite werden separat ausgewiesen und können nicht direkt Einnahmen, Ausgaben oder Kreditraten zugeordnet werden.</p></div><div class="balance-entry"><div><p class="eyebrow">KONTOSTAND ERFASSEN</p><h3>Neuer historischer Stand</h3></div><div class="form-grid"><label>Kontostand<input name="balance" type="number" step="0.01" required></label><label>Stand vom<input name="anchor_date" type="date" required></label><div class="checkbox-field wide"><label class="check"><input name="bookings_applied" type="checkbox"> Zahlungen an diesem Tag sind im Kontostand bereits enthalten</label><small id="account-bookings-hint" class="hint"></small></div></div></div><div id="account-history" class="history" hidden></div><div id="account-error" class="notice error" hidden></div><div class="modal-actions split"><button id="delete-account" class="button danger" type="button" hidden>Konto löschen</button><button id="account-submit" class="button" type="submit">Konto speichern</button></div></form></dialog>
 
   <dialog id="cash-flow-dialog" class="modal"><form id="cash-flow-form"><div class="modal-head"><div><p id="cash-flow-dialog-eyebrow" class="eyebrow">NEUE POSITION</p><h2 id="cash-flow-dialog-title">Position anlegen</h2></div><button class="icon-button" type="button" data-close="cash-flow-dialog">×</button></div><div class="form-grid"><label class="wide">Bezeichnung<input name="name" required></label><label>Art<select name="category" id="cash-flow-category"></select></label><label id="cash-flow-owner-field">Zuordnung<select name="owner" id="cash-flow-owner"></select></label><label>Betrag<input name="amount" type="number" min="0" step="0.01" required></label><label>Rhythmus<select name="recurrence"><option value="once">Einmalig</option><option value="monthly">Monatlich</option><option value="weekly" data-expense-only>Wöchentlich</option><option value="quarterly">Vierteljährlich</option><option value="semiannual">Halbjährlich</option><option value="yearly">Jährlich</option></select></label><label>Erste / nächste Fälligkeit<input name="due_date" type="date" required></label><label id="cash-flow-end-date-field">Enddatum <span class="hint">bis einschließlich</span><input name="end_date" type="date"></label><label id="cash-flow-duration-field">Anzahl Zahlungen <span class="hint">z. B. 12 = genau 12 Termine</span><input name="duration_months" type="number" min="1" max="1200" step="1"></label><label class="wide">Konto<select name="account_id" id="cash-flow-account"></select></label><div id="cash-flow-credit-fields" class="credit-link-fields wide" hidden><label class="wide">Kredit<select name="credit_id" id="cash-flow-credit"></select></label><p class="hint wide">Bei aktivierter Zinsautomatik berechnet FinanzLab Zins und Tilgung aus Rate, Sollzins und offenem Saldo. Bestehende manuelle Tilgungswerte bleiben beim Bearbeiten erhalten.</p></div><label class="check wide"><input name="active" type="checkbox" checked> In Berechnungen berücksichtigen</label></div><div id="cash-flow-error" class="notice error" hidden></div><div class="modal-actions split"><button id="delete-cash-flow" class="button danger" type="button" hidden>Löschen</button><button id="cash-flow-submit" class="button" type="submit">Speichern</button></div></form></dialog>
 
   <dialog id="income-change-dialog" class="modal small-modal"><form id="income-change-form"><div class="modal-head"><div><p class="eyebrow">EINNAHME AKTUALISIEREN</p><h2 id="income-change-name">Neuer Betrag</h2></div><button class="icon-button" type="button" data-close="income-change-dialog">×</button></div><p id="income-change-current" class="panel-copy"></p><p>Der bisherige Betrag bleibt für frühere Zahlungen erhalten. Ab dem gewählten Datum rechnet FinanceLab mit der neuen Höhe.</p><div class="form-grid"><label>Neuer Betrag ab<input name="effective_from" type="date" required></label><label>Neue Höhe<input name="amount" type="number" min="0.01" step="0.01" required></label></div><div id="income-change-error" class="notice error" hidden></div><div class="modal-actions"><button class="button" type="submit">Änderung speichern</button></div></form></dialog>
 
-  <dialog id="credit-dialog" class="modal"><form id="credit-form" novalidate><div class="modal-head"><div><p class="eyebrow">KREDITVERWALTUNG</p><h2 id="credit-dialog-title">Kredit anlegen</h2></div><button class="icon-button" type="button" data-close="credit-dialog">×</button></div><nav class="credit-tabs" aria-label="Kreditbereiche"><button type="button" class="active" data-credit-form-tab="data">Kreditdaten</button><button type="button" data-credit-form-tab="plan">Zahlungsdaten</button><button type="button" data-credit-form-tab="payments">Tilgung</button></nav><div class="form-grid" data-credit-form-panel="data"><label class="wide" id="credit-name-label">Bezeichnung<input name="name" required></label><label>Art<select name="credit_type"><option value="consumer_credit">Konsumkredit</option><option value="credit">Kredit</option><option value="borrowed">Geliehen</option></select></label><div id="consumer-credit-fields" class="form-grid wide" hidden><label>Anbieter<select name="provider"><option value="">Bitte auswählen</option><option value="PayPal">PayPal</option><option value="Klarna">Klarna</option></select></label><label>Produktpreis<input name="product_price" type="number" min="0" step="0.01"></label><label>Finanzierungspreis<input name="financing_price" type="number" min="0" step="0.01"></label><label>Ratenaufpreis<input name="installment_surcharge" type="number" min="0" step="0.01"></label><p id="consumer-price-hint" class="hint wide">Mindestens zwei Preisangaben genügen; die dritte wird vorgeschlagen.</p></div><label>Anfangssaldo<input name="opening_balance" type="number" min="0" step="0.01" required></label><label>Sollzinssatz p. a. <span class="hint">optional, in %</span><input name="interest_rate" type="number" min="0" step="0.0001" inputmode="decimal"><small id="credit-interest-hint" class="hint"></small></label><label class="check"><input name="automatic_interest" type="checkbox"> Zins und Tilgung automatisch berechnen</label><p class="hint wide">Bleibt der Zinssatz leer, schätzt FinanzLab ihn aus Kreditsumme, Rate, Laufzeit und einer vertraglichen Restschuld. Ein selbst eingetragener Zinssatz hat immer Vorrang.</p><label id="credit-archive-field" class="check wide" hidden><input name="archived" type="checkbox"> Archiviert</label></div><div class="form-grid" data-credit-form-panel="plan" hidden><label>Monatliche Rate<input name="plan_amount" type="number" min="0.01" step="0.01" required></label><label>Erste Rate<input name="plan_first_due" type="date" required></label><label>Anzahl Zahlungen<input name="plan_count" type="number" min="1" max="1200" step="1" required></label><label>Vertragliche Restschuld <span class="hint">z. B. Schlussrate beim Fahrzeug</span><input name="balloon_payment" type="number" min="0" step="0.01" value="0"></label><label>Konto<select name="plan_account" required></select></label><label id="credit-plan-change-field" class="wide" hidden>Änderung gültig ab<input name="plan_change_from" type="date"></label><p id="credit-plan-check" class="notice wide"></p><p class="hint wide">FinanzLab erzeugt beziehungsweise aktualisiert die monatliche Ausgabe automatisch. Bei späteren Änderungen bleiben frühere Raten unverändert.</p></div><div data-credit-form-panel="payments" hidden><section class="balance-entry"><div><p class="eyebrow">MANUELLE TILGUNG ODER AUFSTOCKUNG</p><h3>Kreditbetrag ändern</h3></div><div id="credit-edit-payment-form" class="form-grid embedded-form"><label>Datum<input name="payment_date" type="date" required></label><label>Betrag <span class="hint">negativ = Kreditaufstockung</span><input name="amount" type="number" step="0.01" required></label><div id="credit-edit-payment-error" class="notice error wide" hidden></div><div class="modal-actions wide"><button id="credit-edit-payment-submit" class="button" type="button">Änderung speichern</button></div></div></section><section class="history credit-history"><div class="section-heading"><div><p class="eyebrow">HISTORIE UND PLANUNG</p><h3>Alle Tilgungen</h3></div></div><div id="credit-edit-payment-list"></div></section></div><div id="credit-error" class="notice error" hidden></div><div class="modal-actions split"><button id="delete-credit" class="button danger" type="button" hidden>Löschen</button><button class="button" type="submit">Speichern</button></div></form></dialog>
+  <dialog id="credit-dialog" class="modal"><form id="credit-form" novalidate><div class="modal-head"><div><p class="eyebrow">KREDITVERWALTUNG</p><h2 id="credit-dialog-title">Kredit anlegen</h2></div><button class="icon-button" type="button" data-close="credit-dialog">×</button></div><nav class="credit-tabs" aria-label="Kreditbereiche"><button type="button" class="active" data-credit-form-tab="data">Kreditdaten</button><button type="button" data-credit-form-tab="plan">Zahlungsdaten</button><button type="button" data-credit-form-tab="payments">Tilgung</button></nav><div class="form-grid" data-credit-form-panel="data"><label class="wide" id="credit-name-label">Bezeichnung<input name="name" required></label><label>Art<select name="credit_type"><option value="consumer_credit">Konsumkredit</option><option value="credit">Kredit</option><option value="borrowed">Geliehen</option><option value="mortgage">Darlehen</option></select></label><div id="consumer-credit-fields" class="form-grid wide" hidden><label>Anbieter<select name="provider"><option value="">Bitte auswählen</option><option value="PayPal">PayPal</option><option value="Klarna">Klarna</option></select></label><label>Produktpreis<input name="product_price" type="number" min="0" step="0.01"></label><label>Finanzierungspreis<input name="financing_price" type="number" min="0" step="0.01"></label><label>Ratenaufpreis<input name="installment_surcharge" type="number" min="0" step="0.01"></label><p id="consumer-price-hint" class="hint wide">Mindestens zwei Preisangaben genügen; die dritte wird vorgeschlagen.</p></div><label><span id="credit-opening-label-text">Anfangssaldo</span><input name="opening_balance" type="number" min="0" step="0.01" required></label><div id="mortgage-fields" class="form-grid wide" hidden><label>Ursprüngliche Darlehenssumme<input name="original_principal" type="number" min="0.01" step="0.01"></label><label>Restschuld Stand<input name="balance_as_of" type="date"></label><label>Effektiver Jahreszins<input name="effective_interest_rate" type="number" min="0" step="0.0001"></label><label>Tilgungssatz<input name="repayment_rate" type="number" min="0.0001" step="0.0001"></label><label>Zinsbindung bis<input name="fixed_interest_until" type="date"></label><label>Sondertilgung p. a. in %<input name="special_repayment_percent" type="number" min="0" step="0.01"></label><p class="hint wide">Das jährliche Sondertilgungslimit wird aus der ursprünglichen Darlehenssumme × Prozentsatz berechnet.</p></div><label>Sollzinssatz p. a. <span class="hint">optional, in %</span><input name="interest_rate" type="number" min="0" step="0.0001" inputmode="decimal"><small id="credit-interest-hint" class="hint"></small></label><label class="check"><input name="automatic_interest" type="checkbox"> Zins und Tilgung automatisch berechnen</label><p class="hint wide">Bleibt der Zinssatz leer, schätzt FinanzLab ihn aus Kreditsumme, Rate, Laufzeit und einer vertraglichen Restschuld. Ein selbst eingetragener Zinssatz hat immer Vorrang.</p><label id="credit-archive-field" class="check wide" hidden><input name="archived" type="checkbox"> Archiviert</label></div><div class="form-grid" data-credit-form-panel="plan" hidden><label>Monatliche Rate<input name="plan_amount" type="number" min="0.01" step="0.01" required></label><label>Erste Rate / Abbuchungstag<input name="plan_first_due" type="date" required></label><label>Anzahl Zahlungen<input name="plan_count" type="number" min="1" max="1200" step="1" required></label><label>Vertragliche Restschuld <span class="hint">z. B. Schlussrate beim Fahrzeug</span><input name="balloon_payment" type="number" min="0" step="0.01" value="0"></label><label>Abbuchungskonto<select name="plan_account" required></select></label><label id="credit-plan-change-field" class="wide" hidden>Änderung gültig ab<input name="plan_change_from" type="date"></label><p id="credit-plan-check" class="notice wide"></p><p class="hint wide">FinanzLab erzeugt beziehungsweise aktualisiert die monatliche Ausgabe automatisch. Bei späteren Änderungen bleiben frühere Raten unverändert.</p></div><div data-credit-form-panel="payments" hidden><section class="balance-entry"><div><p class="eyebrow">MANUELLE TILGUNG ODER AUFSTOCKUNG</p><h3>Kreditbetrag ändern</h3></div><div id="credit-edit-payment-form" class="form-grid embedded-form"><label>Datum<input name="payment_date" type="date" required></label><label>Betrag <span class="hint">negativ = Kreditaufstockung</span><input name="amount" type="number" step="0.01" required></label><div id="credit-edit-payment-error" class="notice error wide" hidden></div><div class="modal-actions wide"><button id="credit-edit-payment-submit" class="button" type="button">Änderung speichern</button></div></div></section><section class="history credit-history"><div class="section-heading"><div><p class="eyebrow">HISTORIE UND PLANUNG</p><h3>Alle Tilgungen</h3></div></div><div id="credit-edit-payment-list"></div></section></div><div id="credit-error" class="notice error" hidden></div><div class="modal-actions split"><button id="delete-credit" class="button danger" type="button" hidden>Löschen</button><button class="button" type="submit">Speichern</button></div></form></dialog>
 
   <dialog id="credit-detail-dialog" class="modal"><div><div class="modal-head"><div><p id="credit-detail-type" class="eyebrow">KREDIT</p><h2 id="credit-detail-title">Kredit</h2></div><button class="icon-button" type="button" data-close="credit-detail-dialog">×</button></div><div id="credit-detail-summary" class="summary-grid three"></div><section class="balance-entry"><div><p class="eyebrow">MANUELLE TILGUNG ODER AUFSTOCKUNG</p><h3>Kreditbetrag ändern</h3></div><form id="credit-payment-form" class="form-grid embedded-form"><label>Datum<input name="payment_date" type="date" required></label><label>Betrag <span class="hint">negativ = Kreditaufstockung</span><input name="amount" type="number" step="0.01" required></label><div id="credit-payment-error" class="notice error wide" hidden></div><div class="modal-actions wide"><button class="button" type="submit">Änderung speichern</button></div></form></section><section class="history credit-history"><div class="section-heading"><div><p class="eyebrow">HISTORIE UND PLANUNG</p><h3>Alle Tilgungen</h3></div></div><div id="credit-payment-list"></div></section></div></dialog>
 
   <dialog id="interest-booking-dialog" class="modal small-modal"><form id="interest-booking-form"><div class="modal-head"><div><p class="eyebrow">KONTOZINSEN</p><h2>Girokontozinsen erfassen</h2></div><button class="icon-button" type="button" data-close="interest-booking-dialog">×</button></div><div class="form-grid"><label>Datum<input name="booking_date" type="date" required></label><label>Betrag<input name="amount" type="number" min="0.01" step="0.01" required></label><label class="wide">Konto<select name="account_id" id="interest-booking-account" required></select></label></div><div id="interest-booking-error" class="notice error" hidden></div><div class="modal-actions"><button class="button" type="submit">Girokontozinsen speichern</button></div></form></dialog>
 
-  <dialog id="transfer-dialog" class="modal"><form id="transfer-form"><div class="modal-head"><div><p class="eyebrow">ZWISCHEN KONTEN</p><h2 id="transfer-dialog-title">Umbuchung anlegen</h2></div><button class="icon-button" type="button" data-close="transfer-dialog">×</button></div><div class="form-grid"><label class="wide">Bezeichnung<input name="name" value="Umbuchung" required></label><label>Von Konto<select name="source_account_id" id="transfer-source" required></select></label><label>An Konto<select name="target_account_id" id="transfer-target" required></select></label><label>Betrag<input name="amount" type="number" min="0.01" step="0.01" required></label><label>Fälligkeit<input name="due_date" type="date" required></label><label>Rhythmus<select name="recurrence"><option value="once">Einmalig</option><option value="monthly">Monatlich</option><option value="quarterly">Vierteljährlich</option><option value="semiannual">Halbjährlich</option><option value="yearly">Jährlich</option></select></label><label>Ende <span class="hint">bis einschließlich</span><input name="end_date" type="date"></label><label>Anzahl <span class="hint">Ausführungen</span><input name="occurrence_count" type="number" min="1" max="1200" step="1"></label><p class="hint wide">Ende und Anzahl sind optional. Wenn beides gesetzt ist, müssen beide Angaben dieselbe letzte Ausführung beschreiben.</p><label class="check wide"><input name="active" type="checkbox" checked> In Berechnungen berücksichtigen</label></div><div id="transfer-error" class="notice error" hidden></div><div class="modal-actions split"><button id="delete-transfer" class="button danger" type="button" hidden>Löschen</button><button class="button" type="submit">Speichern</button></div></form></dialog>
+  <dialog id="transfer-dialog" class="modal"><form id="transfer-form"><div class="modal-head"><div><p class="eyebrow">ZWISCHEN KONTEN</p><h2 id="transfer-dialog-title">Umbuchung anlegen</h2></div><button class="icon-button" type="button" data-close="transfer-dialog">×</button></div><div class="form-grid"><label class="wide">Bezeichnung<input name="name" value="Umbuchung" required></label><label>Von Konto<select name="source_account_id" id="transfer-source" required></select></label><label>An Konto<select name="target_account_id" id="transfer-target" required></select></label><label>Betrag<input name="amount" type="number" min="0.01" step="0.01" required></label><label>Fälligkeit<input name="due_date" type="date" required></label><label>Rhythmus<select name="recurrence"><option value="once">Einmalig</option><option value="monthly">Monatlich</option><option value="quarterly">Vierteljährlich</option><option value="semiannual">Halbjährlich</option><option value="yearly">Jährlich</option></select></label><label>Ende <span class="hint">bis einschließlich</span><input name="end_date" type="date"></label><label>Anzahl <span class="hint">Ausführungen</span><input name="occurrence_count" type="number" min="1" max="1200" step="1"></label><p class="hint wide">Ende und Anzahl sind optional. Wenn beides gesetzt ist, müssen beide Angaben dieselbe letzte Ausführung beschreiben.</p><p id="transfer-credit-line-hint" class="notice suggestion wide" hidden></p><label class="check wide"><input name="active" type="checkbox" checked> In Berechnungen berücksichtigen</label></div><div id="transfer-error" class="notice error" hidden></div><div class="modal-actions split"><button id="delete-transfer" class="button danger" type="button" hidden>Löschen</button><button class="button" type="submit">Speichern</button></div></form></dialog>
 
   <dialog id="energylab-account-dialog" class="modal small-modal"><form id="energylab-account-form"><div class="modal-head"><div><p class="eyebrow">ENERGYLAB-ABSCHLAG</p><h2>Konto und Zahlungstag ändern</h2></div><button class="icon-button" type="button" data-close="energylab-account-dialog">×</button></div><p id="energylab-account-flow-name"></p><div class="form-grid"><label class="wide">Konto für diesen Abschlag<select name="account_id" id="energylab-flow-account" required></select></label><label class="wide">Zahlungstag im Monat<input name="payment_day" type="number" min="1" max="31" step="1" required></label><p class="hint wide">Bei kürzeren Monaten wird automatisch der letzte Monatstag verwendet.</p></div><div id="energylab-account-error" class="notice error" hidden></div><div class="modal-actions"><button class="button" type="submit">Zuordnung speichern</button></div></form></dialog>
 
   <dialog id="excel-export-dialog" class="modal small-modal"><form id="excel-export-form"><div class="modal-head"><div><p class="eyebrow">STRUKTURIERTE ARBEITSMAPPE</p><h2>Excel-Export</h2></div><button class="icon-button" type="button" data-close="excel-export-dialog">×</button></div><p>Wähle den Vorschauzeitraum. Alle eingegebenen Einnahmen, Ausgaben und Kredite werden unabhängig davon vollständig exportiert.</p><div class="form-grid"><label>Startmonat<input name="from_month" type="month" required></label><label>Endmonat<input name="through_month" type="month" required></label><p class="hint wide">Maximal 24 Monate. Die Vorschau berücksichtigt jede tatsächliche Fälligkeit, die Kredit-Historien und die Kontostand-Historie.</p></div><div id="excel-export-error" class="notice error" hidden></div><div class="modal-actions"><button class="button" type="submit">Excel herunterladen</button></div></form></dialog>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js"></script>
-  <script src="credit-archive.js"></script>
+  <script src="app.js?v=2.1.1"></script>
+  <script src="credit-archive.js?v=2.1.1"></script>
 </body>
 </html>

@@ -10,7 +10,7 @@ CATEGORY_LABELS = {
     "family": "Familie", "other_income": "Sonstige Einnahme",
     "housing": "Wohnen", "energy": "Energie", "insurance": "Versicherung",
     "food": "Lebensmittel", "mobility": "Mobilität", "consumer_credit": "Konsumkredit",
-    "credit": "Kredit", "borrowed": "Geliehen",
+    "credit": "Kredit", "borrowed": "Geliehen", "mortgage": "Darlehen",
     "interest": "Zinsen", "leisure": "Freizeit", "other_expense": "Sonstige Ausgabe", "other": "Sonstiges",
 }
 RECURRENCE_LABELS = {
@@ -22,7 +22,7 @@ MOVEMENT_LABELS = {
     "transfer_in": "Umbuchung Eingang", "transfer_out": "Umbuchung Ausgang",
 }
 LIFECYCLE_LABELS = {"current": "Aktuell", "upcoming": "Zukünftig", "ended": "Beendet"}
-CREDIT_TYPE_LABELS = {"consumer_credit": "Konsumkredit", "credit": "Kredit", "borrowed": "Geliehen"}
+CREDIT_TYPE_LABELS = {"consumer_credit": "Konsumkredit", "credit": "Kredit", "borrowed": "Geliehen", "mortgage": "Darlehen"}
 
 
 @dataclass(frozen=True)
@@ -203,7 +203,7 @@ def build_forecast_workbook(payload):
         {"area": "Bestand", "metric": "Einnahmen", "value": FormulaValue(count_formula("Einnahmen", len(incomes)), len(incomes), "integer"), "note": "Aktiv, inaktiv, zukünftig und beendet"},
         {"area": "Bestand", "metric": "Ausgaben", "value": FormulaValue(count_formula("Ausgaben", len(expenses)), len(expenses), "integer"), "note": "Aktiv, inaktiv, zukünftig und beendet"},
         {"area": "Bestand", "metric": "Umbuchungen", "value": FormulaValue(count_formula("Umbuchungen", len(transfers)), len(transfers), "integer"), "note": "Alle angelegten Umbuchungen"},
-        {"area": "Bestand", "metric": "Kredite", "value": FormulaValue(count_formula("Kredite", len(credits)), len(credits), "integer"), "note": "Konsumkredite, Kredite und Geliehen"},
+        {"area": "Bestand", "metric": "Kredite", "value": FormulaValue(count_formula("Kredite", len(credits)), len(credits), "integer"), "note": "Konsumkredite, Kredite, Geliehen und Darlehen"},
         {"area": "Bestand", "metric": "Offener Kreditsaldo", "value": FormulaValue(f"SUM('Kredite'!E5:E{4 + len(credits)})" if credits else "0", sum(item["remaining"] or 0 for item in credits), "currency"), "note": "Zukünftige Tilgungen sind noch nicht abgezogen"},
         {"area": "Vorschau", "metric": "Monate", "value": StyledValue(payload["month_count"], "integer"), "note": "Tagesgenau simuliert"},
         {"area": "Vorschau", "metric": "Einnahmen gesamt", "value": FormulaValue(f"SUM('Monatsvorschau'!E5:E{month_last_row})", sum(item["income"] or 0 for item in months), "currency"), "note": "Fälligkeiten im Exportzeitraum"},
@@ -408,7 +408,7 @@ def _write_xlsx(sheets, payload):
         for index, sheet in enumerate(sheets, 1):
             archive.writestr(f"xl/worksheets/sheet{index}.xml", _worksheet_xml(sheet))
         titles = "".join(f"<vt:lpstr>{escape(sheet.name)}</vt:lpstr>" for sheet in sheets)
-        archive.writestr("docProps/app.xml", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Haushaltsplaner</Application><DocSecurity>0</DocSecurity><ScaleCrop>false</ScaleCrop><HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Arbeitsblätter</vt:lpstr></vt:variant><vt:variant><vt:i4>{len(sheets)}</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="{len(sheets)}" baseType="lpstr">{titles}</vt:vector></TitlesOfParts><Company>Lrd.Tiberius</Company><AppVersion>1.7.1</AppVersion></Properties>''')
+        archive.writestr("docProps/app.xml", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Haushaltsplaner</Application><DocSecurity>0</DocSecurity><ScaleCrop>false</ScaleCrop><HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Arbeitsblätter</vt:lpstr></vt:variant><vt:variant><vt:i4>{len(sheets)}</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="{len(sheets)}" baseType="lpstr">{titles}</vt:vector></TitlesOfParts><Company>Lrd.Tiberius</Company><AppVersion>1.8.1</AppVersion></Properties>''')
         generated = str(payload.get("generated_at") or datetime.now(timezone.utc).isoformat()).replace("+00:00", "Z")
         archive.writestr("docProps/core.xml", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>Haushaltsplaner Vorschau-Export</dc:title><dc:creator>Lrd.Tiberius</dc:creator><cp:lastModifiedBy>Haushaltsplaner</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">{escape(generated)}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">{escape(generated)}</dcterms:modified></cp:coreProperties>''')
     return output.getvalue()

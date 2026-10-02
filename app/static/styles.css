@@ -14,3 +14,524 @@ main{max-width:1240px;margin:auto;padding:8px 28px 48px;min-height:calc(100vh - 
 @media(max-width:1100px){.metric-grid.four,.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-grid,.manage-grid,.settings-grid{grid-template-columns:1fr}.diagnostics-panel{grid-column:auto}.day-entry summary{grid-template-columns:110px minmax(0,1fr) auto}.day-balance{min-width:115px}}
 @media(max-width:720px){.topbar{padding:16px 20px 0}.brand-row{align-items:flex-start}.household-pill{margin-top:5px}.main-nav{padding-left:0;max-width:calc(100vw - 40px)}.brand em{display:block;margin-left:0}main{padding:8px 20px 40px}.hero,.split-heading{align-items:flex-start;flex-direction:column}.hero{padding:25px}.date-control,.month-control{width:100%}.date-control input{flex:1;width:auto}.month-control{justify-content:flex-start}.month-control strong{min-width:130px}.metric-grid.four,.summary-grid,.summary-grid.compact,.summary-grid.three,.breakdown-grid,.card-grid,.facts,.form-grid,.credit-link-fields,.export-contents{grid-template-columns:1fr}.form-grid .wide{grid-column:auto}.panel{padding:20px}.section-heading{align-items:flex-start}.section-heading>.section-actions{width:100%;justify-content:space-between}.flow-total{text-align:left}.flow-row{grid-template-columns:minmax(0,1fr) auto}.flow-row strong{grid-column:2;grid-row:1}.flow-row .link-button{grid-column:2;grid-row:2}.credit-row{grid-template-columns:minmax(0,1fr) auto}.credit-row>.link-button{grid-column:2;grid-row:3}.movement-row{grid-template-columns:auto minmax(0,1fr)}.movement-row>strong{grid-column:2}.movement-completion{grid-column:2}.day-entry summary{grid-template-columns:1fr auto}.day-balances{grid-column:1/-1;order:3}.day-total{min-width:0}.day-navigation{width:100%;justify-content:center}.day-navigation strong{min-width:0;flex:1}.statement-row{grid-template-columns:1fr}.history-row{grid-template-columns:minmax(0,1fr) auto}.history-row .link-button{grid-column:2;grid-row:2}.modal>form,.modal>div{padding:21px}footer{margin-inline:20px;flex-direction:column;gap:8px}}
 .movement-actions{display:grid;justify-items:end;gap:5px}.breakdown-filter-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}.breakdown-filter-heading h3{margin:0}.breakdown-filter-heading select{width:auto;min-width:155px;min-height:34px;padding:6px 9px;font-size:12px}.filtered-expense-total{display:flex;align-items:end;justify-content:space-between;gap:10px;margin:12px 0;padding:10px 0;border-block:1px solid var(--line)}.filtered-expense-total small{color:var(--muted)}.filtered-expense-total strong{font:700 20px Georgia,serif}
+
+/* FinanzLab 1.8.0: Monatsdashboard und Rahmenkredit */
+.month-control input{width:155px;min-height:40px;border:1px solid var(--line);border-radius:10px;background:var(--card);padding:8px 10px;color:var(--ink)}
+.hero .month-control span{font-size:11px;font-weight:800;color:#c6d4d0}
+.hero .month-control>button{color:var(--ink)}
+.dashboard-month-picker{position:relative;display:grid;min-width:190px;min-height:40px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);overflow:hidden;cursor:pointer}
+.dashboard-month-picker strong{display:grid;place-items:center;min-width:0;padding:8px 12px;text-align:center;text-transform:capitalize;color:var(--ink);font-weight:800;pointer-events:none}
+.dashboard-month-picker input{position:absolute;inset:0;width:100%;height:100%;min-height:0;margin:0;padding:0;border:0;opacity:.001;cursor:pointer}
+.dashboard-month-control[aria-busy="true"]{opacity:.72;pointer-events:none}
+.credit-line-badge{padding:3px 7px;border-radius:999px;background:#e7edf7;color:#436381;font-size:10px;font-weight:800}
+.credit-line-row{box-shadow:inset 4px 0 #436381;padding-left:12px}
+.credit-line-panel{margin:14px 0}
+.credit-line-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}
+.credit-line-card{padding:16px;border:1px solid var(--line);border-radius:13px;background:#faf7f0;display:grid;gap:8px}
+.credit-line-card h3{margin:2px 0 0}.credit-line-card>strong{font:700 23px Georgia,serif}.credit-line-card small,.credit-line-card span{color:var(--muted)}
+.credit-line-meter{height:9px;border-radius:999px;background:#e5dfd3;overflow:hidden}.credit-line-meter i{display:block;height:100%;background:#436381;border-radius:999px}
+@media(max-width:720px){.month-control input{flex:1;width:auto}.dashboard-month-picker{flex:1;min-width:150px}.credit-line-grid{grid-template-columns:1fr}}
+
+/* FinanzLab 1.8.1: robuster Monatswechsel auf iOS/Safari */
+.dashboard-month-control{align-items:center;gap:8px}
+.dashboard-month-control .month-control-caption{flex:0 0 auto;color:#c6d4d0;font-size:11px;font-weight:800}
+.dashboard-month-control .month-arrow{display:grid;place-items:center;flex:0 0 44px;width:44px;min-height:44px;padding:0;color:var(--ink);-webkit-text-fill-color:var(--ink);font-size:22px;line-height:1;background:var(--card);border:1px solid var(--line);border-radius:11px}
+.dashboard-month-control .month-arrow:active{transform:translateY(1px)}
+.dashboard-month-picker{position:relative;display:grid;place-items:center;flex:0 1 190px;min-width:170px;min-height:44px;border:1px solid var(--line);border-radius:11px;background:var(--card);color:var(--ink);overflow:hidden;cursor:pointer}
+.dashboard-month-picker:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.dashboard-month-label{display:block;width:100%;padding:10px 14px;text-align:center;text-transform:capitalize;color:var(--ink);-webkit-text-fill-color:var(--ink);font-weight:850;white-space:nowrap;pointer-events:none}
+.dashboard-month-picker input[type="month"]{position:absolute;inset:0;width:100%;height:100%;min-height:44px;margin:0;padding:0;opacity:0;cursor:pointer;z-index:2}
+.dashboard-month-control #dashboard-current{min-height:44px;color:var(--accent-dark);-webkit-text-fill-color:var(--accent-dark);background:var(--card)}
+.dashboard-month-control[aria-busy="true"] .dashboard-month-label::after{content:' …';font-weight:500}
+@media(max-width:720px){.dashboard-month-control{display:grid;grid-template-columns:auto 44px minmax(150px,1fr) 44px;gap:8px;width:100%}.dashboard-month-control .month-control-caption{grid-column:1}.dashboard-month-control .month-arrow{width:44px}.dashboard-month-picker{min-width:0;width:100%;max-width:none}.dashboard-month-control #dashboard-current{grid-column:1/-1;justify-self:start}.hero .dashboard-month-control{width:100%}}
+
+
+/* v2.0 settings layout: export top, compact categories bottom */
+
+.categories-panel {
+  grid-column: 1 / -1;
+}
+
+#category-settings-list.compact-category-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 10px;
+  margin-top: 12px;
+}
+
+#category-settings-list .person-row {
+  min-width: 0;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #faf7f0;
+}
+
+#category-settings-list .person-row > span:first-child {
+  display: grid;
+  min-width: 0;
+}
+
+#category-settings-list .person-row b {
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+#category-settings-list .person-row small {
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--muted);
+}
+
+#category-settings-list .row-actions {
+  gap: 2px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+#category-settings-list .link-button {
+  font-size: 10px;
+  padding: 2px 3px;
+}
+
+.category-add-form {
+  display: grid;
+  grid-template-columns: 180px minmax(220px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.category-add-form label {
+  display: grid;
+  gap: 5px;
+  font-weight: 700;
+}
+
+.category-add-form input,
+.category-add-form select {
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.category-add-form > .button {
+  min-height: 38px;
+  white-space: nowrap;
+}
+
+.category-add-form > .notice {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  #category-settings-list.compact-category-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .category-add-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .category-add-form > .button {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 620px) {
+  #category-settings-list.compact-category-list {
+    grid-template-columns: 1fr;
+  }
+
+  .category-add-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* v2.0 compact backup grid */
+
+.backup-panel {
+  grid-column: 1 / -1;
+}
+
+#backup-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 10px;
+  margin-top: 14px;
+}
+
+#backup-list .diagnostic-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 9px;
+  align-content: start;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #faf7f0;
+}
+
+#backup-list .diagnostic-row > i {
+  grid-column: 1;
+  grid-row: 1;
+  margin-top: 4px;
+}
+
+#backup-list .diagnostic-row > div {
+  grid-column: 2;
+  min-width: 0;
+}
+
+#backup-list .diagnostic-row b {
+  display: block;
+  font-size: 12px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+#backup-list .diagnostic-row small {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+#backup-list .diagnostic-row .link-button,
+#backup-list .diagnostic-row .badge {
+  grid-column: 2;
+  justify-self: start;
+  margin-top: 4px;
+}
+
+#backup-list .diagnostic-row .link-button {
+  padding: 1px 0;
+  font-size: 10px;
+}
+
+@media (max-width: 1100px) {
+  #backup-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 650px) {
+  #backup-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* v2.0 full width EnergyLab */
+
+.energylab-panel {
+  grid-column: 1 / -1;
+}
+
+#energylab-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+#energylab-form > .form-grid {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: end;
+}
+
+.energylab-panel .form-grid .wide {
+  grid-column: auto;
+}
+
+.energylab-panel .form-grid .check.wide {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+}
+
+#energylab-form > .section-actions {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
+#energylab-form > .notice {
+  margin: 0;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  #energylab-form > .form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #energylab-form > .form-grid .check.wide {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 650px) {
+  #energylab-form,
+  #energylab-form > .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #energylab-form > .form-grid .check.wide,
+  #energylab-form > .section-actions {
+    grid-column: 1;
+  }
+}
+
+
+/* v2.1 dashboard financing, outlook and startup cache */
+
+#startup-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  background: rgba(242,236,224,.88);
+  backdrop-filter: blur(6px);
+}
+
+#startup-loader[hidden] {
+  display: none;
+}
+
+.startup-loader-card {
+  display: grid;
+  gap: 5px;
+  min-width: 220px;
+  padding: 18px 22px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--card);
+  box-shadow: 0 18px 55px rgba(26,55,47,.12);
+  text-align: center;
+}
+
+.startup-loader-card strong {
+  font: 700 20px Georgia,serif;
+}
+
+.startup-loader-card small {
+  color: var(--muted);
+}
+
+.liquidity-outlook-panel,
+.financing-panel {
+  margin: 14px 0;
+}
+
+.outlook-account-selectors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.outlook-account-selectors .empty {
+  width: 100%;
+  padding: 6px 0 0;
+  text-align: left;
+}
+
+.outlook-account-choice:has(input:checked) {
+  border-color: var(--green);
+  background: #e8f2ed;
+}
+
+.outlook-account-choice input:disabled {
+  opacity: 1;
+}
+
+.liquidity-outlook-groups {
+  display: grid;
+  gap: 18px;
+}
+
+.liquidity-account-group {
+  min-width: 0;
+}
+
+.liquidity-account-group + .liquidity-account-group {
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.liquidity-account-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.liquidity-account-heading span,
+.liquidity-account-heading small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.liquidity-account-heading h3 {
+  margin: 2px 0 0;
+  font: 750 18px/1.2 Inter,sans-serif;
+}
+
+.liquidity-outlook-grid {
+  display: grid;
+  grid-template-columns: repeat(3,minmax(0,1fr));
+  gap: 10px;
+}
+
+.liquidity-outlook-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #faf7f0;
+}
+
+.liquidity-outlook-card h4 {
+  margin: 0 0 10px;
+  font: 750 16px/1.2 Inter,sans-serif;
+  text-transform: capitalize;
+}
+
+.liquidity-outlook-card > div {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-top: 1px solid var(--line);
+}
+
+.liquidity-outlook-card span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.liquidity-outlook-card strong {
+  font: 700 16px Georgia,serif;
+  white-space: nowrap;
+}
+
+.financing-grid {
+  display: grid;
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 12px;
+}
+
+.financing-grid .credit-line-card,
+.financing-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #faf7f0;
+}
+
+.financing-card > div:first-child span,
+.financing-grid .credit-line-card > div:first-child span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.financing-card h3,
+.financing-grid .credit-line-card h3 {
+  margin: 4px 0 2px;
+}
+
+.financing-card > strong {
+  display: block;
+  margin-top: 13px;
+  font: 700 22px Georgia,serif;
+}
+
+.financing-facts {
+  display: grid;
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 7px 12px;
+  margin-top: 12px;
+}
+
+.financing-facts span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.financing-facts b {
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+@media(max-width:760px) {
+  .liquidity-outlook-grid {
+    grid-template-columns: repeat(2,minmax(0,1fr));
+  }
+
+  .financing-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .liquidity-outlook-card {
+    padding: 11px;
+  }
+
+  .liquidity-outlook-card h4 {
+    font-size: 14px;
+  }
+
+  .liquidity-outlook-card span {
+    font-size: 10px;
+  }
+
+  .liquidity-outlook-card strong {
+    font-size: 14px;
+  }
+
+  .liquidity-account-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+}
+
+@media(max-width:340px) {
+  .liquidity-outlook-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media(max-width:720px) {
+  .brand-row,
+  .section-heading {
+    flex-wrap: wrap;
+  }
+
+  .household-pill {
+    max-width: 100%;
+    white-space: normal;
+  }
+}
