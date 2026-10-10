@@ -1,9 +1,20 @@
 # Changelog
 
+## 2.4.0 – 10.10.2026
+- Kontostand-Historie: Die neuesten fünf Stände sind sichtbar, ältere nach Monat aufklappbar; Daten und Rechenlogik bleiben unverändert.
+- Personen hinzufügen, umbenennen und unbenutzte Personen löschen; keine feste Begrenzung auf A/B mehr.
+- Kompatible Migration der Personentabelle unter Beibehaltung vorhandener IDs und Zuordnungen.
+- Überarbeitete öffentliche Dokumentation und einheitliche Versionsangaben.
+
+## 2.3.0 – 05.10.2026
+- Verbesserte Dashboard-Monatsauswahl und Anpassungen der Darstellung; historische Kredit- und Kontoberechnungen bleiben bestehen.
+
+
+
 ## 2.1.1
 
 - Die 6-Monats-Liquiditätsvorschau unterstützt eine Auswahl der normalen Bankkonten und zeigt für jedes ausgewählte Konto eine eigene Prognose zur Monatsmitte und zum Monatsende.
-- ING Giro und Sparkasse können einzeln oder gemeinsam angezeigt werden; die Auswahl wird pro Haushalt im Browser gespeichert.
+- Girokonto A und Girokonto B können einzeln oder gemeinsam angezeigt werden; die Auswahl wird pro Haushalt im Browser gespeichert.
 - Rahmenkredite bleiben von Auswahl und Liquiditätsvorschau ausgeschlossen.
 - Auswahlbezogene Vorschauen werden lokal zwischengespeichert und beim Neuladen im Hintergrund aktualisiert.
 - API und Benutzeroberfläche schützen vor ungültigen, fremden oder als Rahmenkredit geführten Konten.
@@ -14,7 +25,7 @@
 
 ## 1.7.1
 
-- Quellstand mit dem am 26. September 2026 gebauten und auf dem AM06 laufenden Produktionsimage synchronisiert.
+- Quellstand mit dem am 26. September 2026 gebauten und lokal geprüften Produktionsimage synchronisiert.
 - Sondertilgungen bei Konsumfinanzierungen reduzieren jetzt zusätzlich die noch verzinsliche Produktpreis-Restbasis.
 - Wird das eigentliche Kapital durch Korrektur und Ablöse vollständig getilgt, bleiben keine zukünftigen Finanzierungskosten als Phantom-Restsaldo stehen.
 - Nach vollständiger Ablösung werden alle späteren Raten weiterhin angezeigt, aber als `credit_repaid` weder dem Konto noch dem Kredit belastet.
@@ -120,7 +131,7 @@
 - eine normale Bearbeitung ersetzt die sichtbare Position ab heute vollständig und kann nicht mehr unbemerkt von einer alten Zukunftsversion überschrieben werden
 - wiederkehrende Kreditraten erscheinen dadurch zuverlässig an allen künftigen Fälligkeitstagen in Vorschau, Dashboard, Kreditverlauf und Excel-Export
 - Cent-Restbeträge werden über die vorletzte volle Rate und eine automatisch gekürzte Schlussrate vollständig bis 0,00 € fortgeschrieben
-- Regressionstests decken die reale Mobilezone-Konstellation, vorhandene Altversionen und alle drei Kreditarten ab
+- Regressionstests decken die reale Beispiel-Konsumkredit-Konstellation, vorhandene Altversionen und alle drei Kreditarten ab
 
 ## 0.12.8
 

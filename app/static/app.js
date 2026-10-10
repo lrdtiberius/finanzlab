@@ -1,6 +1,6 @@
 const $=selector=>document.querySelector(selector);
 const $$=selector=>[...document.querySelectorAll(selector)];
-const state={households:[],currentId:null,asOf:null,dashboard:null,incomes:[],expenses:[],transfers:[],credits:[],energylab:null,incomeFilter:'active',expenseFilter:'active',dashboardExpenseCategory:'all',dashboardMonth:null,transferFilter:'active',creditFilter:'all',diagnostics:null,settingsLoadedFor:null,settingsLoading:false,preview:null,previewMonth:null,previewAccountIds:[],previewCreditIds:[],previewSelectedDay:null,editingFlowId:null,editingFlowKind:null,editingIncomeChangeId:null,editingEnergyFlowId:null,editingAccountId:null,editingAccountHistory:[],editingTransferId:null,editingCreditId:null,currentCreditId:null,categories:[],outlook:null,outlookBaseMonth:null,outlookRequest:0,outlookAccountIds:[],outlookSelectionFor:null,outlookLoadingKey:null};
+const state={households:[],currentId:null,asOf:null,dashboard:null,incomes:[],expenses:[],transfers:[],credits:[],dashboardCredits:[],energylab:null,incomeFilter:'active',expenseFilter:'active',dashboardExpenseCategory:'all',dashboardMonth:null,transferFilter:'active',creditFilter:'all',diagnostics:null,settingsLoadedFor:null,settingsLoading:false,preview:null,previewMonth:null,previewAccountIds:[],previewCreditIds:[],previewSelectedDay:null,editingFlowId:null,editingFlowKind:null,editingIncomeChangeId:null,editingEnergyFlowId:null,editingAccountId:null,editingAccountHistory:[],editingTransferId:null,editingCreditId:null,currentCreditId:null,categories:[],outlook:null,outlookBaseMonth:null,outlookRequest:0,outlookAccountIds:[],outlookSelectionFor:null,outlookLoadingKey:null,outlookAvailableAccountIds:[],outlookAvailabilityFor:null,outlookManagerOpen:false};
 const recurrenceLabels={weekly:'wöchentlich',monthly:'monatlich',quarterly:'vierteljährlich',semiannual:'halbjährlich',yearly:'jährlich',once:'einmalig'};
 const categoryLabels={salary:'Gehalt',pension:'Rente',benefit:'Leistung',family:'Familie',other_income:'Sonstige Einnahme',housing:'Wohnen',energy:'Energie',insurance:'Versicherung',food:'Lebensmittel',mobility:'Mobilität',consumer_credit:'Konsumkredit',credit:'Kredit',borrowed:'Geliehen',mortgage:'Darlehen',interest:'Zinsen',leisure:'Freizeit',other_expense:'Sonstige Ausgabe',other:'Sonstiges'};
 const creditTypeLabels={consumer_credit:'Konsumkredit',credit:'Kredit',borrowed:'Geliehen',mortgage:'Darlehen'};
@@ -24,13 +24,49 @@ function shiftMonth(value,count){const [y,m]=value.split('-').map(Number),next=n
 function addMonthsToDate(value,count){if(!value||!count)return '';const [y,m,d]=value.split('-').map(Number),monthIndex=m-1+Number(count),year=y+Math.floor(monthIndex/12),month=((monthIndex%12)+12)%12;const lastDay=new Date(year,month+1,0).getDate();return `${year}-${String(month+1).padStart(2,'0')}-${String(Math.min(d,lastDay)).padStart(2,'0')}`}
 function durationBetweenDates(start,end){if(!start||!end)return '';const [sy,sm]=start.split('-').map(Number),[ey,em]=end.split('-').map(Number),months=(ey-sy)*12+em-sm;return months>0&&addMonthsToDate(start,months)===end?String(months):''}
 function expectedTransferEnd(start,recurrence,count){const total=Number(count);if(!start||!Number.isInteger(total)||total<1)return '';if(recurrence==='once')return total===1?start:'';const interval={monthly:1,quarterly:3,semiannual:6,yearly:12}[recurrence];return interval?addMonthsToDate(start,(total-1)*interval):''}
-function transferLimitError(form){const end=form.end_date.value,count=form.occurrence_count.value;if(!count)return '';if(form.recurrence.value==='once'&&Number(count)!==1)return 'Eine einmalige Umbuchung kann nur eine Ausführung haben.';if(!end)return '';const expected=expectedTransferEnd(form.due_date.value,form.recurrence.value,count);return expected&&end!==expected?`Enddatum und Anzahl passen nicht zusammen. Bei ${count} Ausführungen ist das Enddatum ${dateLabel(expected)}.`:''}
+function transferLimitError(form){
+  const end=form.end_date.value;
+  const count=form.occurrence_count.value;
+  const recurrence=form.recurrence.value;
+  const source=accountById(form.source_account_id.value);
+
+  if(
+    source?.kind==='credit_line' &&
+    recurrence!=='once' &&
+    !end &&
+    !count
+  ){
+    return 'Für eine wiederkehrende Rahmenkredit-Auszahlung bitte ein Ende oder eine Anzahl angeben.';
+  }
+
+  if(!count)return '';
+
+  if(
+    recurrence==='once' &&
+    Number(count)!==1
+  ){
+    return 'Eine einmalige Umbuchung kann nur eine Ausführung haben.';
+  }
+
+  if(!end)return '';
+
+  const expected=expectedTransferEnd(
+    form.due_date.value,
+    recurrence,
+    count
+  );
+
+  return expected&&end!==expected
+    ? `Enddatum und Anzahl passen nicht zusammen. Bei ${count} Ausführungen ist das Enddatum ${dateLabel(expected)}.`
+    : '';
+}
+
 function ownerName(item){if(item.owner_scope==='joint')return 'Gemeinsam';return state.dashboard?.household.persons.find(person=>person.id===item.owner_person_id)?.display_name||'Haushalt'}
 function accountById(id){return state.dashboard?.household.accounts.find(account=>account.id===id)}
 function accountName(id){return accountById(id)?.name||'Kein Konto'}
 function creditById(id){return state.credits.find(credit=>credit.id===id)}
 function creditName(id){return creditById(id)?.name||'Kein Kredit'}
-function slotForOwner(item){if(item?.owner_scope==='joint')return 'joint';return state.dashboard.household.persons.find(person=>person.id===item?.owner_person_id)?.slot||'A'}
+function ownerValue(item){if(item?.owner_scope==='joint')return 'joint';return state.dashboard.household.persons.find(person=>person.id===item?.owner_person_id)?.id||state.dashboard.household.persons[0]?.id||''}
 function isArchived(item){const archiveDate=item?.end_date||(item?.recurrence==='once'?item?.due_date:null);return item?.lifecycle_status==='ended'||Boolean(archiveDate&&archiveDate<today())}
 async function api(url,options={}){const response=await fetch(url,options),data=await response.json().catch(()=>({error:'Ungültige Serverantwort.'}));if(!response.ok)throw new Error(data.error||'Anfrage fehlgeschlagen.');return data}
 function toast(message){const element=$('#toast');element.textContent=message;element.hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>element.hidden=true,3800)}
@@ -56,6 +92,7 @@ function startupLoader(show,message='FinanzLab lädt …'){
 
 const STARTUP_CACHE_PREFIX='finanzlab-ui-cache-v1:';
 const OUTLOOK_ACCOUNT_SELECTION_PREFIX='finanzlab-outlook-accounts-v1:';
+const OUTLOOK_ACCOUNT_AVAILABILITY_PREFIX='finanzlab-outlook-available-v1:';
 
 function startupCacheKey(){
   return state.currentId
@@ -75,49 +112,162 @@ function liquidDashboardAccounts(){
   );
 }
 
+// finanzlab-2.2-dynamic-outlook
+
+function outlookAvailabilityKey(){
+  return state.currentId
+    ? `${OUTLOOK_ACCOUNT_AVAILABILITY_PREFIX}${state.currentId}`
+    : null;
+}
+
+function selectableOutlookAccounts(){
+  const allowed=new Set(state.outlookAvailableAccountIds);
+  return liquidDashboardAccounts().filter(
+    account=>allowed.has(account.id)
+  );
+}
+
+function storedIdList(key){
+  if(!key)return null;
+
+  try{
+    const raw=window.localStorage.getItem(key);
+
+    if(raw===null)return null;
+
+    const value=JSON.parse(raw);
+    return Array.isArray(value)?value:null;
+  }catch(error){
+    return null;
+  }
+}
+
 function ensureOutlookAccountSelection(){
   const accounts=liquidDashboardAccounts();
   const validIds=accounts.map(account=>account.id);
   const valid=new Set(validIds);
 
-  if(state.outlookSelectionFor!==state.currentId){
-    let saved=[];
-    try{
-      const value=JSON.parse(
-        window.localStorage.getItem(outlookSelectionKey())||'[]'
+  /*
+   * Verfügbare Konten:
+   * Beim ersten Start von 2.2.2 werden alle aktuellen normalen
+   * Bankkonten angeboten. Danach bleibt die Benutzerwahl erhalten.
+   * Neue Konten erscheinen automatisch in "Konten verwalten",
+   * werden aber nicht ungefragt zur Schnellwahl hinzugefügt.
+   */
+  if(state.outlookAvailabilityFor!==state.currentId){
+    const saved=storedIdList(outlookAvailabilityKey());
+
+    if(saved===null){
+      state.outlookAvailableAccountIds=[...validIds];
+    }else{
+      const savedSet=new Set(
+        saved.filter(id=>valid.has(id))
       );
-      if(Array.isArray(value))saved=value;
-    }catch(error){
-      saved=[];
+
+      state.outlookAvailableAccountIds=
+        validIds.filter(id=>savedSet.has(id));
     }
-    const savedSet=new Set(saved.filter(id=>valid.has(id)));
-    state.outlookAccountIds=validIds.filter(id=>savedSet.has(id));
-    state.outlookSelectionFor=state.currentId;
-    if(state.outlookAccountIds.length){
-      saveOutlookAccountSelection();
-    }
+
+    state.outlookAvailabilityFor=state.currentId;
   }else{
-    const selectedSet=new Set(
-      state.outlookAccountIds.filter(id=>valid.has(id))
+    const availableSet=new Set(
+      state.outlookAvailableAccountIds.filter(
+        id=>valid.has(id)
+      )
     );
-    state.outlookAccountIds=validIds.filter(id=>selectedSet.has(id));
+
+    state.outlookAvailableAccountIds=
+      validIds.filter(id=>availableSet.has(id));
   }
 
-  if(!state.outlookAccountIds.length&&validIds.length){
-    state.outlookAccountIds=[...validIds];
-    saveOutlookAccountSelection();
+  /*
+   * Falls alle bisher angebotenen Konten gelöscht wurden,
+   * neue vorhandene Konten wieder als Ausgangsbasis verwenden.
+   */
+  if(
+    !state.outlookAvailableAccountIds.length &&
+    validIds.length
+  ){
+    state.outlookAvailableAccountIds=[...validIds];
   }
+
+  saveOutlookAccountAvailability();
+
+  const available=new Set(
+    state.outlookAvailableAccountIds
+  );
+
+  /*
+   * Aktive Schnellwahl aus der vorhandenen 2.1.1-Einstellung
+   * übernehmen und auf weiterhin verfügbare Konten begrenzen.
+   */
+  if(state.outlookSelectionFor!==state.currentId){
+    const saved=storedIdList(outlookSelectionKey())||[];
+    const savedSet=new Set(
+      saved.filter(id=>available.has(id))
+    );
+
+    state.outlookAccountIds=
+      state.outlookAvailableAccountIds.filter(
+        id=>savedSet.has(id)
+      );
+
+    state.outlookSelectionFor=state.currentId;
+  }else{
+    const selectedSet=new Set(
+      state.outlookAccountIds.filter(
+        id=>available.has(id)
+      )
+    );
+
+    state.outlookAccountIds=
+      state.outlookAvailableAccountIds.filter(
+        id=>selectedSet.has(id)
+      );
+  }
+
+  if(
+    !state.outlookAccountIds.length &&
+    state.outlookAvailableAccountIds.length
+  ){
+    state.outlookAccountIds=[
+      ...state.outlookAvailableAccountIds
+    ];
+  }
+
+  saveOutlookAccountSelection();
 }
 
 function saveOutlookAccountSelection(){
   const key=outlookSelectionKey();
+
   if(!key)return;
+
   try{
-    window.localStorage.setItem(key,JSON.stringify(state.outlookAccountIds));
+    window.localStorage.setItem(
+      key,
+      JSON.stringify(state.outlookAccountIds)
+    );
   }catch(error){
-    // Die Prognose funktioniert auch ohne verfügbaren Browser-Speicher.
+    // Prognose funktioniert auch ohne Browser-Speicher.
   }
 }
+
+function saveOutlookAccountAvailability(){
+  const key=outlookAvailabilityKey();
+
+  if(!key)return;
+
+  try{
+    window.localStorage.setItem(
+      key,
+      JSON.stringify(state.outlookAvailableAccountIds)
+    );
+  }catch(error){
+    // Prognose funktioniert auch ohne Browser-Speicher.
+  }
+}
+
 
 function saveStartupCache(){
   const key=startupCacheKey();
@@ -133,6 +283,7 @@ function saveStartupCache(){
       expenses:state.expenses,
       transfers:state.transfers,
       credits:state.credits,
+      dashboardCredits:state.dashboardCredits,
       categories:state.categories,
       outlook:state.outlook,
       outlookBaseMonth:state.outlookBaseMonth,
@@ -169,6 +320,7 @@ function restoreStartupCache(){
     state.expenses=Array.isArray(cached.expenses)?cached.expenses:[];
     state.transfers=Array.isArray(cached.transfers)?cached.transfers:[];
     state.credits=Array.isArray(cached.credits)?cached.credits:[];
+    state.dashboardCredits=Array.isArray(cached.dashboardCredits)?cached.dashboardCredits:[];
     state.categories=Array.isArray(cached.categories)?cached.categories:[];
     syncCategoryState();
     ensureSelections();
@@ -281,6 +433,7 @@ async function loadAll(){
     expenses,
     transfers,
     credits,
+    dashboardCredits,
     categories
   ]=await Promise.all([
     api(`/api/dashboard?${dashboardQuery}`),
@@ -290,6 +443,11 @@ async function loadAll(){
     api(
       `/api/credits?household_id=${encodeURIComponent(householdId)}`+
       `&as_of=${encodeURIComponent(today())}`
+    ),
+    api(
+      `/api/credits?household_id=${encodeURIComponent(householdId)}`+
+      `&as_of=${encodeURIComponent(dashboardAsOf)}`+
+      `&simulate_future=1`
     ),
     api(`/api/categories?household_id=${encodeURIComponent(householdId)}`)
   ]);
@@ -301,23 +459,16 @@ async function loadAll(){
   state.expenses=expenses.items;
   state.transfers=transfers.items;
   state.credits=credits.items;
+  state.dashboardCredits=dashboardCredits.items||[];
   state.categories=categories.items||[];
 
   syncCategoryState();
   ensureSelections();
   renderAll();
   saveStartupCache();
-
-  // Die 6-Monats-Prognose wird bewusst erst nach dem normalen
-  // Dashboard nachgeladen, damit sie den Kaltstart nicht ausbremst.
-  loadDashboardOutlook(state.dashboardMonth).catch(error=>{
-    const target=$('#dashboard-outlook-list');
-    if(target){
-      target.innerHTML=
-        `<p class="empty">Vorschau konnte nicht geladen werden: `+
-        `${escapeHtml(error.message)}</p>`;
-    }
-  });
+  // Die 6-Monats-Prognose wird nur bei geöffneter
+  // Dashboard-Kachel berechnet.
+  loadDashboardOutlookIfOpen(state.dashboardMonth);
 
   if(location.hash==='#settings'){
     loadSettingsSupplemental().catch(error=>
@@ -330,7 +481,60 @@ async function loadAll(){
 }
 
 function ensureSelections(){const ids=state.dashboard.household.accounts.map(account=>account.id),valid=new Set(ids);state.previewAccountIds=state.previewAccountIds.filter(id=>valid.has(id));if(!state.previewAccountIds.length)state.previewAccountIds=[...ids];const creditIds=state.credits.filter(credit=>credit.credit_type!=='mortgage').map(credit=>credit.id),validCredits=new Set(creditIds);state.previewCreditIds=state.previewCreditIds.filter(id=>validCredits.has(id));ensureOutlookAccountSelection()}
-function updateDashboardMonthControl(){const input=$('#dashboard-month'),label=$('#dashboard-month-label');if(input)input.value=state.dashboardMonth||monthNow();if(label)label.textContent=monthLabel(state.dashboardMonth||monthNow())}
+function dashboardMonthOptions(selected){
+  const current=monthNow();
+
+  let start=shiftMonth(current,-120);
+  let end=shiftMonth(current,120);
+
+  if(selected<start){
+    start=shiftMonth(selected,-12);
+  }
+
+  if(selected>end){
+    end=shiftMonth(selected,12);
+  }
+
+  const months=[];
+
+  for(
+    let value=start;
+    ;
+    value=shiftMonth(value,1)
+  ){
+    months.push(value);
+
+    if(value===end){
+      break;
+    }
+  }
+
+  return months;
+}
+
+function updateDashboardMonthControl(){
+  const select=$('#dashboard-month');
+  const value=state.dashboardMonth||monthNow();
+
+  if(!select)return;
+
+  const hasValue=[...select.options].some(
+    option=>option.value===value
+  );
+
+  if(!select.options.length||!hasValue){
+    select.innerHTML=dashboardMonthOptions(value)
+      .map(
+        month=>
+          `<option value="${month}">`+
+          `${escapeHtml(monthLabel(month))}`+
+          `</option>`
+      )
+      .join('');
+  }
+
+  select.value=value;
+}
 function renderAll(){renderHouseholdSelect();renderDashboard();renderManage();renderIncomes();renderExpenses();renderCredits();renderTransfers();renderSettings();updateDashboardMonthControl();$('#preview-month-label').textContent=monthLabel(state.previewMonth);$('#current-household-name').textContent=state.dashboard.household.name}
 
 function renderHouseholdSelect(){const select=$('#household-select');select.innerHTML=state.households.map(h=>`<option value="${escapeHtml(h.id)}" ${h.id===state.currentId?'selected':''}>${escapeHtml(h.name)}</option>`).join('');const current=state.households.find(h=>h.id===state.currentId);$('#current-household-name').textContent=current?.name||'Noch keiner';$('#delete-household').disabled=!current}
@@ -409,6 +613,13 @@ function mortgageDashboardCard(credit){
     </article>`;
 }
 
+// finanzlab-2.2-outlook-collapsible-settings
+
+function dashboardOutlookIsOpen(){
+  return Boolean($('#dashboard-outlook-panel')?.open);
+}
+
+
 function renderLiquidityOutlook(){
   const target=$('#dashboard-outlook-list');
 
@@ -416,26 +627,49 @@ function renderLiquidityOutlook(){
 
   ensureOutlookAccountSelection();
 
-  const availableAccounts=liquidDashboardAccounts();
+  const allAccounts=liquidDashboardAccounts();
+  const selectableAccounts=selectableOutlookAccounts();
   const selector=$('#dashboard-outlook-selectors');
 
   if(selector){
-    selector.innerHTML=availableAccounts.length
-      ? availableAccounts.map(account=>{
-          const checked=state.outlookAccountIds.includes(account.id);
-          const lastSelected=checked&&state.outlookAccountIds.length===1;
-          return `<label class="account-choice outlook-account-choice">`+
-            `<input type="checkbox" `+
-            `data-outlook-account="${escapeHtml(account.id)}" `+
-            `${checked?'checked':''} ${lastSelected?'disabled':''}> `+
-            `${escapeHtml(account.name)}</label>`;
+    selector.innerHTML=selectableAccounts.length
+      ? selectableAccounts.map(account=>{
+          const checked=
+            state.outlookAccountIds.includes(account.id);
+
+          const lastSelected=
+            checked &&
+            state.outlookAccountIds.length===1;
+
+          return `
+            <label class="account-choice outlook-account-choice">
+              <input
+                type="checkbox"
+                data-outlook-account="${escapeHtml(account.id)}"
+                ${checked?'checked':''}
+                ${lastSelected?'disabled':''}>
+              ${escapeHtml(account.name)}
+            </label>`;
         }).join('')
-      : '<p class="empty">Noch kein normales Bankkonto vorhanden.</p>';
+      : allAccounts.length
+        ? '<p class="empty">'+
+          'Unter Einstellungen → Liquiditätsvorschau '+
+          'mindestens ein Konto auswählen.</p>'
+        : '<p class="empty">'+
+          'Noch kein normales Bankkonto vorhanden.</p>';
   }
 
-  if(!availableAccounts.length){
+  if(!allAccounts.length){
     target.innerHTML=
       '<p class="empty">Lege zuerst ein normales Bankkonto an.</p>';
+    return;
+  }
+
+  if(!selectableAccounts.length){
+    target.innerHTML=
+      '<p class="empty">'+
+      'Unter Einstellungen → Liquiditätsvorschau '+
+      'mindestens ein Konto auswählen.</p>';
     return;
   }
 
@@ -446,34 +680,58 @@ function renderLiquidityOutlook(){
 
   target.innerHTML=items.length
     ? (state.outlook?.accounts||[]).map(account=>`
-        <section class="liquidity-account-group"
-                 data-outlook-account-group="${escapeHtml(account.id)}">
+        <section
+          class="liquidity-account-group"
+          data-outlook-account-group="${escapeHtml(account.id)}">
+
           <div class="liquidity-account-heading">
             <div>
               <span>Bankkonto</span>
               <h3>${escapeHtml(account.name)}</h3>
             </div>
+
             <small>Rahmenkredit ausgeschlossen</small>
           </div>
+
           <div class="liquidity-outlook-grid">
             ${items.map(item=>{
               const values=(item.accounts||[]).find(
                 entry=>entry.account_id===account.id
               )||{};
+
               const mid=values.mid_balance_cents;
               const end=values.end_balance_cents;
+
               return `
                 <article class="liquidity-outlook-card">
                   <h4>${escapeHtml(monthLabel(item.month))}</h4>
+
                   <div>
-                    <span>Monatsmitte · ${dateLabel(item.mid_date).slice(0,5)}.</span>
-                    <strong class="${mid!=null&&Number(mid)<0?'amount-negative':''}">
+                    <span>
+                      Monatsmitte ·
+                      ${dateLabel(item.mid_date).slice(0,5)}.
+                    </span>
+
+                    <strong class="${
+                      mid!=null&&Number(mid)<0
+                        ? 'amount-negative'
+                        : ''
+                    }">
                       ${moneyOrMissing(mid)}
                     </strong>
                   </div>
+
                   <div>
-                    <span>Monatsende · ${dateLabel(item.end_date).slice(0,5)}.</span>
-                    <strong class="${end!=null&&Number(end)<0?'amount-negative':''}">
+                    <span>
+                      Monatsende ·
+                      ${dateLabel(item.end_date).slice(0,5)}.
+                    </span>
+
+                    <strong class="${
+                      end!=null&&Number(end)<0
+                        ? 'amount-negative'
+                        : ''
+                    }">
                       ${moneyOrMissing(end)}
                     </strong>
                   </div>
@@ -484,6 +742,49 @@ function renderLiquidityOutlook(){
       `).join('')
     : '<p class="empty">Vorschau wird berechnet …</p>';
 }
+
+
+function loadDashboardOutlookIfOpen(
+  baseMonth=state.dashboardMonth
+){
+  if(!dashboardOutlookIsOpen())return;
+
+  ensureOutlookAccountSelection();
+
+  if(!state.outlookAccountIds.length){
+    renderLiquidityOutlook();
+    return;
+  }
+
+  const requested=baseMonth||monthNow();
+
+  const loadedIds=
+    (state.outlook?.accounts||[])
+      .map(account=>account.id);
+
+  const alreadyCurrent=
+    state.outlookBaseMonth===requested &&
+    loadedIds.length===state.outlookAccountIds.length &&
+    loadedIds.every(
+      (id,index)=>id===state.outlookAccountIds[index]
+    );
+
+  if(alreadyCurrent){
+    renderLiquidityOutlook();
+    return;
+  }
+
+  loadDashboardOutlook(requested).catch(error=>{
+    const target=$('#dashboard-outlook-list');
+
+    if(target){
+      target.innerHTML=
+        `<p class="empty">Vorschau konnte nicht geladen werden: `+
+        `${escapeHtml(error.message)}</p>`;
+    }
+  });
+}
+
 
 async function loadDashboardOutlook(
   baseMonth=state.dashboardMonth
@@ -553,8 +854,13 @@ function renderDashboard(){
 
   const creditLines=state.dashboard.credit_lines||[];
 
+  const dashboardCreditSource=
+    state.dashboardCredits.length
+      ? state.dashboardCredits
+      : state.credits;
+
   const mortgages=
-    state.credits.filter(
+    dashboardCreditSource.filter(
       credit=>
         credit.credit_type==='mortgage' &&
         !credit.archived
@@ -646,7 +952,7 @@ function renderDashboard(){
       (id,index)=>id===state.outlookAccountIds[index]
     );
 
-  if(!outlookMatches&&state.outlookAccountIds.length){
+  if(dashboardOutlookIsOpen()&&!outlookMatches&&state.outlookAccountIds.length){
     loadDashboardOutlook(state.dashboardMonth).catch(error=>{
       const target=$('#dashboard-outlook-list');
       if(target){
@@ -681,7 +987,69 @@ function renderIncomes(){const active=state.incomes.filter(item=>!isArchived(ite
 function renderExpenses(){const standalone=state.expenses.filter(item=>!(item.credit_id&&item.recurrence==="monthly")),active=standalone.filter(item=>!isArchived(item)),archive=standalone.filter(isArchived),visible=state.expenseFilter==='archive'?archive:active;$('#expense-list-title').textContent=state.expenseFilter==='archive'?'Archivierte Ausgaben':'Aktive Ausgaben';$('#expense-filter').innerHTML=lifecycleFilter(state.expenseFilter,active.length,archive.length,'expense-filter');$('#expense-list').innerHTML=visible.length?visible.map(flowRow).join(''):`<p class="empty">${state.expenseFilter==='archive'?'Noch keine archivierte Ausgabe vorhanden.':'Noch keine aktive Ausgabe angelegt.'}</p>`;$('#expense-position-total').textContent=`− ${eur(state.expenses.reduce((sum,item)=>sum+Number(item.amount_cents||0),0))}`}
 function renderCredits(){const types=['consumer_credit','credit','borrowed','mortgage'],groups=types.map(type=>{const credits=state.credits.filter(item=>item.credit_type===type);return {credit_type:type,count:credits.length,balance_cents:credits.reduce((sum,item)=>sum+Number(item.remaining_balance_cents||0),0)}}),filters=[['all','Alle'],...types.map(type=>[type,creditTypeLabels[type]])],filtered=state.creditFilter==='all'?state.credits:state.credits.filter(item=>item.credit_type===state.creditFilter),activeLabel=state.creditFilter==='all'?'Alle Kredite':creditTypeLabels[state.creditFilter];$('#credit-page-summary').innerHTML=groups.map(creditSummaryCard).join('');$('#credit-list-title').textContent=activeLabel;$('#credit-filter').innerHTML=filters.map(([value,label])=>{const count=value==='all'?state.credits.length:groups.find(group=>group.credit_type===value).count,active=state.creditFilter===value;return `<button class="credit-filter-button ${active?'active':''}" type="button" data-credit-filter="${value}" aria-pressed="${active}">${escapeHtml(label)} <span>${count}</span></button>`}).join('');$('#credit-list').innerHTML=filtered.length?filtered.map(item=>`<article class="credit-row" data-open-credit="${escapeHtml(item.id)}"><div><span class="credit-type-badge">${escapeHtml(creditTypeLabels[item.credit_type])}</span><h3>${escapeHtml(item.name)}</h3><small>Ausgang ${eur(item.opening_balance_cents)} · getilgt ${eur(item.paid_cents)}</small></div><strong>${eur(item.remaining_balance_cents)}</strong><small>offener Saldo</small><button class="link-button" type="button" data-edit-credit="${escapeHtml(item.id)}">Bearbeiten</button></article>`).join(''):state.credits.length?`<p class="empty">Keine Kredite der Art „${escapeHtml(activeLabel)}“ vorhanden.</p>`:'<p class="empty">Noch kein Kredit angelegt.</p>'}
 function renderTransfers(){const active=state.transfers.filter(item=>!isArchived(item)),archive=state.transfers.filter(isArchived),visible=state.transferFilter==='archive'?archive:active;$('#transfer-list-title').textContent=state.transferFilter==='archive'?'Archivierte Umbuchungen':'Aktive Umbuchungen';$('#transfer-filter').innerHTML=lifecycleFilter(state.transferFilter,active.length,archive.length,'transfer-filter');$('#transfer-list').innerHTML=visible.length?visible.map(item=>{const end=item.end_date?` · Ende ${dateLabel(item.end_date)}`:'',count=item.occurrence_count?` · ${item.occurrence_count} Ausführung${Number(item.occurrence_count)===1?'':'en'}`:'';return `<article class="flow-row ${item.active?'':'inactive'}"><span><b>${escapeHtml(item.name)}</b><small>${dateLabel(item.due_date)} · ${recurrenceLabels[item.recurrence]}${end}${count} · ${escapeHtml(item.source_account_name)} → ${escapeHtml(item.target_account_name)}</small></span><strong>${eur(item.amount_cents)}</strong><button class="link-button" type="button" data-edit-transfer="${escapeHtml(item.id)}">Bearbeiten</button></article>`}).join(''):`<p class="empty">${state.transferFilter==='archive'?'Noch keine archivierte Umbuchung vorhanden.':'Noch keine aktive Umbuchung angelegt.'}</p>`}
-function renderSettings(){const persons=state.dashboard.household.persons;$('#person-list').innerHTML=persons.map(person=>`<article class="person-row"><span class="avatar">${escapeHtml(person.display_name.slice(0,1).toUpperCase())}</span><span><b>${escapeHtml(person.display_name)}</b><small>Person ${escapeHtml(person.slot)}</small></span></article>`).join('');const categoryList=$('#category-settings-list');if(categoryList)categoryList.innerHTML=(state.categories||[]).map(item=>`<article class="person-row ${item.active?'':'inactive'}"><span><b>${escapeHtml(item.name)}</b><small>${item.kind==='income'?'Einnahme':'Ausgabe'} · ${item.is_system?'System-Art':'Eigene Art'}${item.active?'':' · deaktiviert'}</small></span>${item.is_system?'':`<span class="row-actions"><button class="link-button" type="button" data-edit-category="${escapeHtml(item.id)}">Bearbeiten</button><button class="link-button" type="button" data-delete-category="${escapeHtml(item.id)}">Löschen</button></span>`}</article>`).join('');const integration=state.energylab||{},form=$('#energylab-form');form.elements.base_url.value=integration.base_url||'http://energylab:8090';form.elements.enabled.checked=Boolean(integration.enabled);$('#energylab-account').innerHTML='<option value="">Kein Konto zugeordnet</option>'+state.dashboard.household.accounts.map(account=>`<option value="${escapeHtml(account.id)}" ${account.id===integration.account_id?'selected':''}>${escapeHtml(account.name)}</option>`).join('');const status=$('#energylab-status');status.hidden=!integration.last_message;status.className=`notice ${integration.last_status==='error'?'error':''}`;status.textContent=integration.last_message?`${integration.last_status==='ok'?'Zuletzt erfolgreich':'Letzter Versuch fehlgeschlagen'}: ${integration.last_message}`:'';$('#energylab-sync').disabled=state.settingsLoading||!integration.enabled;const diagnostics=state.diagnostics;if(!diagnostics||state.settingsLoadedFor!==state.currentId){$('#diagnostics-as-of').textContent=state.settingsLoading?'wird geladen …':'bei Bedarf';$('#diagnostics-summary').innerHTML='';$('#diagnostics-list').innerHTML='<div class="notice">Datenprüfung wird nur beim Öffnen der Einstellungen geladen. Dadurch bleibt das Dashboard schneller.</div>';return}$('#diagnostics-as-of').textContent=dateLabel(diagnostics.as_of);const s=diagnostics.summary;$('#diagnostics-summary').innerHTML=summaryCard('Betroffene Positionen',s.item_count)+summaryCard('Nicht berücksichtigt',s.not_considered_count)+summaryCard('Fehler',s.error,'negative')+summaryCard('Warnungen',s.warning);$('#diagnostics-list').innerHTML=diagnostics.items.length?diagnostics.items.map(item=>{const managed=flowById(item.kind,item.id)?.managed_by==='energylab';return `<article class="diagnostic-row"><i class="severity ${item.issues.some(issue=>issue.severity==='error')?'error':'warning'}"></i><div><b>${escapeHtml(item.name)}</b><small>${item.kind==='income'?'Einnahme':'Ausgabe'} · ${eur(item.amount_cents)}</small><ul>${item.issues.map(issue=>`<li>${escapeHtml(issue.message)}</li>`).join('')}</ul></div>${managed?'<span class="badge">EnergyLab</span>':`<button class="link-button" type="button" data-edit-flow-kind="${item.kind}" data-edit-flow="${escapeHtml(item.id)}">Bearbeiten</button>`}</article>`}).join(''):'<div class="notice">Alle Einnahmen und Ausgaben können berücksichtigt werden.</div>'}
+function renderOutlookSettings(){
+  if(!state.dashboard)return;
+
+  ensureOutlookAccountSelection();
+
+  const grid=$('#settings-view .settings-grid');
+
+  if(!grid)return;
+
+  let panel=$('#settings-outlook-panel');
+
+  if(!panel){
+    panel=document.createElement('section');
+    panel.id='settings-outlook-panel';
+    panel.className='panel outlook-settings-panel';
+    grid.appendChild(panel);
+  }
+
+  const accounts=liquidDashboardAccounts();
+
+  panel.innerHTML=`
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">LIQUIDITÄTSVORSCHAU</p>
+        <h2>Konten für die 6-Monats-Vorschau</h2>
+      </div>
+    </div>
+
+    <p class="panel-copy">
+      Lege fest, welche Bankkonten auf dem Dashboard
+      als Schnellwahl für die Liquiditätsvorschau angeboten werden.
+      Rahmenkredite werden nicht berücksichtigt.
+    </p>
+
+    <div id="settings-outlook-account-list"
+         class="outlook-account-manager-list"></div>`;
+
+  const target=$('#settings-outlook-account-list');
+
+  target.innerHTML=accounts.length
+    ? accounts.map(account=>{
+        const checked=
+          state.outlookAvailableAccountIds.includes(account.id);
+
+        const lastAvailable=
+          checked &&
+          state.outlookAvailableAccountIds.length===1;
+
+        return `
+          <label class="account-choice outlook-managed-account-choice">
+            <input
+              type="checkbox"
+              data-outlook-available-account="${escapeHtml(account.id)}"
+              ${checked?'checked':''}
+              ${lastAvailable?'disabled':''}>
+            ${escapeHtml(account.name)}
+          </label>`;
+      }).join('')
+    : '<p class="empty">Noch kein normales Bankkonto vorhanden.</p>';
+}
+
+
+function renderSettings(){renderOutlookSettings();const persons=state.dashboard.household.persons;$('#person-list').innerHTML=persons.map(person=>`<article class="person-row"><span class="avatar">${escapeHtml(person.display_name.slice(0,1).toUpperCase())}</span><span class="person-display"><b>${escapeHtml(person.display_name)}</b></span><span class="row-actions"><button type="button" class="link-button" data-edit-person="${escapeHtml(person.id)}">Bearbeiten</button></span></article>`).join('');const categoryList=$('#category-settings-list');if(categoryList)categoryList.innerHTML=(state.categories||[]).map(item=>`<article class="person-row ${item.active?'':'inactive'}"><span><b>${escapeHtml(item.name)}</b><small>${item.kind==='income'?'Einnahme':'Ausgabe'} · ${item.is_system?'System-Art':'Eigene Art'}${item.active?'':' · deaktiviert'}</small></span>${item.is_system?'':`<span class="row-actions"><button class="link-button" type="button" data-edit-category="${escapeHtml(item.id)}">Bearbeiten</button><button class="link-button" type="button" data-delete-category="${escapeHtml(item.id)}">Löschen</button></span>`}</article>`).join('');const integration=state.energylab||{},form=$('#energylab-form');form.elements.base_url.value=integration.base_url||'http://energylab:8090';form.elements.enabled.checked=Boolean(integration.enabled);$('#energylab-account').innerHTML='<option value="">Kein Konto zugeordnet</option>'+state.dashboard.household.accounts.map(account=>`<option value="${escapeHtml(account.id)}" ${account.id===integration.account_id?'selected':''}>${escapeHtml(account.name)}</option>`).join('');const status=$('#energylab-status');status.hidden=!integration.last_message;status.className=`notice ${integration.last_status==='error'?'error':''}`;status.textContent=integration.last_message?`${integration.last_status==='ok'?'Zuletzt erfolgreich':'Letzter Versuch fehlgeschlagen'}: ${integration.last_message}`:'';$('#energylab-sync').disabled=state.settingsLoading||!integration.enabled;const diagnostics=state.diagnostics;if(!diagnostics||state.settingsLoadedFor!==state.currentId){$('#diagnostics-as-of').textContent=state.settingsLoading?'wird geladen …':'bei Bedarf';$('#diagnostics-summary').innerHTML='';$('#diagnostics-list').innerHTML='<div class="notice">Datenprüfung wird nur beim Öffnen der Einstellungen geladen. Dadurch bleibt das Dashboard schneller.</div>';return}$('#diagnostics-as-of').textContent=dateLabel(diagnostics.as_of);const s=diagnostics.summary;$('#diagnostics-summary').innerHTML=summaryCard('Betroffene Positionen',s.item_count)+summaryCard('Nicht berücksichtigt',s.not_considered_count)+summaryCard('Fehler',s.error,'negative')+summaryCard('Warnungen',s.warning);$('#diagnostics-list').innerHTML=diagnostics.items.length?diagnostics.items.map(item=>{const managed=flowById(item.kind,item.id)?.managed_by==='energylab';return `<article class="diagnostic-row"><i class="severity ${item.issues.some(issue=>issue.severity==='error')?'error':'warning'}"></i><div><b>${escapeHtml(item.name)}</b><small>${item.kind==='income'?'Einnahme':'Ausgabe'} · ${eur(item.amount_cents)}</small><ul>${item.issues.map(issue=>`<li>${escapeHtml(issue.message)}</li>`).join('')}</ul></div>${managed?'<span class="badge">EnergyLab</span>':`<button class="link-button" type="button" data-edit-flow-kind="${item.kind}" data-edit-flow="${escapeHtml(item.id)}">Bearbeiten</button>`}</article>`}).join(''):'<div class="notice">Alle Einnahmen und Ausgaben können berücksichtigt werden.</div>'}
 async function loadSettingsSupplemental(force=false){if(!state.currentId||!state.dashboard)return;if(!force&&state.settingsLoadedFor===state.currentId)return;if(state.settingsLoading)return;const householdId=state.currentId;state.settingsLoading=true;renderSettings();const managementQuery=`household_id=${encodeURIComponent(householdId)}&as_of=${encodeURIComponent(today())}`;try{const [diagnostics,energylab]=await Promise.all([api(`/api/diagnostics?${managementQuery}`),api(`/api/integrations/energylab?household_id=${encodeURIComponent(householdId)}`)]);if(householdId!==state.currentId)return;state.diagnostics=diagnostics;state.energylab=energylab;state.settingsLoadedFor=householdId}finally{state.settingsLoading=false;if(householdId===state.currentId)renderSettings()}}
 function summaryCard(label,value,style=''){const countLabels=new Set(['Betroffene Positionen','Nicht berücksichtigt','Fehler','Warnungen','Ausgewählte Konten','Bewegungen','Buchungen']);const display=typeof value==='number'&&!countLabels.has(label)?eur(value):value;return `<article class="summary-card ${style}"><span>${escapeHtml(label)}</span><b class="${style==='negative'?'amount-negative':''}">${escapeHtml(display)}</b></article>`}
 
@@ -734,9 +1102,16 @@ async function loadDashboardMonth(value){
       `household_id=${encodeURIComponent(state.currentId)}`+
       `&as_of=${encodeURIComponent(dashboardAsOf)}`;
 
-    const dashboard=await api(
-      `/api/dashboard?${query}`
-    );
+    const [dashboard,dashboardCredits]=await Promise.all([
+      api(
+        `/api/dashboard?${query}`
+      ),
+      api(
+        `/api/credits?household_id=${encodeURIComponent(state.currentId)}`+
+        `&as_of=${encodeURIComponent(dashboardAsOf)}`+
+        `&simulate_future=1`
+      )
+    ]);
 
     if(requestId!==dashboardMonthRequest)return;
 
@@ -752,6 +1127,7 @@ async function loadDashboardMonth(value){
     }
 
     state.dashboard=dashboard;
+    state.dashboardCredits=dashboardCredits.items||[];
     state.dashboardMonth=requested;
 
     renderDashboard();
@@ -763,16 +1139,7 @@ async function loadDashboardMonth(value){
       state.dashboard.household.name;
 
     saveStartupCache();
-
-    loadDashboardOutlook(requested).catch(error=>{
-      const target=$('#dashboard-outlook-list');
-
-      if(target){
-        target.innerHTML=
-          `<p class="empty">Vorschau konnte nicht geladen werden: `+
-          `${escapeHtml(error.message)}</p>`;
-      }
-    });
+    loadDashboardOutlookIfOpen(requested);
 
   }catch(err){
     if(requestId!==dashboardMonthRequest)return;
@@ -797,48 +1164,146 @@ function changeDashboardMonth(count){return loadDashboardMonth(shiftMonth(state.
 $('#dashboard-prev').addEventListener('click',()=>changeDashboardMonth(-1));
 $('#dashboard-next').addEventListener('click',()=>changeDashboardMonth(1));
 $('#dashboard-current').addEventListener('click',()=>loadDashboardMonth(monthNow()));
-let dashboardMonthInputTimer=null;
-function onDashboardMonthInput(event){const value=event.target.value;if(!value)return;state.dashboardMonth=value;updateDashboardMonthControl();clearTimeout(dashboardMonthInputTimer);dashboardMonthInputTimer=setTimeout(()=>loadDashboardMonth(value),120)}
-$('#dashboard-month').addEventListener('input',onDashboardMonthInput);
-$('#dashboard-month').addEventListener('change',event=>{clearTimeout(dashboardMonthInputTimer);if(event.target.value)loadDashboardMonth(event.target.value)});
-$('#dashboard-month').addEventListener('blur',event=>{clearTimeout(dashboardMonthInputTimer);const value=event.target.value;if(value&&value!==state.dashboard?.month)loadDashboardMonth(value)});
+$('#dashboard-month').addEventListener('change',event=>{
+  const value=event.target.value;
+
+  if(value){
+    loadDashboardMonth(value);
+  }
+});
 function changePreviewMonth(count){state.previewMonth=shiftMonth(state.previewMonth,count);state.previewSelectedDay=null;loadPreview()}
 $('#preview-minus').addEventListener('click',()=>changePreviewMonth(-1));$('#preview-plus').addEventListener('click',()=>changePreviewMonth(1));$('#preview-plus-two').addEventListener('click',()=>changePreviewMonth(2));$('#preview-current').addEventListener('click',()=>{state.previewMonth=monthNow();state.previewSelectedDay=null;loadPreview()});$('#preview-day-prev').addEventListener('click',()=>movePreviewDay(-1));$('#preview-day-next').addEventListener('click',()=>movePreviewDay(1));
 $('#preview-day-list').addEventListener('click',event=>{const summary=event.target.closest('[data-preview-day]');if(!summary)return;const details=summary.closest('details'),value=summary.dataset.previewDay;setTimeout(()=>{if(details.open)selectPreviewDay(value,false);else if(state.previewSelectedDay===value){state.previewSelectedDay=null;updatePreviewDayNavigation()}$$('[data-preview-day-entry]').forEach(entry=>{if(entry!==details)entry.open=false})},0)});
 $('#preview-day-list').addEventListener('change',async event=>{const input=event.target.closest('[data-movement-completion]');if(!input)return;const completed=input.checked;input.disabled=true;try{await api('/api/movement-completion',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,occurrence_key:input.dataset.movementCompletion,completed})});await loadAll();toast(completed?'Vorgang wurde als erledigt gespeichert.':'Vorgang wird wieder in der Vorschau berücksichtigt.')}catch(err){input.checked=!completed;input.disabled=false;toast(err.message)}});
 $('#preview-day-list').addEventListener('click',async event=>{const button=event.target.closest('[data-movement-amount]');if(!button)return;event.preventDefault();event.stopPropagation();const current=(Number(button.dataset.currentCents)/100).toFixed(2),planned=Number(button.dataset.plannedCents),value=prompt('Tatsächlichen Betrag nur für diesen Termin eingeben. Leer lassen, um wieder den Planbetrag zu verwenden:',current);if(value===null)return;const normalized=value.trim().replace(',','.');if(normalized!==''&&(!Number.isFinite(Number(normalized))||Number(normalized)<0)){toast('Bitte einen gültigen, nicht negativen Betrag eingeben.');return}button.disabled=true;try{await api('/api/movement-amount',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,occurrence_key:button.dataset.movementAmount,amount_cents:normalized===''?null:euroCents(normalized)})});await loadAll();toast(normalized===''?'Für den Termin gilt wieder der Planbetrag.':`Tatsächlicher Betrag gespeichert; der Planbetrag ${eur(planned)} bleibt für künftige Termine bestehen.`)}catch(err){button.disabled=false;toast(err.message)}});
-$('#dashboard-outlook-selectors').addEventListener('change',event=>{
-  const input=event.target.closest('[data-outlook-account]');
-  if(!input)return;
+$('#dashboard-outlook-panel')?.addEventListener(
+  'toggle',
+  event=>{
+    if(!event.currentTarget.open)return;
 
-  const accountId=input.dataset.outlookAccount;
-  const next=input.checked
-    ? [...state.outlookAccountIds,accountId]
-    : state.outlookAccountIds.filter(id=>id!==accountId);
-
-  if(!next.length){
-    input.checked=true;
-    toast('Mindestens ein Bankkonto muss ausgewählt bleiben.');
-    return;
+    renderLiquidityOutlook();
+    loadDashboardOutlookIfOpen(state.dashboardMonth);
   }
+);
 
-  const nextSet=new Set(next);
-  state.outlookAccountIds=liquidDashboardAccounts()
-    .map(account=>account.id)
-    .filter(id=>nextSet.has(id));
-  saveOutlookAccountSelection();
-  state.outlook=null;
-  state.outlookBaseMonth=state.dashboardMonth;
-  renderLiquidityOutlook();
-  loadDashboardOutlook(state.dashboardMonth).catch(error=>{
-    const target=$('#dashboard-outlook-list');
-    if(target){
-      target.innerHTML=
-        `<p class="empty">Vorschau konnte nicht geladen werden: `+
-        `${escapeHtml(error.message)}</p>`;
-    }
-  });
+
+window.addEventListener('hashchange',()=>{
+  if(location.hash==='#dashboard'){
+    loadDashboardOutlookIfOpen(state.dashboardMonth);
+  }
 });
+
+
+$('#dashboard-outlook-selectors').addEventListener(
+  'change',
+  event=>{
+    const input=
+      event.target.closest('[data-outlook-account]');
+
+    if(!input)return;
+
+    const accountId=input.dataset.outlookAccount;
+
+    const next=input.checked
+      ? [...state.outlookAccountIds,accountId]
+      : state.outlookAccountIds.filter(
+          id=>id!==accountId
+        );
+
+    if(!next.length){
+      input.checked=true;
+      toast(
+        'Mindestens ein Bankkonto muss ausgewählt bleiben.'
+      );
+      return;
+    }
+
+    const nextSet=new Set(next);
+
+    state.outlookAccountIds=
+      selectableOutlookAccounts()
+        .map(account=>account.id)
+        .filter(id=>nextSet.has(id));
+
+    saveOutlookAccountSelection();
+
+    state.outlook=null;
+    state.outlookBaseMonth=state.dashboardMonth;
+
+    renderLiquidityOutlook();
+    loadDashboardOutlookIfOpen(state.dashboardMonth);
+  }
+);
+
+
+$('#settings-view').addEventListener(
+  'change',
+  event=>{
+    const input=
+      event.target.closest(
+        '[data-outlook-available-account]'
+      );
+
+    if(!input)return;
+
+    const accountId=
+      input.dataset.outlookAvailableAccount;
+
+    const next=input.checked
+      ? [...state.outlookAvailableAccountIds,accountId]
+      : state.outlookAvailableAccountIds.filter(
+          id=>id!==accountId
+        );
+
+    if(!next.length){
+      input.checked=true;
+
+      toast(
+        'Mindestens ein Bankkonto muss für die '+
+        'Liquiditätsvorschau verfügbar bleiben.'
+      );
+
+      return;
+    }
+
+    const nextSet=new Set(next);
+
+    state.outlookAvailableAccountIds=
+      liquidDashboardAccounts()
+        .map(account=>account.id)
+        .filter(id=>nextSet.has(id));
+
+    const availableSet=
+      new Set(state.outlookAvailableAccountIds);
+
+    state.outlookAccountIds=
+      state.outlookAccountIds.filter(
+        id=>availableSet.has(id)
+      );
+
+    if(!state.outlookAccountIds.length){
+      state.outlookAccountIds=[
+        state.outlookAvailableAccountIds[0]
+      ];
+    }
+
+    saveOutlookAccountAvailability();
+    saveOutlookAccountSelection();
+
+    /*
+     * Vorhandene Prognose verwerfen.
+     * Neu gerechnet wird erst wieder beim Öffnen der
+     * Dashboard-Kachel.
+     */
+    state.outlook=null;
+    state.outlookBaseMonth=state.dashboardMonth;
+
+    renderOutlookSettings();
+    renderLiquidityOutlook();
+  }
+);
+
+
 $('#preview-account-selectors').addEventListener('change',event=>{const input=event.target.closest('[data-preview-account]');if(!input)return;const id=input.dataset.previewAccount;state.previewAccountIds=input.checked?[...state.previewAccountIds,id]:state.previewAccountIds.filter(value=>value!==id);loadPreview()});
 $('#preview-credit-selectors').addEventListener('change',event=>{const input=event.target.closest('[data-preview-credit]');if(!input)return;const id=input.dataset.previewCredit;state.previewCreditIds=input.checked?[...state.previewCreditIds,id]:state.previewCreditIds.filter(value=>value!==id);loadPreview()});
 
@@ -850,7 +1315,17 @@ $('#setup-form').addEventListener('submit',async event=>{event.preventDefault();
 function updateAccountBookingsHint(){const form=$('#account-form').elements,date=dateLabel(form.anchor_date.value),checked=form.bookings_applied.checked,hint=$('#account-bookings-hint');hint.textContent=checked?`Aktiv: Fällige Zahlungen am ${date} werden nicht erneut berechnet.`:`Nicht aktiv: Fällige Zahlungen am ${date} werden zum eingegebenen Kontostand hinzugerechnet oder davon abgezogen.`;hint.classList.toggle('active',checked)}
 function applyAccountEntryForDate(){if(!state.editingAccountId){updateAccountBookingsHint();return}const form=$('#account-form').elements,entry=state.editingAccountHistory.find(item=>item.anchor_date===form.anchor_date.value);if(entry){form.balance.value=(Number(entry.balance_cents)/100).toFixed(2);form.bookings_applied.checked=Boolean(entry.bookings_applied)}else if(form.anchor_date.value===state.asOf){const account=accountById(state.editingAccountId);form.balance.value=account?.projected_balance_cents==null?'0.00':(Number(account.projected_balance_cents)/100).toFixed(2);form.bookings_applied.checked=false}updateAccountBookingsHint()}
 function configureAccountKindFields(){const form=$('#account-form').elements,isLine=form.is_credit_line.checked,linkedField=$('#account-linked-field'),limitLabel=$('#account-limit-label'),defaultField=$('#account-default-field');linkedField.hidden=!isLine;form.linked_account_id.disabled=!isLine;limitLabel.firstChild.textContent=isLine?'Kreditlimit':'Disporahmen';defaultField.hidden=isLine;form.is_default.disabled=isLine;if(isLine)form.is_default.checked=false}
-async function openAccount(account=null){const form=$('#account-form');form.reset();state.editingAccountId=account?.id||null;state.editingAccountHistory=[];const h=state.dashboard.household;$('#account-owner').innerHTML=h.persons.map(person=>`<option value="${escapeHtml(person.slot)}">${escapeHtml(person.display_name)}</option>`).join('')+(h.mode==='couple'?'<option value="joint">Gemeinsam</option>':'');form.elements.anchor_date.value=state.asOf||today();form.elements.balance.value='0.00';form.elements.overdraft_limit.value=(Number(account?.overdraft_limit_cents||0)/100).toFixed(2);form.elements.is_default.checked=Boolean(account?.is_default);form.elements.is_credit_line.checked=account?.kind==='credit_line';form.elements.bookings_applied.checked=false;const linkedOptions=h.accounts.filter(item=>item.id!==account?.id&&item.kind!=='credit_line').map(item=>`<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}${item.is_default?' · Standard':''}</option>`).join('');form.elements.linked_account_id.innerHTML=`<option value="">Bitte auswählen</option>${linkedOptions}`;form.elements.linked_account_id.value=account?.linked_account_id||'';if(account){form.elements.name.value=account.name;form.elements.owner.value=slotForOwner(account)}else{form.elements.owner.value='A'}$('#account-dialog-eyebrow').textContent=account?'KONTO UND HISTORIE':'KONTO ANLEGEN';$('#account-dialog-title').textContent=account?'Konto bearbeiten':'Konto anlegen';$('#account-submit').textContent=account?'Änderungen und Kontostand speichern':'Konto anlegen';$('#delete-account').hidden=!account;$('#account-error').hidden=true;const history=$('#account-history');history.hidden=!account;if(account){state.editingAccountHistory=(await api(`/api/accounts/${encodeURIComponent(account.id)}/balances?household_id=${encodeURIComponent(state.currentId)}`)).items;history.innerHTML=`<h3>Kontostand-Historie</h3>${state.editingAccountHistory.map(item=>`<article class="history-row"><span><b>${dateLabel(item.anchor_date)}</b><small>${item.bookings_applied?'Tagesbuchungen bereits enthalten':'Tagesbuchungen werden ab diesem Stand berechnet'} · ${item.source==='statement'?'historischer Altbestand':'manuell'}</small></span><strong class="${item.balance_cents<0?'amount-negative':''}">${eur(item.balance_cents)}</strong>${item.source==='manual'?`<button class="link-button" type="button" data-delete-balance="${escapeHtml(item.id)}">Löschen</button>`:''}</article>`).join('')}`;}configureAccountKindFields();applyAccountEntryForDate();if(!$('#account-dialog').open)$('#account-dialog').showModal()}
+function balanceHistoryRow(item){return `<article class="history-row"><span><b>${dateLabel(item.anchor_date)}</b><small>${item.bookings_applied?'Tagesbuchungen bereits enthalten':'Tagesbuchungen werden ab diesem Stand berechnet'} · ${item.source==='statement'?'Kontoauszug':'manuell'}</small></span><strong class="${item.balance_cents<0?'amount-negative':''}">${eur(item.balance_cents)}</strong>${item.source==='manual'?`<button class="link-button" type="button" data-delete-balance="${escapeHtml(item.id)}">Löschen</button>`:''}</article>`}
+function renderBalanceHistory(entries){
+  const newest=entries.slice(0,5),older=entries.slice(5);
+  const recent=newest.map(balanceHistoryRow).join('');
+  if(!older.length)return `<h3>Kontostand-Historie</h3>${recent||'<p class="hint">Noch kein Stand vorhanden.</p>'}`;
+  const byMonth=new Map();
+  for(const item of older){const key=item.anchor_date.slice(0,7);if(!byMonth.has(key))byMonth.set(key,[]);byMonth.get(key).push(item)}
+  const groups=[...byMonth].map(([month,items])=>`<details class="history-month"><summary>${escapeHtml(monthLabel(month))} <small>(${items.length})</small></summary>${items.map(balanceHistoryRow).join('')}</details>`).join('');
+  return `<h3>Kontostand-Historie</h3>${recent}<details class="history-older"><summary>Ältere Kontostände anzeigen (${older.length})</summary>${groups}</details>`;
+}
+async function openAccount(account=null){const form=$('#account-form');form.reset();state.editingAccountId=account?.id||null;state.editingAccountHistory=[];const h=state.dashboard.household;$('#account-owner').innerHTML=h.persons.map(person=>`<option value="${escapeHtml(person.id)}">${escapeHtml(person.display_name)}</option>`).join('')+(h.persons.length>1?'<option value="joint">Gemeinsam</option>':'');form.elements.anchor_date.value=state.asOf||today();form.elements.balance.value='0.00';form.elements.overdraft_limit.value=(Number(account?.overdraft_limit_cents||0)/100).toFixed(2);form.elements.is_default.checked=Boolean(account?.is_default);form.elements.is_credit_line.checked=account?.kind==='credit_line';form.elements.bookings_applied.checked=false;const linkedOptions=h.accounts.filter(item=>item.id!==account?.id&&item.kind!=='credit_line').map(item=>`<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}${item.is_default?' · Standard':''}</option>`).join('');form.elements.linked_account_id.innerHTML=`<option value="">Bitte auswählen</option>${linkedOptions}`;form.elements.linked_account_id.value=account?.linked_account_id||'';if(account){form.elements.name.value=account.name;form.elements.owner.value=ownerValue(account)}else{form.elements.owner.value=h.persons[0]?.id||''}$('#account-dialog-eyebrow').textContent=account?'KONTO UND HISTORIE':'KONTO ANLEGEN';$('#account-dialog-title').textContent=account?'Konto bearbeiten':'Konto anlegen';$('#account-submit').textContent=account?'Änderungen und Kontostand speichern':'Konto anlegen';$('#delete-account').hidden=!account;$('#account-error').hidden=true;const history=$('#account-history');history.hidden=!account;if(account){state.editingAccountHistory=(await api(`/api/accounts/${encodeURIComponent(account.id)}/balances?household_id=${encodeURIComponent(state.currentId)}`)).items;history.innerHTML=renderBalanceHistory(state.editingAccountHistory);}configureAccountKindFields();applyAccountEntryForDate();if(!$('#account-dialog').open)$('#account-dialog').showModal()}
 $('#new-account').addEventListener('click',()=>openAccount());$('#manage-account-list').addEventListener('click',event=>{const button=event.target.closest('[data-edit-account]');if(button){const account=accountById(button.dataset.editAccount);if(account)openAccount(account)}});
 $('#account-form [name="bookings_applied"]').addEventListener('change',updateAccountBookingsHint);$('#account-form [name="anchor_date"]').addEventListener('change',applyAccountEntryForDate);$('#account-form [name="is_credit_line"]').addEventListener('change',configureAccountKindFields);
 $('#account-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,error=$('#account-error'),button=event.submitter;button.disabled=true;error.hidden=true;const payload={household_id:state.currentId,name:form.name.value,owner:form.owner.value,balance_cents:euroCents(form.balance.value),anchor_date:form.anchor_date.value,bookings_applied:form.bookings_applied.checked,kind:form.is_credit_line.checked?'credit_line':'checking',linked_account_id:form.is_credit_line.checked?form.linked_account_id.value:null,overdraft_limit_cents:euroCents(form.overdraft_limit.value),is_default:form.is_credit_line.checked?false:form.is_default.checked};try{const editedAccountId=state.editingAccountId,saved=await api(editedAccountId?`/api/accounts/${encodeURIComponent(editedAccountId)}`:'/api/accounts',{method:editedAccountId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),savedAccount=saved.accounts?.find(account=>editedAccountId?account.id===editedAccountId:account.name===payload.name);if(!savedAccount||savedAccount.anchor_date!==payload.anchor_date||Number(savedAccount.balance_cents)!==payload.balance_cents||Boolean(savedAccount.bookings_applied)!==payload.bookings_applied)throw new Error('Der gespeicherte Kontostand konnte nicht bestätigt werden. Bitte erneut versuchen.');state.asOf=payload.anchor_date;$('#account-dialog').close();state.editingAccountId=null;state.editingAccountHistory=[];await loadAll();toast(`${payload.kind==='credit_line'?'Rahmenkredit':'Kontostand'} am ${dateLabel(payload.anchor_date)} wurde gespeichert.`)}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
@@ -868,12 +1343,12 @@ function openFlow(kind,item=null){
   const form=$('#cash-flow-form');form.reset();configureFlowRecurrences(kind);configureFlowEndFields(kind);
   const h=state.dashboard.household,categories=kind==='income'?incomeCategories:expenseCategories;
   $('#cash-flow-category').innerHTML=categories.map(([value,label])=>`<option value="${value}">${label}</option>`).join('');
-  $('#cash-flow-owner').innerHTML=h.persons.map(person=>`<option value="${escapeHtml(person.slot)}">${escapeHtml(person.display_name)}</option>`).join('')+(h.mode==='couple'?'<option value="joint">Gemeinsam</option>':'');
-  $('#cash-flow-owner-field').hidden=h.mode==='single';
+  $('#cash-flow-owner').innerHTML=h.persons.map(person=>`<option value="${escapeHtml(person.id)}">${escapeHtml(person.display_name)}</option>`).join('')+(h.persons.length>1?'<option value="joint">Gemeinsam</option>':'');
+  $('#cash-flow-owner-field').hidden=h.persons.length===1;
   const defaultAccount=h.accounts.find(account=>account.is_default);
   $('#cash-flow-account').innerHTML='<option value="">Kein Konto zugeordnet</option>'+h.accounts.filter(account=>account.kind!=='credit_line').map(account=>`<option value="${escapeHtml(account.id)}">${escapeHtml(account.name)}${account.is_default?' · Standard':''}</option>`).join('');
-  form.elements.owner.value='A';form.elements.account_id.value=defaultAccount?.id||'';form.elements.due_date.value=state.asOf;form.elements.recurrence.value='once';form.elements.active.checked=true;
-  if(item){form.elements.name.value=item.name;form.elements.category.value=item.category;form.elements.owner.value=slotForOwner(item);form.elements.amount.value=(Number(item.amount_cents)/100).toFixed(2);form.elements.recurrence.value=item.recurrence;form.elements.due_date.value=item.due_date;form.elements.end_date.value=item.end_date||'';form.elements.duration_months.value=item.duration_months||'';form.elements.account_id.value=item.account_id||'';form.elements.credit_id.value=item.credit_id||'';form.elements.active.checked=Boolean(item.configured_active)}
+  form.elements.owner.value=h.persons[0]?.id||'';form.elements.account_id.value=defaultAccount?.id||'';form.elements.due_date.value=state.asOf;form.elements.recurrence.value='once';form.elements.active.checked=true;
+  if(item){form.elements.name.value=item.name;form.elements.category.value=item.category;form.elements.owner.value=ownerValue(item);form.elements.amount.value=(Number(item.amount_cents)/100).toFixed(2);form.elements.recurrence.value=item.recurrence;form.elements.due_date.value=item.due_date;form.elements.end_date.value=item.end_date||'';form.elements.duration_months.value=item.duration_months||'';form.elements.account_id.value=item.account_id||'';form.elements.credit_id.value=item.credit_id||'';form.elements.active.checked=Boolean(item.configured_active)}
   configureFlowCreditFields();if(item?.credit_id){form.elements.credit_id.value=item.credit_id;configureFlowCreditFields()}
   $('#cash-flow-dialog-eyebrow').textContent=item?(kind==='income'?'EINNAHME BEARBEITEN':'AUSGABE BEARBEITEN'):(kind==='income'?'NEUE EINNAHME':'NEUE AUSGABE');
   $('#cash-flow-dialog-title').textContent=item?'Position bearbeiten':(kind==='income'?'Einnahme anlegen':'Ausgabe anlegen');$('#delete-cash-flow').hidden=!item;$('#cash-flow-error').hidden=true;$('#cash-flow-dialog').showModal()
@@ -888,7 +1363,7 @@ $('#income-filter').addEventListener('click',event=>{const button=event.target.c
 $('#expense-filter').addEventListener('click',event=>{const button=event.target.closest('[data-expense-filter]');if(!button)return;state.expenseFilter=button.dataset.expenseFilter;renderExpenses()});
 $('#cash-flow-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,error=$('#cash-flow-error'),button=event.submitter,isCredit=state.editingFlowKind==='expense'&&creditCategories.has(form.category.value),existing=flowById(state.editingFlowKind,state.editingFlowId);button.disabled=true;error.hidden=true;const payload={household_id:state.currentId,kind:state.editingFlowKind,name:form.name.value,category:form.category.value,amount_cents:euroCents(form.amount.value),recurrence:form.recurrence.value,due_date:form.due_date.value,end_date:state.editingFlowKind==='expense'?form.end_date.value:'',duration_months:state.editingFlowKind==='expense'?form.duration_months.value:'',account_id:form.account_id.value,credit_id:isCredit?form.credit_id.value:'',credit_reduction_cents:isCredit&&existing?.credit_id===form.credit_id.value?existing.credit_reduction_cents:'',owner:form.owner.value,active:form.active.checked};try{await api(state.editingFlowId?`/api/cash-flows/${encodeURIComponent(state.editingFlowId)}`:'/api/cash-flows',{method:state.editingFlowId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const archiveDate=payload.end_date||(payload.recurrence==='once'?payload.due_date:'');if(state.editingFlowKind==='expense')state.expenseFilter=archiveDate&&archiveDate<today()?'archive':'active';else state.incomeFilter=archiveDate&&archiveDate<today()?'archive':'active';$('#cash-flow-dialog').close();state.editingFlowId=null;await loadAll();toast('Position wurde gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 $('#delete-cash-flow').addEventListener('click',async()=>{const item=flowById(state.editingFlowKind,state.editingFlowId);if(!item||!confirm(`„${item.name}“ wirklich löschen?`))return;try{await api(`/api/cash-flows/${encodeURIComponent(item.id)}?household_id=${encodeURIComponent(state.currentId)}`,{method:'DELETE'});$('#cash-flow-dialog').close();state.editingFlowId=null;await loadAll();toast('Position wurde gelöscht.')}catch(err){toast(err.message)}});
-$('#income-change-form').addEventListener('submit',async event=>{event.preventDefault();const item=flowById('income',state.editingIncomeChangeId),form=event.currentTarget.elements,error=$('#income-change-error'),button=event.submitter;if(!item)return;error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,kind:'income',name:item.name,category:item.category,amount_cents:euroCents(form.amount.value),recurrence:item.recurrence,due_date:item.due_date,effective_from:form.effective_from.value,account_id:item.account_id||'',owner:slotForOwner(item),active:Boolean(item.configured_active)};try{await api(`/api/cash-flows/${encodeURIComponent(item.id)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});$('#income-change-dialog').close();state.editingIncomeChangeId=null;await loadAll();toast(`Neuer Betrag gilt ab ${dateLabel(payload.effective_from)}.`)}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
+$('#income-change-form').addEventListener('submit',async event=>{event.preventDefault();const item=flowById('income',state.editingIncomeChangeId),form=event.currentTarget.elements,error=$('#income-change-error'),button=event.submitter;if(!item)return;error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,kind:'income',name:item.name,category:item.category,amount_cents:euroCents(form.amount.value),recurrence:item.recurrence,due_date:item.due_date,effective_from:form.effective_from.value,account_id:item.account_id||'',owner:ownerValue(item),active:Boolean(item.configured_active)};try{await api(`/api/cash-flows/${encodeURIComponent(item.id)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});$('#income-change-dialog').close();state.editingIncomeChangeId=null;await loadAll();toast(`Neuer Betrag gilt ab ${dateLabel(payload.effective_from)}.`)}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 $('#energylab-account-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,error=$('#energylab-account-error'),button=event.submitter;error.hidden=true;button.disabled=true;try{await api(`/api/integrations/energylab/flows/${encodeURIComponent(state.editingEnergyFlowId)}/account`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,account_id:form.account_id.value,payment_day:form.payment_day.value})});$('#energylab-account-dialog').close();state.editingEnergyFlowId=null;await loadAll();toast('Konto und Zahlungstag wurden gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 
 function selectCreditFormTab(name){$$('[data-credit-form-tab]').forEach(button=>button.classList.toggle('active',button.dataset.creditFormTab===name));$$('[data-credit-form-panel]').forEach(panel=>panel.hidden=panel.dataset.creditFormPanel!==name)}
@@ -911,9 +1386,154 @@ $('#delete-credit').addEventListener('click',async()=>{const item=creditById(sta
 $('#credit-payment-form').addEventListener('submit',async event=>{event.preventDefault();if(!state.currentCreditId)return;const form=event.currentTarget.elements,error=$('#credit-payment-error'),button=event.submitter,amount=euroCents(form.amount.value);error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,payment_date:form.payment_date.value,amount_cents:amount,note:form.note?.value||''};try{await api(`/api/credits/${encodeURIComponent(state.currentCreditId)}/payments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await loadAll();await openCreditDetail(state.currentCreditId);toast(amount<0?'Kreditaufstockung wurde gespeichert.':'Tilgung wurde gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 $('#credit-payment-list').addEventListener('click',async event=>{const button=event.target.closest('[data-delete-credit-payment]');if(!button||!state.currentCreditId)return;if(!confirm('Diese manuelle Tilgung oder Kreditaufstockung wirklich löschen?'))return;try{await api(`/api/credits/${encodeURIComponent(state.currentCreditId)}/payments/${encodeURIComponent(button.dataset.deleteCreditPayment)}?household_id=${encodeURIComponent(state.currentId)}`,{method:'DELETE'});await loadAll();await openCreditDetail(state.currentCreditId);toast('Tilgung wurde gelöscht.')}catch(err){toast(err.message)}});
 
-function syncTransferCreditLine(){const form=$('#transfer-form').elements,source=accountById(form.source_account_id.value),target=accountById(form.target_account_id.value),hint=$('#transfer-credit-line-hint');if(source?.kind==='credit_line'&&source.linked_account_id){form.target_account_id.value=source.linked_account_id;form.recurrence.value='once';form.recurrence.disabled=true;form.end_date.value='';form.end_date.disabled=true;form.occurrence_count.value='1';form.occurrence_count.disabled=true;const limit=Number(source.overdraft_limit_cents||0),balance=Number(source.projected_balance_cents??source.balance_cents??0),available=Math.max(0,limit-Math.max(0,-balance));hint.textContent=`Auszahlung aus ${source.name}: beliebig viele einzelne Auszahlungen sind möglich. Laut aktueller Prognose sind etwa ${eur(available)} Rahmen verfügbar; das Limit wird für jede Auszahlung serverseitig zum Fälligkeitstag geprüft.`;hint.hidden=false;return}form.recurrence.disabled=false;form.end_date.disabled=false;form.occurrence_count.disabled=false;if(target?.kind==='credit_line'&&target.linked_account_id){form.source_account_id.value=target.linked_account_id;hint.textContent=`Tilgung auf ${target.name}: Umbuchungen sind nur vom verknüpften Konto ${accountName(target.linked_account_id)} möglich.`;hint.hidden=false;return}hint.hidden=true;hint.textContent=''}
+let transferCreditLineHintRequest=0;
+
+async function refreshTransferCreditLineHint(){
+  const form=$('#transfer-form').elements;
+  const source=accountById(form.source_account_id.value);
+  const hint=$('#transfer-credit-line-hint');
+
+  if(
+    !source ||
+    source.kind!=='credit_line' ||
+    !source.linked_account_id
+  ){
+    return;
+  }
+
+  const due=form.due_date.value;
+
+  if(!due){
+    hint.textContent=
+      `Auszahlung aus ${source.name}: Bitte zuerst eine Fälligkeit wählen.`;
+    hint.hidden=false;
+    return;
+  }
+
+  const requestId=++transferCreditLineHintRequest;
+
+  hint.textContent=
+    `Auszahlung aus ${source.name}: verfügbarer Rahmen zum `+
+    `${dateLabel(due)} wird berechnet …`;
+  hint.hidden=false;
+
+  try{
+    const dashboard=await api(
+      `/api/dashboard?household_id=${encodeURIComponent(state.currentId)}`+
+      `&as_of=${encodeURIComponent(due)}`
+    );
+
+    if(requestId!==transferCreditLineHintRequest)return;
+
+    const line=(dashboard.credit_lines||[])
+      .find(item=>item.id===source.id);
+
+    if(!line){
+      throw new Error('Rahmenkredit wurde in der Prognose nicht gefunden.');
+    }
+
+    const limit=Number(
+      line.credit_limit_cents ??
+      line.overdraft_limit_cents ??
+      source.overdraft_limit_cents ??
+      0
+    );
+
+    let available=Number(line.credit_available_cents||0);
+
+    /*
+     * Beim Bearbeiten enthält die normale Dashboard-Prognose die bereits
+     * gespeicherte Auszahlung noch. Die Serverprüfung schließt genau diese
+     * Umbuchung aus. Für denselben Effekt rechnen wir sie hier wieder frei.
+     */
+    const editing=state.editingTransferId
+      ? state.transfers.find(
+          item=>item.id===state.editingTransferId
+        )
+      : null;
+
+    if(
+      editing &&
+      editing.active &&
+      editing.source_account_id===source.id &&
+      editing.due_date<=due
+    ){
+      available=Math.min(
+        limit,
+        available+Number(editing.amount_cents||0)
+      );
+    }
+
+    hint.textContent=
+      `Auszahlung aus ${source.name}: Am ${dateLabel(due)} sind `+
+      `voraussichtlich ${eur(available)} Rahmen verfügbar. `+
+      `Kreditlimit: ${eur(limit)}. `+
+      `Die endgültige Prüfung erfolgt beim Speichern zum Fälligkeitstag.`;
+
+  }catch(error){
+    if(requestId!==transferCreditLineHintRequest)return;
+
+    hint.textContent=
+      `Auszahlung aus ${source.name}: Die Rahmenprognose für `+
+      `${dateLabel(due)} konnte nicht geladen werden. `+
+      `Die verbindliche Prüfung erfolgt beim Speichern zum Fälligkeitstag.`;
+  }
+}
+
+function syncTransferCreditLine(){
+  transferCreditLineHintRequest++;
+
+  const form=$('#transfer-form').elements;
+  const source=accountById(form.source_account_id.value);
+  const target=accountById(form.target_account_id.value);
+  const hint=$('#transfer-credit-line-hint');
+
+  /*
+   * Rhythmus, Ende und Anzahl bleiben grundsätzlich bedienbar.
+   * Auch Rahmenkredit-Auszahlungen dürfen Serien sein.
+   */
+  form.recurrence.disabled=false;
+  form.end_date.disabled=false;
+  form.occurrence_count.disabled=false;
+
+  if(source?.kind==='credit_line'&&source.linked_account_id){
+    form.target_account_id.value=source.linked_account_id;
+
+    refreshTransferCreditLineHint();
+    return;
+  }
+
+  if(target?.kind==='credit_line'&&target.linked_account_id){
+    form.source_account_id.value=target.linked_account_id;
+
+    hint.textContent=
+      `Tilgung auf ${target.name}: Umbuchungen sind nur vom `+
+      `verknüpften Konto ${accountName(target.linked_account_id)} möglich.`;
+
+    hint.hidden=false;
+    return;
+  }
+
+  hint.hidden=true;
+  hint.textContent='';
+}
+
 function openTransfer(item=null){const accounts=state.dashboard.household.accounts;if(accounts.length<2){toast('Für eine Umbuchung werden mindestens zwei Konten benötigt.');showView('accounts');return}state.editingTransferId=item?.id||null;const form=$('#transfer-form');form.reset();const options=accounts.map(account=>`<option value="${escapeHtml(account.id)}">${escapeHtml(account.name)}${account.kind==='credit_line'?' · Rahmenkredit':''}</option>`).join('');$('#transfer-source').innerHTML=options;$('#transfer-target').innerHTML=options;const defaultAccount=accounts.find(account=>account.is_default)||accounts.find(account=>account.kind!=='credit_line')||accounts[0];form.elements.source_account_id.value=item?.source_account_id||defaultAccount.id;form.elements.target_account_id.value=item?.target_account_id||accounts.find(account=>account.id!==form.elements.source_account_id.value).id;form.elements.name.value=item?.name||'Umbuchung';form.elements.amount.value=item?(Number(item.amount_cents)/100).toFixed(2):'';form.elements.due_date.value=item?.due_date||state.asOf;form.elements.recurrence.value=item?.recurrence||'once';form.elements.end_date.value=item?.end_date||'';form.elements.occurrence_count.value=item?.occurrence_count||'';form.elements.active.checked=item?Boolean(item.active):true;$('#transfer-dialog-title').textContent=item?'Umbuchung bearbeiten':'Umbuchung anlegen';$('#delete-transfer').hidden=!item;$('#transfer-error').hidden=true;syncTransferCreditLine();$('#transfer-dialog').showModal()}
-$('#transfer-source').addEventListener('change',syncTransferCreditLine);$('#transfer-target').addEventListener('change',syncTransferCreditLine);
+$('#transfer-source').addEventListener('change',syncTransferCreditLine);
+$('#transfer-target').addEventListener('change',syncTransferCreditLine);
+
+for(const fieldName of [
+  'due_date',
+  'recurrence',
+  'end_date',
+  'occurrence_count'
+]){
+  $('#transfer-form').elements[fieldName]
+    .addEventListener(
+      'change',
+      refreshTransferCreditLineHint
+    );
+}
 
 $('#new-transfer').addEventListener('click',()=>openTransfer());
 
@@ -942,7 +1562,7 @@ $('#delete-transfer').addEventListener('click',async()=>{const item=state.transf
 
 $('#category-form')?.addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,error=$('#category-error'),button=event.submitter;error.hidden=true;button.disabled=true;try{await api('/api/categories',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,kind:form.kind.value,name:form.name.value})});form.name.value='';await loadAll();toast('Art wurde hinzugefügt.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 $('#category-settings-list')?.addEventListener('click',async event=>{const edit=event.target.closest('[data-edit-category]'),del=event.target.closest('[data-delete-category]'),id=edit?.dataset.editCategory||del?.dataset.deleteCategory;if(!id)return;const item=state.categories.find(entry=>entry.id===id);if(!item)return;if(edit){const name=prompt('Bezeichnung der Art:',item.name);if(name===null)return;const active=confirm('OK = aktiv lassen/aktivieren. Abbrechen = deaktivieren.');try{await api(`/api/categories/${encodeURIComponent(id)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,name,active})});await loadAll();toast('Art wurde gespeichert.')}catch(err){toast(err.message)}}else if(del&&confirm(`Eigene Art „${item.name}“ wirklich löschen?`)){try{await api(`/api/categories/${encodeURIComponent(id)}?household_id=${encodeURIComponent(state.currentId)}`,{method:'DELETE'});await loadAll();toast('Art wurde gelöscht.')}catch(err){toast(err.message)}}});
-$('#household-select').addEventListener('change',async event=>{state.currentId=event.target.value;state.previewAccountIds=[];state.previewCreditIds=[];state.outlookAccountIds=[];state.outlookSelectionFor=null;state.outlook=null;state.outlookBaseMonth=null;state.incomeFilter='active';state.expenseFilter='active';state.transferFilter='active';state.creditFilter='all';state.diagnostics=null;state.energylab=null;state.settingsLoadedFor=null;await loadAll()});
+$('#household-select').addEventListener('change',async event=>{state.currentId=event.target.value;state.dashboardCredits=[];state.previewAccountIds=[];state.previewCreditIds=[];state.outlookAccountIds=[];state.outlookSelectionFor=null;state.outlookAvailableAccountIds=[];state.outlookAvailabilityFor=null;state.outlookManagerOpen=false;state.outlook=null;state.outlookBaseMonth=null;state.incomeFilter='active';state.expenseFilter='active';state.transferFilter='active';state.creditFilter='all';state.diagnostics=null;state.energylab=null;state.settingsLoadedFor=null;await loadAll()});
 $('#delete-household').addEventListener('click',async()=>{const current=state.households.find(h=>h.id===state.currentId);if(!current||!confirm(`Haushalt „${current.name}“ einschließlich aller Daten endgültig löschen?`))return;try{await api(`/api/households/${encodeURIComponent(current.id)}`,{method:'DELETE'});state.households=(await api('/api/households')).items;state.currentId=state.households[0]?.id||null;if(state.currentId)await loadAll();else openSetup(true);toast('Haushalt wurde gelöscht.')}catch(err){toast(err.message)}});
 
 $('#energylab-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,button=event.submitter,status=$('#energylab-status');button.disabled=true;status.hidden=true;try{state.energylab=await api('/api/integrations/energylab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,base_url:form.base_url.value,account_id:form.account_id.value,callback_token:form.callback_token.value,enabled:form.enabled.checked})});renderSettings();toast('EnergyLab-Verbindung wurde gespeichert.')}catch(err){status.textContent=err.message;status.className='notice error';status.hidden=false}finally{button.disabled=false}});
@@ -1263,3 +1883,42 @@ else hideLegacyFinancingError1613();
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bindMortgagePlanV200); else bindMortgagePlanV200();
 })();
+
+// FinanzLab 2.4.0: Personen direkt im bestehenden Haushalt verwalten.
+function openPerson(person=null){
+  state.editingPersonId=person?.id||null;
+  const dialog=$('#person-dialog'),form=$('#person-form');form.reset();
+  form.elements.display_name.value=person?.display_name||'';
+  $('#person-dialog-title').textContent=person?'Person bearbeiten':'Person hinzufügen';
+  $('#person-submit').textContent=person?'Änderung speichern':'Person hinzufügen';
+  $('#delete-person').hidden=!person;
+  $('#person-error').hidden=true;
+  dialog.showModal();
+}
+$('#new-person').addEventListener('click',()=>openPerson());
+$('#person-list').addEventListener('click',event=>{
+  const button=event.target.closest('[data-edit-person]');if(!button)return;
+  const person=state.dashboard.household.persons.find(item=>item.id===button.dataset.editPerson);
+  if(person)openPerson(person);
+});
+$('#person-form').addEventListener('submit',async event=>{
+  event.preventDefault();const form=event.currentTarget,button=$('#person-submit'),error=$('#person-error');
+  button.disabled=true;error.hidden=true;
+  try{
+    const id=state.editingPersonId;
+    await api(id?`/api/persons/${encodeURIComponent(id)}`:'/api/persons',{
+      method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({household_id:state.currentId,display_name:form.elements.display_name.value})
+    });
+    $('#person-dialog').close();await loadAll();toast(id?'Person wurde umbenannt.':'Person wurde hinzugefügt.');
+  }catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}
+});
+$('#delete-person').addEventListener('click',async()=>{
+  const id=state.editingPersonId,person=state.dashboard.household.persons.find(item=>item.id===id);
+  if(!id||!person||!confirm(`Person „${person.display_name}“ wirklich löschen?`))return;
+  const button=$('#delete-person'),error=$('#person-error');button.disabled=true;error.hidden=true;
+  try{
+    await api(`/api/persons/${encodeURIComponent(id)}?household_id=${encodeURIComponent(state.currentId)}`,{method:'DELETE'});
+    $('#person-dialog').close();await loadAll();toast('Person wurde gelöscht.');
+  }catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}
+});

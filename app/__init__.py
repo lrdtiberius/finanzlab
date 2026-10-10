@@ -1,1 +1,1 @@
-"""FinanzLab Haushaltsplaner 2.1.1."""
+"""FinanzLab Haushaltsplaner 2.4.0."""

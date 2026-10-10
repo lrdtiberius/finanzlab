@@ -1,69 +1,29 @@
-# Haushaltsplaner
+# FinanzLab 2.4.0
 
-Aktueller Stand: **FinanzLab 2.1.1**, abgeglichen mit dem am 2. Oktober 2026 gebauten und auf dem AM06 laufenden Image.
+**FinanzLab** ist eine selbstgehostete Webanwendung zur tagesgenauen Haushalts- und Liquiditätsplanung mit SQLite. Kontostände, Einnahmen, Ausgaben, Kredite, Darlehen und Umbuchungen werden historisiert und für Vorschau, Dashboard und Excel-Export berücksichtigt.
 
-Lokale Webanwendung zur tagesgenauen Liquiditätsplanung für private Haushalte.
+**Projekt:** by Lrd.Tiberius · **Unterstützen:** [☕ Buy me a coffee (via PayPal)](https://www.paypal.com/paypalme/SebastianM207)
 
-Die Anwendung verwaltet Konten mit historisierten Kontoständen, regelmäßige und einmalige Einnahmen und Ausgaben, Kredite mit Zahlungshistorie sowie Umbuchungen zwischen eigenen Konten. Die Monatsvorschau berechnet die daraus entstehenden Kontobewegungen und getrennt davon simulierte Kreditstände pro Tag.
+> **Wichtig:** FinanzLab besitzt keine integrierte Benutzeranmeldung. Nur in einem vertrauenswürdigen Netzwerk oder hinter einer geeigneten Zugangskontrolle betreiben; Port `8798` nicht öffentlich freigeben.
 
-## Dokumentation
+## Neuerungen in 2.4.0
 
-- **[Ausführliche Installations- und Einrichtungsanleitung](INSTALLATION.md)** – Docker Compose, Portainer, Standalone-Build, EnergyLab-Verbindung, Updates, Backup/Restore und Fehlerbehebung
-- **[Fertige Portainer-Stack-Datei](portainer-stack.yaml)** – für das zuvor importierte Release-Image
-- **[Benutzerhandbuch](HANDBUCH.md)** – Bedienung, Kredit- und Zinslogik, Archive, EnergyLab-Synchronisation, Vorschau und Excel-Export
-- **[Changelog](CHANGELOG.md)** – Änderungen der einzelnen Versionen
+- **Kontostand-Historie:** Die neuesten fünf Stände sind direkt sichtbar. Ältere Stände werden nach Monaten aufklappbar gruppiert, bleiben aber vollständig gespeichert und werden weiterhin für Berechnungen und Exporte genutzt.
+- **Personenverwaltung:** Unter **Einstellungen → Personen / Zuordnung** Personen hinzufügen, umbenennen und – falls unbenutzt – löschen. Die bisherige Begrenzung auf Person A und B entfällt.
+- **Kompatible SQLite-Migration:** Historische Person-IDs und Konten-/Buchungszuordnungen bleiben erhalten. Neue Personen stehen als Besitzer für Konten und als Zuordnung für Einnahmen/Ausgaben zur Verfügung.
 
-## Funktionen
+## Wichtige Funktionen
 
-- mehrere Haushalte und Konten
-- Konten können mit Bestätigung gelöscht werden; Zahlungspositionen bleiben zur Neuzuordnung erhalten
-- historisierte Kontostände mit Kennzeichnung bereits enthaltener Tagesbuchungen
-- Standardkonto für neue Einnahmen und Ausgaben
-- Einnahmen und Ausgaben mit monatlichem, vierteljährlichem, halbjährlichem, jährlichem oder einmaligem Rhythmus und optionalem Enddatum
-- zusätzlicher wöchentlicher Rhythmus für Ausgaben mit einer Fälligkeit alle sieben Tage
-- automatische Bereinigung unsichtbarer Zukunftsversionen aus älteren Programmständen
-- Saldo aller angelegten Positionen direkt auf den Einnahmen- und Ausgabenseiten
-- automatische Aufteilung von Einnahmen in Aktiv und Archiv
-- historisierte Betragsänderungen für wiederkehrende Einnahmen wie Gehalt und Rente
-- automatische Aufteilung von Ausgaben und Umbuchungen in Aktiv und Archiv
-- einmalige Positionen wechseln nach ihrem Fälligkeitsdatum automatisch ins Archiv
-- eigene Kreditverwaltung für Konsumkredit, Kredit und Geliehen
-- Kreditliste mit direktem Filter und Anzahl je Kreditart
-- automatische Archivierung vollständig getilgter Kredite bei 0,00 € Restschuld
-- manuelle Kreditarchivierung mit Ausschluss aus aktiver Berechnung und Vorschau
-- stichtagsbezogene Kreditsalden bei der Zukunftsbetrachtung auf dem Dashboard
-- vollständige Kredit-Historie aus verknüpften Ausgaben und manuellen Tilgungen
-- getrennter Abbuchungs- und Tilgungsbetrag für Annuitäten
-- automatische Kreditzinsberechnung ohne Doppelverzinsung des Finanzierungspreises
-- Zinsauswertung für bisherige und geplante Kreditzinsen, Girokontozinsen und deren Gesamtsumme mit auswählbaren aktiven und archivierten Krediten
-- negative manuelle Tilgungen als Kreditaufstockung für alle Kreditarten
-- Sondertilgungen reduzieren bei Konsumfinanzierungen sowohl den offenen Finanzierungssaldo als auch die noch verzinsliche Produktpreis-Restbasis
-- zukünftige Tilgungen werden angezeigt, wirken aber erst ab ihrem Datum auf den Kreditsaldo
-- überzahlte Kredite bleiben bei einem offenen Saldo von 0,00 € und werden nicht als Forderung dargestellt
-- vorzeitig vollständig getilgte Kredite stoppen automatisch alle späteren verknüpften Ausgaben
-- eine zu hohe Schlussrate wird bei Kontobelastung und Tilgung automatisch auf die verbleibende Restschuld begrenzt
-- Restschulden unter 3,00 € werden bei einem hinterlegten Enddatum automatisch der letzten Rate zugeschlagen
-- Umbuchungen mit Rhythmus, optionalem Enddatum und optionaler Ausführungsanzahl
-- Dashboard-Summen aus den im gewählten Monat tatsächlich fälligen Einnahmen und Ausgaben
-- vollständige Dashboard-Aufteilung ohne Begrenzung auf acht Positionen
-- Schnellaktionen zum Anlegen neuer Einnahmen und Ausgaben direkt auf dem Dashboard
-- taggenaue Monatsvorschau für Konten sowie separat auswählbare Kreditsimulation
-- dauerhaft gespeicherter Erledigt-Status je konkreter Bewegung; erledigte Vorgänge bleiben sichtbar und werden nicht erneut simuliert
-- strukturierter Excel-Export mit Monats-/Tagesvorschau, Krediten, Tilgungshistorie, Bewegungen und sämtlichen Eingaben
-- automatische EnergyLab-Synchronisation der vertraglichen Strom-, Gas-, Wasser- und Abwasserzahlungen einschließlich Laufzeit, Zahlungsrhythmus, Änderung, Konto und Zahlungstag
-- integrierte SQLite-Sicherungen mit manueller Erstellung, geprüfter Wiederherstellung und zusätzlicher Sicherheitssicherung vor jedem Restore
-- Warnung bei Überschreitung eines hinterlegten Disporahmens
-- Datenprüfung für nicht berücksichtigte oder unvollständige Positionen
+- Tagesgenaue Kontostand-Prognosen, Monatsvorschau, 6-Monats-Liquiditätsvorschau und Dashboard-Kennzahlen
+- Historische Kontostände inklusive Tagesbuchungsstatus, Kontorahmen und Rahmenkredite
+- Wiederkehrende und einmalige Einnahmen/Ausgaben, Erledigt-Status, Vorschaukorrekturen und Archive
+- Kredite, Konsumfinanzierungen und Darlehen mit Zins-/Tilgungsberechnung und Sondertilgungen
+- Umbuchungen, Kontoauszugs-Abgleich, Excel-Export, interne SQLite-Sicherungen
+- Optionaler Abgleich von Abschlägen und Vertragszahlungen mit EnergyLab
 
-Importfunktionen sind nicht Bestandteil dieser Version.
+## Installation
 
-## Bekannte Einschränkung
-
-Bei einzelnen älteren Krediten mit deaktivierter automatischer Zinsberechnung kann die historische Kreditberechnung noch einen Zinsanteil ausgeben, obwohl ausschließlich ein manuell gepflegter Tilgungsanteil erwartet wird. Der Fall ist als erwarteter Regressionstest dokumentiert; bestehende Daten werden dadurch nicht automatisch verändert.
-
-## Schnellstart mit Docker
-
-Voraussetzungen: Docker Engine mit Docker Compose.
+Voraussetzung: Docker Engine und Docker Compose. Das Repository enthält **nur Anwendungscode und Beispielkonfiguration** – keine privaten Finanzdaten.
 
 ```bash
 git clone https://github.com/lrdtiberius/finanzlab.git
@@ -71,41 +31,18 @@ cd finanzlab
 docker compose up --build -d
 ```
 
-Danach ist die Anwendung auf dem lokalen Rechner erreichbar:
+Danach ist die Anwendung lokal unter `http://localhost:8798` erreichbar. Die Daten werden im persistenten Docker-Volume gespeichert. Für entfernten Zugriff sind eine eigene Absicherung und passende Port-Freigabe erforderlich.
 
-```text
-http://localhost:8798
-```
+**Bei bestehenden Installationen:** Vor dem Versionswechsel eine konsistente SQLite-Sicherung erstellen und das **bestehende Datenvolume** unter `/data` weiterverwenden. Die 2.4.0-Migration kann die Personentabelle verändern; für einen Rückwechsel auf ältere Versionen wird eine Vor-Update-Datenbanksicherung benötigt.
 
-Von einem anderen Gerät im Netzwerk wird `localhost` durch die IP-Adresse oder den Hostnamen des Docker-Rechners ersetzt.
+Für Portainer und weitere Methoden: [Installationsanleitung](INSTALLATION.md) und [Portainer-Stack](portainer-stack.yaml).
 
-Der Port kann in `compose.yaml` angepasst werden. Die Anwendungsdaten liegen ausschließlich im Docker-Volume `finanzlab_data` und gehören nicht zum Repository.
+## Dokumentation
 
-Unter **Einstellungen → Sicherungen** kann FinanzLab konsistente Datenbankkopien anlegen und wiederherstellen. Diese Dateien liegen im Unterordner `backups` desselben Daten-Volumes. Sie schützen vor fehlerhaften Änderungen, ersetzen aber kein zusätzliches Backup des Volumes auf einem anderen Datenträger.
-
-Für Portainer, Standalone-Builds, Updates, Datensicherung und eine vollständige Ersteinrichtung siehe **[INSTALLATION.md](INSTALLATION.md)**.
-
-Stoppen:
-
-```bash
-docker compose down
-```
-
-Stoppen und lokale Anwendungsdaten löschen:
-
-```bash
-docker compose down -v
-```
-
-> Achtung: `docker compose down -v` löscht zusätzlich das Daten-Volume und damit die gespeicherten Haushaltsdaten.
-
-## Lokaler Start ohne Docker
-
-```bash
-python3 -m app
-```
-
-Optional können `PORT` und `DATA_DIR` als Umgebungsvariablen gesetzt werden.
+- [Benutzerhandbuch](HANDBUCH.md) – Bedienung, Kreditlogik, Vorschau, EnergyLab und häufige Fragen
+- [Technische Dokumentation](docs/TECHNISCHE_DOKUMENTATION.md) – Rechenprinzipien, Datenmodell, historisierte Stände, Migration
+- [Installationsanleitung](INSTALLATION.md) – Einrichtung, Updates, Datensicherung und Wiederherstellung
+- [Änderungsverlauf](CHANGELOG.md)
 
 ## Tests
 
@@ -114,33 +51,10 @@ python3 -m unittest discover -s tests -v
 node --check app/static/app.js
 ```
 
-Neun ältere Regressionstests beschreiben noch frühere Regeln für Wochenendverschiebung,
-Kreditraten und Import-Sperren. Sie bleiben zur Nachverfolgung erhalten und sind als
-erwartete Abweichungen markiert, bis ihre Erwartungen auf das Produktionsmodell 2.1.1
-umgestellt sind.
+Die vorhandenen Regressionstests stammen teils aus älteren Versionen. Vor einem Release sind ihre Ergebnisse im Kontext des aktuellen Funktionsumfangs zu bewerten. Ein Tag `v2.4.0` sollte erst erstellt werden, wenn die GitHub-Actions-Tests für diesen Stand erfolgreich laufen.
 
-## Handbuch
+## Datenschutz und Backups
 
-Das vollständige Benutzerhandbuch mit Kontostand-Logik, Einnahmen- und Ausgabenhistorie, EnergyLab-Verbindung, Krediten, Vorschau, Excel-Export und Fehlerbehebung steht in [HANDBUCH.md](HANDBUCH.md).
+`planner.db`, Kontoauszüge, Exporte, private Konfigurationsdateien, Zugangsdaten, Screenshots und Backups gehören **nicht** ins Repository. `.gitignore` und `.dockerignore` ergänzen die manuelle Kontrolle; sie schützen nicht automatisch bereits von Git verfolgte Dateien oder ältere Commits. Eine Sicherung im gleichen Docker-Volume ersetzt kein externes Backup.
 
-## Datenschutz
-
-Das Repository enthält keine Kontostände, Transaktionen, Haushaltsnamen, privaten Netzwerkadressen oder Zugangsdaten. Persönliche Anwendungsdaten entstehen erst beim lokalen Betrieb und werden unter `DATA_DIR` beziehungsweise im Docker-Volume gespeichert.
-
-Vor einer Veröffentlichung eigener Änderungen sollten insbesondere Datenbanken, Backups, Screenshots, Protokolle und `.env`-Dateien ausgeschlossen bleiben.
-
-## Releases
-
-Ein Tag im Format `v*` startet den enthaltenen GitHub-Workflow. Er führt die Tests aus und veröffentlicht ein GitHub-Release mit:
-
-- dem vollständigen Quellpaket,
-- einem direkt mit `docker load` oder über **Portainer → Images → Import** ladbaren Docker-Image für `linux/amd64`,
-- SHA-256-Prüfsummen für beide Dateien.
-
-Für Portainer gilt: Das fertige Docker-Image gehört zu **Images → Import**. Ein Quell-/Build-TAR mit Dockerfile gehört dagegen zu **Images → Build image → Upload**.
-
-Der Excel-Export wird in der Anwendung unter **Einstellungen** gestartet. Der Zeitraum ist auf höchstens 24 Monate begrenzt; alle eingegebenen Einnahmen, Ausgaben, Kredite und Tilgungen werden unabhängig vom Vorschauzeitraum vollständig in eigenen Tabellenblättern ausgegeben.
-
-## Autor und Unterstützung
-
-Entwickelt von **Lrd.Tiberius**. Wer das Projekt unterstützen möchte, findet den „Buy me a coffee“-Link direkt in der Anwendung.
+**Autor / Projektkennung:** Lrd.Tiberius · [Unterstützung per PayPal.Me](https://www.paypal.com/paypalme/SebastianM207)

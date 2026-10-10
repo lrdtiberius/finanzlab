@@ -21,7 +21,7 @@ from app.domain.recurrence import (
     recurrence_dates,
 )
 
-APP_VERSION = "2.1.1"
+APP_VERSION = "2.4.0"
 
 SYSTEM_CATEGORIES = {
     "income": [
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS households(
  currency TEXT NOT NULL DEFAULT 'EUR', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS persons(
  id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
- slot TEXT NOT NULL CHECK(slot IN('A','B')), display_name TEXT NOT NULL,
+ slot TEXT NOT NULL, display_name TEXT NOT NULL,
  UNIQUE(household_id,slot));
 CREATE TABLE IF NOT EXISTS accounts(
  id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
@@ -335,6 +335,7 @@ class Repository:
         else: Path(path).parent.mkdir(parents=True,exist_ok=True)
         self.path=str(path); self.lock=RLock()
         upgrade_backup=self._prepare_upgrade_backup()
+        self._migrate_person_slots()
         self.initialize()
         if upgrade_backup:
             with self.lock,self.connect() as con:
@@ -369,6 +370,38 @@ class Repository:
             "database_sha256":hashlib.sha256(target.read_bytes()).hexdigest(),
             "size_bytes":target.stat().st_size,"created_at":timestamp(),
         }
+    def _migrate_person_slots(self):
+        """Remove the v2.3 A/B-only CHECK while keeping IDs, owners and all FK targets.
+
+        Runs once before normal schema initialization. The SQLite transaction is
+        atomic, and the release backup was created before this step.
+        """
+        con=sqlite3.connect(self.path)
+        try:
+            row=con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='persons'").fetchone()
+            if not row or "CHECK(slotIN('A','B'))" not in (row[0] or "").replace(" ", ""):
+                return
+            con.execute("PRAGMA foreign_keys=OFF")
+            con.execute("BEGIN IMMEDIATE")
+            con.execute("""CREATE TABLE persons_v240 (
+                id TEXT PRIMARY KEY,
+                household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+                slot TEXT NOT NULL, display_name TEXT NOT NULL,
+                UNIQUE(household_id,slot))""")
+            con.execute("""INSERT INTO persons_v240(id,household_id,slot,display_name)
+                SELECT id,household_id,slot,display_name FROM persons""")
+            con.execute("DROP TABLE persons")
+            con.execute("ALTER TABLE persons_v240 RENAME TO persons")
+            violations=con.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise ValueError("Personen-Migration: Fremdschlüsselprüfung fehlgeschlagen.")
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        finally:
+            con.close()
+
     @contextmanager
     def connect(self):
         con=sqlite3.connect(self.path); con.row_factory=sqlite3.Row; con.execute("PRAGMA foreign_keys=ON"); con.execute("PRAGMA busy_timeout=5000")
@@ -544,6 +577,66 @@ class Repository:
         with self.connect() as con:
             rows=con.execute("SELECT id,name,mode FROM households ORDER BY created_at").fetchall()
             return [dict(r) for r in rows]
+    @staticmethod
+    def resolve_owner(con,hid,owner):
+        """Resolve stable person IDs; accept old A/B slots for legacy clients."""
+        persons=con.execute("SELECT id,slot FROM persons WHERE household_id=? ORDER BY CASE slot WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, rowid",(hid,)).fetchall()
+        if not persons: raise ValueError("Für den Haushalt ist keine Person vorhanden.")
+        if owner == "joint":
+            if len(persons)<2: raise ValueError("Gemeinsam ist erst ab zwei Personen verfügbar.")
+            return "joint",None
+        if not owner:
+            return "person",persons[0]["id"]
+        for person in persons:
+            if owner in (person["id"],person["slot"]):
+                return "person",person["id"]
+        raise ValueError("Ungültige Besitzerzuordnung.")
+
+    @staticmethod
+    def _person_name(con,hid,name,exclude_id=None):
+        value=str(name or "").strip()
+        if not value or len(value)>100:
+            raise ValueError("Der Personenname muss 1 bis 100 Zeichen enthalten.")
+        matches=con.execute("SELECT id,display_name FROM persons WHERE household_id=?",(hid,)).fetchall()
+        if any(row["id"]!=exclude_id and row["display_name"].casefold()==value.casefold() for row in matches):
+            raise ValueError("Eine Person mit diesem Namen ist bereits vorhanden.")
+        return value
+
+    def create_person(self,payload):
+        hid=str(payload.get("household_id") or "").strip()
+        with self.lock,self.connect() as con:
+            if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone():
+                raise ValueError("Haushalt nicht gefunden.")
+            name=self._person_name(con,hid,payload.get("display_name"))
+            person_id=uid()
+            # A stable opaque slot preserves the legacy schema/API without a fixed A/B limit.
+            slot="P-"+person_id
+            con.execute("INSERT INTO persons(id,household_id,slot,display_name) VALUES(?,?,?,?)",
+                (person_id,hid,slot,name))
+        return {"id":person_id,"household_id":hid,"slot":slot,"display_name":name}
+
+    def update_person(self,person_id,payload):
+        hid=str(payload.get("household_id") or "").strip()
+        with self.lock,self.connect() as con:
+            if not con.execute("SELECT 1 FROM persons WHERE id=? AND household_id=?",(person_id,hid)).fetchone():
+                raise ValueError("Person nicht gefunden.")
+            name=self._person_name(con,hid,payload.get("display_name"),person_id)
+            con.execute("UPDATE persons SET display_name=? WHERE id=? AND household_id=?",(name,person_id,hid))
+            row=con.execute("SELECT id,household_id,slot,display_name FROM persons WHERE id=?",(person_id,)).fetchone()
+        return dict(row)
+
+    def delete_person(self,hid,person_id):
+        with self.lock,self.connect() as con:
+            person=con.execute("SELECT id,display_name FROM persons WHERE id=? AND household_id=?",(person_id,hid)).fetchone()
+            if not person: raise ValueError("Person nicht gefunden.")
+            if con.execute("SELECT COUNT(*) FROM persons WHERE household_id=?",(hid,)).fetchone()[0]<=1:
+                raise ValueError("Die letzte Person eines Haushalts darf nicht gelöscht werden.")
+            for table in ("accounts","account_versions","cash_flows","cash_flow_versions"):
+                if con.execute(f"SELECT 1 FROM {table} WHERE owner_person_id=? LIMIT 1",(person_id,)).fetchone():
+                    raise ValueError("Die Person wird noch verwendet. Bitte zuerst alle Konten und Positionen einschließlich historischer Versionen umordnen.")
+            con.execute("DELETE FROM persons WHERE id=? AND household_id=?",(person_id,hid))
+        return {"id":person_id,"deleted":True}
+
     def create_household(self,payload):
         name=str(payload.get("name","")).strip(); mode=payload.get("mode")
         if not name or mode not in ("single","couple"): raise ValueError("Haushalt und Modell sind erforderlich.")
@@ -582,11 +675,8 @@ class Repository:
         kind=str(payload.get("kind") or "checking").strip()
         if kind not in ("checking","credit_line"): raise ValueError("Ungültige Kontoart.")
         with self.lock,self.connect() as con:
-            people={r["slot"]:r["id"] for r in con.execute("SELECT id,slot FROM persons WHERE household_id=?",(hid,)).fetchall()}
-            if not people: raise ValueError("Haushalt nicht gefunden.")
-            if owner=="joint": scope="joint"; owner_id=None
-            elif owner in people: scope="person"; owner_id=people[owner]
-            else: raise ValueError("Ungültiger Kontobesitzer.")
+            if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone(): raise ValueError("Haushalt nicht gefunden.")
+            scope,owner_id=self.resolve_owner(con,hid,owner)
             if con.execute("SELECT 1 FROM accounts WHERE household_id=? AND name=?",(hid,name)).fetchone(): raise ValueError("Ein Konto mit diesem Namen existiert bereits.")
             account_id=uid(); overdraft_limit_cents,overdraft_apr=overdraft_values(payload)
             linked_account_id=str(payload.get("linked_account_id") or "").strip() or None
@@ -616,10 +706,7 @@ class Repository:
             kind=str(payload.get("kind") or current["kind"] or "checking").strip()
             if kind not in ("checking","credit_line"): raise ValueError("Ungültige Kontoart.")
             linked_account_id=str(payload.get("linked_account_id") or "").strip() or None
-            people={r["slot"]:r["id"] for r in con.execute("SELECT id,slot FROM persons WHERE household_id=?",(hid,)).fetchall()}
-            if owner=="joint": scope="joint"; owner_id=None
-            elif owner in people: scope="person"; owner_id=people[owner]
-            else: raise ValueError("Ungültiger Kontobesitzer.")
+            scope,owner_id=self.resolve_owner(con,hid,owner)
             duplicate=con.execute("SELECT 1 FROM accounts WHERE household_id=? AND name=? AND id<>?",(hid,name,account_id)).fetchone()
             if duplicate: raise ValueError("Ein Konto mit diesem Namen existiert bereits.")
             if kind=="credit_line":
@@ -851,7 +938,7 @@ class Repository:
                     "category":values["credit_type"],"amount_cents":plan.get("amount_cents"),
                     "recurrence":"monthly","due_date":plan.get("first_due_date"),
                     "duration_months":plan.get("occurrence_count"),"account_id":plan.get("account_id"),
-                    "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner") or "A",
+                    "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner"),
                     "active":True,
                 }
                 plan_values=self.cash_flow_values(con,plan_payload,"expense")
@@ -929,7 +1016,7 @@ class Repository:
                 "category":values["credit_type"],"amount_cents":plan.get("amount_cents"),
                 "recurrence":"monthly","due_date":plan.get("first_due_date"),
                 "duration_months":plan.get("occurrence_count"),"account_id":plan.get("account_id"),
-                "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner") or "A",
+                "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner"),
                 "active":True,"effective_from":plan.get("effective_from") or date.today().isoformat(),
                 "replace_future":True,
                 })
@@ -939,7 +1026,7 @@ class Repository:
                     "category":values["credit_type"],"amount_cents":plan.get("amount_cents"),
                     "recurrence":"monthly","due_date":plan.get("first_due_date"),
                     "duration_months":plan.get("occurrence_count"),"account_id":plan.get("account_id"),
-                    "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner") or "A",
+                    "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner"),
                     "active":True,"effective_from":plan.get("effective_from") or date.today().isoformat(),
                 })
             expected_count=values["payment_count"]
@@ -1483,8 +1570,8 @@ class Repository:
             if not config or not household: raise ValueError("Die EnergyLab-Verbindung ist nicht eingerichtet.")
             account_id=config["account_id"]
             if account_id and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone(): account_id=None
-            person=con.execute("SELECT id FROM persons WHERE household_id=? AND slot='A'",(hid,)).fetchone()
-            owner_scope="joint" if household["mode"]=="couple" else "person"; owner_person_id=None if owner_scope=="joint" else person["id"]
+            persons=con.execute("SELECT id FROM persons WHERE household_id=? ORDER BY CASE slot WHEN 'A' THEN 0 ELSE 1 END,rowid",(hid,)).fetchall()
+            owner_scope="joint" if household["mode"]=="couple" else "person"; owner_person_id=None if owner_scope=="joint" else persons[0]["id"]
             for segment in segments:
                 segment_id=str(segment.get("id") or "")
                 if segment_id not in labels: continue
@@ -1579,9 +1666,9 @@ class Repository:
         default_account=config["account_id"]
         if default_account and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(default_account,hid)).fetchone():
             default_account=None
-        person=con.execute("SELECT id FROM persons WHERE household_id=? AND slot='A'",(hid,)).fetchone()
+        persons=con.execute("SELECT id FROM persons WHERE household_id=? ORDER BY CASE slot WHEN 'A' THEN 0 ELSE 1 END,rowid",(hid,)).fetchall()
         owner_scope="joint" if household["mode"]=="couple" else "person"
-        owner_person_id=None if owner_scope=="joint" else person["id"]
+        owner_person_id=None if owner_scope=="joint" else persons[0]["id"]
         labels={"electricity":"Strom","gas":"Gas","water":"Wasser","wastewater":"Abwasser"}
         desired={}; unmatched=[]; warnings=[]
         for segment in segments:
@@ -2297,11 +2384,7 @@ class Repository:
                 raise ValueError("Das Enddatum darf nicht vor der ersten Fälligkeit liegen.")
         household=con.execute("SELECT mode FROM households WHERE id=?",(hid,)).fetchone()
         if not household: raise ValueError("Haushalt nicht gefunden.")
-        people={row["slot"]:row["id"] for row in con.execute("SELECT id,slot FROM persons WHERE household_id=?",(hid,)).fetchall()}
-        owner="A" if household["mode"]=="single" else payload.get("owner")
-        if owner=="joint": scope="joint"; owner_id=None
-        elif owner in people: scope="person"; owner_id=people[owner]
-        else: raise ValueError("Ungültiger Besitzer.")
+        scope,owner_id=self.resolve_owner(con,hid,payload.get("owner"))
         account_id=payload.get("account_id") or None
         if account_id:
             account=con.execute("SELECT id,kind FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone()
@@ -2477,19 +2560,129 @@ class Repository:
                 expected_label=date.fromisoformat(expected_end).strftime("%d.%m.%Y")
                 raise ValueError(f"Enddatum und Anzahl passen nicht zusammen. Bei {occurrence_count} Ausführungen ist das Enddatum {expected_label}.")
         if source_account.get("kind")=="credit_line":
-            if recurrence!="once":
-                raise ValueError("Rahmenkredit-Auszahlungen werden einzeln erfasst. Für weitere Auszahlungen bitte jeweils eine weitere Umbuchung anlegen.")
             limit=int(source_account.get("overdraft_limit_cents") or 0)
-            detail=self.household_detail(hid,due)
-            if not detail: raise ValueError("Haushalt nicht gefunden.")
-            self.projected_account_balances(con,hid,detail["accounts"],due,excluded_transfer_ids={transfer_id} if transfer_id else None)
-            line=next((item for item in detail["accounts"] if item["id"]==source),None)
-            balance=None if line is None else line.get("projected_balance_cents")
-            if balance is None: raise ValueError("Für den Rahmenkredit ist kein Kontostand verfügbar.")
-            available=max(0,limit-max(0,-int(balance)))
-            if amount>available:
-                available_label=f"{available/100:.2f}".replace(".",","); limit_label=f"{limit/100:.2f}".replace(".",",")
-                raise ValueError(f"Auszahlung nicht möglich: verfügbarer Kreditrahmen am {date.fromisoformat(due).strftime('%d.%m.%Y')} nur {available_label} €. Das Limit von {limit_label} € darf nicht überschritten werden.")
+
+            # Wiederkehrende Rahmen-Auszahlungen müssen begrenzt sein,
+            # damit jede einzelne zukünftige Auszahlung geprüft werden kann.
+            if recurrence!="once" and occurrence_count is None and not end_date:
+                raise ValueError(
+                    "Für eine wiederkehrende Rahmenkredit-Auszahlung "
+                    "muss ein Enddatum oder eine Anzahl angegeben werden."
+                )
+
+            if recurrence=="once":
+                occurrence_dates=[date.fromisoformat(due)]
+            else:
+                validation_end=(
+                    last_occurrence_date(
+                        due,
+                        recurrence,
+                        occurrence_count
+                    ).isoformat()
+                    if occurrence_count is not None
+                    else end_date
+                )
+
+                occurrence_dates=recurrence_dates(
+                    due,
+                    recurrence,
+                    (
+                        date.fromisoformat(due)
+                        - timedelta(days=1)
+                    ).isoformat(),
+                    validation_end,
+                    active_from=due,
+                    stream_start=due,
+                    stream_end=end_date,
+                    max_occurrences=occurrence_count
+                )
+
+            if not occurrence_dates:
+                raise ValueError(
+                    "Für die Rahmenkredit-Auszahlung konnten "
+                    "keine Fälligkeiten ermittelt werden."
+                )
+
+            excluded={transfer_id} if transfer_id else None
+
+            for index,occurrence in enumerate(occurrence_dates):
+                occurrence_text=occurrence.isoformat()
+
+                detail=self.household_detail(
+                    hid,
+                    occurrence_text
+                )
+
+                if not detail:
+                    raise ValueError("Haushalt nicht gefunden.")
+
+                self.projected_account_balances(
+                    con,
+                    hid,
+                    detail["accounts"],
+                    occurrence_text,
+                    excluded_transfer_ids=excluded
+                )
+
+                line=next(
+                    (
+                        item
+                        for item in detail["accounts"]
+                        if item["id"]==source
+                    ),
+                    None
+                )
+
+                balance=(
+                    None
+                    if line is None
+                    else line.get("projected_balance_cents")
+                )
+
+                if balance is None:
+                    raise ValueError(
+                        "Für den Rahmenkredit ist kein "
+                        "Kontostand verfügbar."
+                    )
+
+                # Die bestehende Projektion kennt die neu anzulegende
+                # Serie noch nicht. Frühere Ausführungen derselben neuen
+                # Serie deshalb kumuliert berücksichtigen.
+                balance_before=(
+                    int(balance)
+                    - amount*index
+                )
+
+                available=max(
+                    0,
+                    limit-max(0,-balance_before)
+                )
+
+                if amount>available:
+                    available_label=(
+                        f"{available/100:.2f}".replace(".",",")
+                    )
+                    limit_label=(
+                        f"{limit/100:.2f}".replace(".",",")
+                    )
+                    date_label=occurrence.strftime("%d.%m.%Y")
+
+                    if len(occurrence_dates)>1:
+                        position=(
+                            f"Ausführung {index+1} von "
+                            f"{len(occurrence_dates)}: "
+                        )
+                    else:
+                        position=""
+
+                    raise ValueError(
+                        f"Auszahlung nicht möglich: {position}"
+                        f"verfügbarer Kreditrahmen am "
+                        f"{date_label} nur {available_label} €. "
+                        f"Das Limit von {limit_label} € "
+                        f"darf nicht überschritten werden."
+                    )
+
         active=0 if payload.get("active") in (False,0,"0") else 1
         return {"household_id":hid,"name":name,"source_account_id":source,"target_account_id":target,
             "amount_cents":amount,"recurrence":recurrence,"due_date":due,"end_date":end_date,
@@ -2590,7 +2783,7 @@ class Repository:
         with self.connect() as con:
             household=con.execute("SELECT id,name,mode FROM households WHERE id=?",(hid,)).fetchone()
             if not household: return None
-            people=con.execute("SELECT id,slot,display_name FROM persons WHERE household_id=? ORDER BY slot",(hid,)).fetchall()
+            people=con.execute("SELECT id,slot,display_name FROM persons WHERE household_id=? ORDER BY CASE slot WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END,rowid",(hid,)).fetchall()
             account_rows=con.execute("""SELECT a.id,COALESCE(v.name,a.name) AS name,COALESCE(v.owner_scope,a.owner_scope) AS owner_scope,
                 COALESCE(v.owner_person_id,a.owner_person_id) AS owner_person_id,
                 COALESCE(v.overdraft_limit_cents,a.overdraft_limit_cents) AS overdraft_limit_cents,a.is_default,a.kind,a.linked_account_id

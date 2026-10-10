@@ -42,3 +42,13 @@
 .credit-tabs{display:flex;gap:8px;margin:0 0 18px;border-bottom:1px solid var(--line)}.credit-tabs button{padding:10px 14px;border:0;border-bottom:3px solid transparent;background:transparent;color:var(--muted);font-weight:800}.credit-tabs button.active{border-bottom-color:var(--accent);color:var(--ink)}
 .notice.suggestion{background:#f2f0eb;border-color:#ded9cf;color:var(--muted)}
 .credit-payment-row.increase strong{color:var(--accent-dark)}
+
+/* FinanzLab 2.4.0: schlanke Kontohistorie und Personenverwaltung */
+#person-list .person-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+#person-list .person-display{flex:1;min-width:140px}
+#person-list .row-actions{margin-left:auto}
+.history-older{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
+.history-older>summary,.history-month>summary{cursor:pointer;font-weight:700;padding:8px 0;list-style-position:inside}
+.history-month{margin-left:12px;border-top:1px solid var(--line)}
+.history-month>summary small{font-weight:400;color:var(--muted)}
+.history-month .history-row:last-child{border-bottom:0}

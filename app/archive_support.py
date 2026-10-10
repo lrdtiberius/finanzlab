@@ -207,11 +207,21 @@ def install_web_archive_support(Handler):
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "2.1.1"})
+                return self.json_response({"status": "ok", "version": "2.4.0"})
             if path == "/api/credits":
                 hid = (query.get("household_id") or [""])[0]
                 as_of = (query.get("as_of") or [None])[0]
-                return self.json_response(repository().list_credits_view(hid, as_of))
+                simulate_future = (
+                    (query.get("simulate_future") or ["0"])[0]
+                    in ("1", "true", "yes")
+                )
+                return self.json_response(
+                    repository().list_credits_view(
+                        hid,
+                        as_of,
+                        simulate_future=simulate_future
+                    )
+                )
             if path == "/app.js":
                 data = (static_root / "app.js").read_bytes()
                 self.send_response(200)
