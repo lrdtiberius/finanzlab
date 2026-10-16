@@ -19,7 +19,7 @@ ENERGYLAB = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FinanzLab/2.4.0"
+    server_version = "FinanzLab/2.4.4"
 
     def json_response(self, data, status=HTTPStatus.OK):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -50,7 +50,7 @@ class Handler(BaseHTTPRequestHandler):
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "2.4.0"})
+                return self.json_response({"status": "ok", "version": "2.4.4"})
             if path == "/api/households":
                 return self.json_response({"items": REPOSITORY.list_households()})
             if path == "/api/categories":
@@ -244,6 +244,8 @@ class Handler(BaseHTTPRequestHandler):
                     payload.get("household_id"), payload.get("month"), payload.get("account_ids") or [],
                     payload.get("credit_ids") or []))
             self.json_response({"error": "Nicht gefunden."}, 404)
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except (ValueError, json.JSONDecodeError) as exc:
             self.json_response({"error": str(exc)}, 400)
         except Exception:

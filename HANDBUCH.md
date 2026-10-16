@@ -1,3 +1,7 @@
+## Ergänzung: FinanzLab 2.4.4
+
+Die aktuellen Regeln für „Geliehen“, Einzelraten, Zinsanzeige und Prognosecache sind in [Ergänzungen zu 2.4.2–2.4.4](docs/NEUERUNGEN_2.4.2_BIS_2.4.4.md) beschrieben. Bei „Geliehen“ werden neue Ratenpläne ab ihrem Änderungsstichtag wirksam; frühere Teilzahlungen bleiben bestehen. Manuelle Korrekturen einer einzelnen Rate fließen auch in Restschuld und Tilgungshistorie ein. „Geliehen“ erscheint nicht unter Zinsen.
+
 # Handbuch zum Haushaltsplaner
 
 Gültig für Version **2.4.0**

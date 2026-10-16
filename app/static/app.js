@@ -68,7 +68,138 @@ function creditById(id){return state.credits.find(credit=>credit.id===id)}
 function creditName(id){return creditById(id)?.name||'Kein Kredit'}
 function ownerValue(item){if(item?.owner_scope==='joint')return 'joint';return state.dashboard.household.persons.find(person=>person.id===item?.owner_person_id)?.id||state.dashboard.household.persons[0]?.id||''}
 function isArchived(item){const archiveDate=item?.end_date||(item?.recurrence==='once'?item?.due_date:null);return item?.lifecycle_status==='ended'||Boolean(archiveDate&&archiveDate<today())}
-async function api(url,options={}){const response=await fetch(url,options),data=await response.json().catch(()=>({error:'Ungültige Serverantwort.'}));if(!response.ok)throw new Error(data.error||'Anfrage fehlgeschlagen.');return data}
+async function api(url,options={}){
+  const isRead=!options.method||options.method.toUpperCase()==='GET';
+  const controller=isRead?new AbortController():null;
+  let timedOut=false;
+  const timeout=controller?setTimeout(()=>{
+    timedOut=true;
+    controller.abort();
+  },60000):null;
+
+  try{
+    const requestOptions=controller
+      ? {...options,signal:controller.signal}
+      : options;
+
+    const response=await fetch(url,requestOptions);
+    const data=await response.json().catch(
+      ()=>({error:'Ungültige Serverantwort.'})
+    );
+
+    if(!response.ok){
+      throw new Error(data.error||'Anfrage fehlgeschlagen.');
+    }
+
+    const method=(options.method||'GET').toUpperCase();
+    const readOnlyPost=new Set(['/api/preview/monthly','/api/dashboard/simulation','/api/integrations/energylab/preview']);
+    if(method!=='GET'&&!(method==='POST'&&readOnlyPost.has(url.split('?')[0]))){
+      invalidateForecastCache();
+      scheduleForecastWarmup();
+    }
+    return data;
+  }catch(error){
+    if(timedOut){
+      throw new Error(`Zeitüberschreitung bei ${url}`);
+    }
+    throw error;
+  }finally{
+    if(timeout!==null)clearTimeout(timeout);
+  }
+}
+// 2.4.2: Prognose-Ergebnisse pro Haushalt, Monat und Auswahl zwischenspeichern.
+// Die Finanzformeln bleiben vollständig im bestehenden Python-Backend.
+const FORECAST_MONTHS=12;
+const forecastCache={generation:0,day:today(),householdId:null,values:new Map(),pending:new Map(),warmTimer:null,warmRun:0};
+let previewRequest=0;
+function invalidateForecastCache(){
+  forecastCache.generation++;
+  forecastCache.values.clear();
+  forecastCache.pending.clear();
+  forecastCache.warmRun++;
+  if(forecastCache.warmTimer!==null){clearTimeout(forecastCache.warmTimer);forecastCache.warmTimer=null;}
+}
+function syncForecastCacheContext(){
+  const day=today();
+  if(forecastCache.day!==day||forecastCache.householdId!==state.currentId){
+    invalidateForecastCache();
+    forecastCache.day=day;
+    forecastCache.householdId=state.currentId;
+  }
+}
+async function forecastMemo(key,request){
+  syncForecastCacheContext();
+  if(forecastCache.values.has(key))return forecastCache.values.get(key);
+  if(forecastCache.pending.has(key))return forecastCache.pending.get(key);
+  const generation=forecastCache.generation;
+  const pending=Promise.resolve().then(request).then(result=>{
+    if(forecastCache.generation===generation){
+      // Begrenzter Cache: früher aufgerufene, weit entfernte Monate verdrängen.
+      if(forecastCache.values.size>=90)forecastCache.values.delete(forecastCache.values.keys().next().value);
+      forecastCache.values.set(key,result);
+    }
+    return result;
+  }).finally(()=>{
+    if(forecastCache.pending.get(key)===pending)forecastCache.pending.delete(key);
+  });
+  forecastCache.pending.set(key,pending);
+  return pending;
+}
+function forecastDashboard(householdId,month){
+  const asOf=monthEndDate(month);
+  const query=`household_id=${encodeURIComponent(householdId)}&as_of=${encodeURIComponent(asOf)}`;
+  return forecastMemo(`dashboard:${householdId}:${month}`,()=>Promise.all([
+    api(`/api/dashboard?${query}`),
+    api(`/api/credits?${query}&simulate_future=1`)
+  ]));
+}
+function forecastPreview(householdId,month,accountIds,creditIds){
+  const accounts=[...accountIds];
+  const credits=[...creditIds];
+  const key=JSON.stringify(['preview',householdId,month,accounts,credits]);
+  return forecastMemo(key,()=>api('/api/preview/monthly',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({household_id:householdId,month,account_ids:accounts,credit_ids:credits})
+  }));
+}
+function scheduleForecastWarmup(){
+  if(!state.currentId||!state.dashboard)return;
+  syncForecastCacheContext();
+  if(forecastCache.warmTimer!==null)clearTimeout(forecastCache.warmTimer);
+  const run=++forecastCache.warmRun;
+  const generation=forecastCache.generation;
+  const householdId=state.currentId;
+  const accounts=[...state.previewAccountIds];
+  const credits=[...state.previewCreditIds];
+  const firstMonth=monthNow();
+  // Erst nach der sichtbaren Oberfläche anfangen. Pro Durchgang nur ein Monat:
+  // ein manueller Monatswechsel darf nicht hinter zwölf Anfragen warten.
+  forecastCache.warmTimer=setTimeout(async()=>{
+    forecastCache.warmTimer=null;
+    for(let i=0;i<FORECAST_MONTHS;i++){
+      if(run!==forecastCache.warmRun||generation!==forecastCache.generation||householdId!==state.currentId||firstMonth!==monthNow())return;
+      const month=shiftMonth(firstMonth,i);
+      try{
+        await forecastDashboard(householdId,month);
+        if(run!==forecastCache.warmRun||generation!==forecastCache.generation)return;
+        await forecastPreview(householdId,month,accounts,credits);
+      }catch(error){
+        // Hintergrundfehler weder verschleiern noch die Oberfläche blockieren.
+        console.warn('FinanzLab-Prognose konnte nicht vorbereitet werden:',month,error);
+      }
+      await new Promise(resolve=>setTimeout(resolve,75));
+    }
+  },450);
+}
+window.addEventListener('visibilitychange',()=>{
+  // Externe Änderungen (etwa EnergyLab-Synchronisierung) nach längerer Pause
+  // nicht auf unbestimmte Zeit mit einem alten Browser-Cache verdecken.
+  if(document.visibilityState==='hidden')forecastCache.hiddenAt=Date.now();
+  if(document.visibilityState==='visible'&&Date.now()-(forecastCache.hiddenAt||Date.now())>60000){
+    invalidateForecastCache();
+    scheduleForecastWarmup();
+  }
+});
 function toast(message){const element=$('#toast');element.textContent=message;element.hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>element.hidden=true,3800)}
 // finanzlab-2.1-dashboard-startup
 
@@ -373,7 +504,7 @@ async function boot(){
   const requested=location.hash.replace('#','');
   const validRequested=[
     'dashboard','preview','accounts','income',
-    'expenses','credits','transfers','settings'
+    'expenses','credits','interest','transfers','settings'
   ].includes(requested)
     ? requested
     : 'dashboard';
@@ -466,6 +597,7 @@ async function loadAll(){
   ensureSelections();
   renderAll();
   saveStartupCache();
+  scheduleForecastWarmup();
   // Die 6-Monats-Prognose wird nur bei geöffneter
   // Dashboard-Kachel berechnet.
   loadDashboardOutlookIfOpen(state.dashboardMonth);
@@ -1056,14 +1188,29 @@ function summaryCard(label,value,style=''){const countLabels=new Set(['Betroffen
 function renderAccountSelectors(target,selectedIds,mode){const accounts=state.dashboard.household.accounts;target.innerHTML=accounts.length?accounts.map(account=>`<label class="account-choice"><input type="checkbox" data-${mode}-account="${escapeHtml(account.id)}" ${selectedIds.includes(account.id)?'checked':''}> ${escapeHtml(account.name)}</label>`).join(''):'<p class="empty">Noch keine Konten vorhanden.</p>'}
 function renderCreditSelectors(){const target=$('#preview-credit-selectors');target.innerHTML=state.credits.some(credit=>credit.credit_type!=='mortgage')?state.credits.filter(credit=>credit.credit_type!=='mortgage').map(credit=>`<label class="account-choice credit-choice"><input type="checkbox" data-preview-credit="${escapeHtml(credit.id)}" ${state.previewCreditIds.includes(credit.id)?'checked':''}> ${escapeHtml(credit.name)}</label>`).join(''):'<p class="empty">Noch keine Kredite vorhanden.</p>'}
 function movementRow(item){const negative=Number(item.amount_cents)<0,skipped=item.skip_reason==='credit_repaid',residual=Number(item.final_residual_added_cents||0),adjusted=Boolean(item.credit_adjusted)&&!skipped,override=item.amount_overridden?` · Plan ${eur(item.planned_amount_cents)}, tatsächlich ${eur(Math.abs(item.amount_cents))}`:'',status=skipped?' · entfällt – Kredit bereits getilgt':residual>0?` · Restbetrag ${eur(residual)} in Schlussrate enthalten`:adjusted?` · Schlussrate von ${eur(item.planned_amount_cents)} auf ${eur(Math.abs(item.amount_cents))} begrenzt`:item.completed?' · erledigt – nicht eingerechnet':(item.applied_to_projection===false?' · bereits im Kontostand enthalten':'');const amountEdit=item.kind==='expense'&&item.origin==='planned'?`<button class="link-button movement-amount-button" type="button" data-movement-amount="${escapeHtml(item.completion_key)}" data-current-cents="${Math.abs(Number(item.amount_cents))}" data-planned-cents="${Number(item.planned_amount_cents)}">Betrag ändern</button>`:'',completion=item.completion_allowed?`<label class="movement-completion"><input type="checkbox" data-movement-completion="${escapeHtml(item.completion_key)}" ${item.completed?'checked':''}> Vorgang erledigt</label>`:'';return `<article class="movement-row ${item.completed?'completed':''} ${skipped?'skipped':''}"><span class="movement-kind ${escapeHtml(item.kind)}">${escapeHtml(movementLabels[item.kind]||'Buchung')}</span><span><b>${escapeHtml(item.label)}</b><small>${dateLabel(item.date)} · ${escapeHtml(accountName(item.account_id))}${override}${status}</small></span><strong class="${negative?'amount-negative':''}">${skipped?'0,00 €':`${negative?'− ':'+ '}${eur(Math.abs(item.amount_cents))}`}</strong><div class="movement-actions">${amountEdit}${completion}</div></article>`}
-async function loadPreview(){if(!state.currentId)return;state.preview=await api('/api/preview/monthly',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,month:state.previewMonth,account_ids:state.previewAccountIds,credit_ids:state.previewCreditIds})});renderPreview()}
-function creditPaymentRow(item){const skipped=item.skip_reason==='credit_repaid',increase=item.source==='manual'&&Number(item.amount_cents)<0,residual=Number(item.final_residual_added_cents||0),adjusted=Boolean(item.adjusted)&&!skipped,parts=item.automatic_calculation?[`Rate ${eur(item.account_amount_cents)}`,`Zins ${eur(item.interest_cents)}`,`Tilgung ${eur(item.effective_reduction_cents)}`,`Rest ${eur(item.remaining_after_cents)}`]:[],status=skipped?' · entfällt – Kredit bereits getilgt':increase?' · Kreditaufstockung':residual>0?` · Restbetrag ${eur(residual)} zugeschlagen`:adjusted?` · auf Restschuld begrenzt (geplant ${eur(item.planned_amount_cents)})`:item.future?' · geplant':'',amount=skipped?'0,00 €':increase?`+ ${eur(Math.abs(item.amount_cents))}`:`− ${eur(item.amount_cents)}`;return `<article class="credit-payment-row ${item.future?'future':''} ${skipped?'skipped':''} ${increase?'increase':''}"><span><b>${escapeHtml(item.label)}</b><small>${dateLabel(item.date)} · ${item.source==='expense'?'aus Ausgabe':'manuell'}${status}${parts.length?`<br>${parts.join(' · ')}`:''}</small></span><strong>${amount}</strong>${item.source==='manual'?`<button class="link-button" type="button" data-delete-credit-payment="${escapeHtml(item.id)}">Löschen</button>`:'<span></span>'}</article>`}
+async function loadPreview(){
+  if(!state.currentId)return;
+  const request=++previewRequest;
+  const household=state.currentId,month=state.previewMonth;
+  const accounts=[...state.previewAccountIds],credits=[...state.previewCreditIds];
+  syncForecastCacheContext();
+  const generation=forecastCache.generation;
+  try{
+    const result=await forecastPreview(household,month,accounts,credits);
+    if(request!==previewRequest||household!==state.currentId||month!==state.previewMonth||generation!==forecastCache.generation)return;
+    state.preview=result;
+    renderPreview();
+  }catch(error){
+    if(request===previewRequest)toast(`Vorschau konnte nicht geladen werden: ${error.message}`);
+  }
+}
+function creditPaymentRow(item){const skipped=item.skip_reason==='credit_repaid',increase=item.source==='manual'&&Number(item.amount_cents)<0,residual=Number(item.final_residual_added_cents||0),adjusted=Boolean(item.adjusted)&&!skipped,parts=item.automatic_calculation?[`Rate ${eur(item.account_amount_cents)}`,`Zins ${eur(item.interest_cents)}`,`Tilgung ${eur(item.effective_reduction_cents)}`,`Rest ${eur(item.remaining_after_cents)}`]:[],status=skipped?' · entfällt – Kredit bereits getilgt':increase?' · Kreditaufstockung':residual>0?` · Restbetrag ${eur(residual)} zugeschlagen`:item.amount_overridden?` · manuell angepasst (geplant ${eur(item.planned_amount_cents)})`:adjusted?` · auf Restschuld begrenzt (geplant ${eur(item.planned_amount_cents)})`:item.future?' · geplant':'',amount=skipped?'0,00 €':increase?`+ ${eur(Math.abs(item.amount_cents))}`:`− ${eur(item.amount_cents)}`;return `<article class="credit-payment-row ${item.future?'future':''} ${skipped?'skipped':''} ${increase?'increase':''}"><span><b>${escapeHtml(item.label)}</b><small>${dateLabel(item.date)} · ${item.source==='expense'?'aus Ausgabe':'manuell'}${status}${parts.length?`<br>${parts.join(' · ')}`:''}</small></span><strong>${amount}</strong>${item.source==='manual'?`<button class="link-button" type="button" data-delete-credit-payment="${escapeHtml(item.id)}">Löschen</button>`:'<span></span>'}</article>`}
 function renderPreview(){renderAccountSelectors($('#preview-account-selectors'),state.previewAccountIds,'preview');renderCreditSelectors();const result=state.preview,t=result.totals,ct=result.credit_totals||{opening_balance_cents:0,closing_balance_cents:0,reduction_cents:0};$('#preview-month-label').textContent=monthLabel(result.month);$('#preview-summary').innerHTML=summaryCard('Konten am Monatsanfang',t.opening_balance_cents)+summaryCard('Einnahmen',t.income_cents)+summaryCard('Ausgaben',t.expense_cents)+summaryCard('Konten am Monatsende',t.closing_balance_cents,t.closing_balance_cents<0?'negative':'');$('#preview-credit-summary').innerHTML=state.previewCreditIds.length?summaryCard('Kredite am Monatsanfang',ct.opening_balance_cents)+summaryCard('Simulierte Tilgung',ct.reduction_cents)+summaryCard('Kredite am Monatsende',ct.closing_balance_cents):'';$('#preview-warnings').innerHTML=warningHtml(result.overdraft_warnings);$('#preview-range').textContent=`${dateLabel(result.from)} – ${dateLabel(result.through)}`;const days=result.days||[];if(!result.accounts.length&&!result.credits.length){$('#preview-day-list').innerHTML='<p class="empty">Wähle mindestens ein Konto oder einen Kredit.</p>';updatePreviewDayNavigation();return}$('#preview-day-list').innerHTML=days.map(day=>{const open=state.previewSelectedDay===day.date,balances=(day.balances||[]).map(account=>`<span class="day-balance ${account.overdraft_exceeded?'warning':''}"><small>${escapeHtml(account.name)}</small><b class="${Number(account.projected_balance_cents)<0?'amount-negative':''}">${moneyOrMissing(account.projected_balance_cents)}</b></span>`).join(''),credits=(day.credits||[]).map(credit=>`<span class="day-balance credit-balance"><small>${escapeHtml(credit.name)} · Kredit</small><b>${eur(credit.remaining_balance_cents)}</b>${credit.reduction_cents?`<em>− ${eur(credit.reduction_cents)} Tilgung</em>`:''}</span>`).join('');const warning=day.overdraft_warning_count?'<div class="day-warning">Disporahmen an diesem Tag überschritten.</div>':'',creditMovements=(day.credits||[]).flatMap(credit=>credit.payments||[]);return `<details class="day-entry ${day.overdraft_warning_count?'has-warning':''}" data-preview-day-entry="${escapeHtml(day.date)}" ${open?'open':''}><summary data-preview-day="${escapeHtml(day.date)}"><span class="day-date"><b>${escapeHtml(weekdayLabel(day.date))}</b><small>${dateLabel(day.date)}</small></span><span class="day-balances">${balances}${credits}</span><span class="day-total"><small>Konten gesamt</small><b class="${day.total_balance_cents<0?'amount-negative':''}">${eur(day.total_balance_cents)}</b><em class="${day.delta_cents<0?'amount-negative':''}">${day.delta_cents===0?'keine Kontobewegung':`${day.delta_cents>0?'+ ':''}${eur(day.delta_cents)}`}</em></span></summary><div class="day-detail">${warning}<div class="movement-list">${day.movements.length?day.movements.map(movementRow).join(''):'<p class="empty">An diesem Tag sind keine Kontobewegungen fällig.</p>'}${creditMovements.length?`<div class="credit-movement-separator"><p class="eyebrow">KREDITVERÄNDERUNGEN · NICHT IN DER KONTENSUMME</p>${creditMovements.map(creditPaymentRow).join('')}</div>`:''}</div></div></details>`}).join('');updatePreviewDayNavigation()}
 function updatePreviewDayNavigation(){const navigation=$('#preview-day-navigation');navigation.hidden=!state.previewSelectedDay;$('#preview-selected-day-label').textContent=state.previewSelectedDay?`${weekdayLabel(state.previewSelectedDay)}, ${dateLabel(state.previewSelectedDay)}`:''}
 function selectPreviewDay(value,scroll=true){state.previewSelectedDay=value;$$('[data-preview-day-entry]').forEach(entry=>entry.open=entry.dataset.previewDayEntry===value);updatePreviewDayNavigation();if(scroll)$(`[data-preview-day-entry="${value}"]`)?.scrollIntoView({behavior:'smooth',block:'center'})}
 function movePreviewDay(count){const start=state.previewSelectedDay||(state.previewMonth===monthNow()?today():`${state.previewMonth}-01`),next=shiftDay(start,count);if(next.slice(0,7)!==state.previewMonth){state.previewMonth=next.slice(0,7);state.previewSelectedDay=next;loadPreview()}else selectPreviewDay(next)}
 
-function showView(name){$$('.view').forEach(view=>view.hidden=view.id!==`${name}-view`);$$('.nav-item').forEach(button=>button.classList.toggle('active',button.dataset.view===name));location.hash=name;if(name==='preview'&&state.currentId&&state.dashboard)loadPreview().catch(error=>toast(`Vorschau konnte nicht geladen werden: ${error.message}`));if(name==='settings'&&state.currentId&&state.dashboard)loadSettingsSupplemental().catch(error=>toast(`Einstellungen konnten nicht vollständig geladen werden: ${error.message}`))}
+function showView(name){$$('.view').forEach(view=>view.hidden=view.id!==`${name}-view`);$$('.nav-item').forEach(button=>button.classList.toggle('active',button.dataset.view===name));location.hash=name;if(name==='preview'&&state.currentId&&state.dashboard)loadPreview().catch(error=>toast(`Vorschau konnte nicht geladen werden: ${error.message}`));if(name==='settings'&&state.currentId&&state.dashboard)loadSettingsSupplemental().catch(error=>toast(`Einstellungen konnten nicht vollständig geladen werden: ${error.message}`));if(name==='interest'&&state.currentId&&typeof loadInterest==='function')loadInterest().catch(error=>toast(`Zinsen konnten nicht geladen werden: ${error.message}`))}
 $$('[data-view]').forEach(button=>button.addEventListener('click',()=>showView(button.dataset.view)));
 $$('[data-show-view]').forEach(link=>link.addEventListener('click',event=>{event.preventDefault();showView(link.dataset.showView)}));
 let dashboardMonthRequest=0;
@@ -1102,16 +1249,7 @@ async function loadDashboardMonth(value){
       `household_id=${encodeURIComponent(state.currentId)}`+
       `&as_of=${encodeURIComponent(dashboardAsOf)}`;
 
-    const [dashboard,dashboardCredits]=await Promise.all([
-      api(
-        `/api/dashboard?${query}`
-      ),
-      api(
-        `/api/credits?household_id=${encodeURIComponent(state.currentId)}`+
-        `&as_of=${encodeURIComponent(dashboardAsOf)}`+
-        `&simulate_future=1`
-      )
-    ]);
+    const [dashboard,dashboardCredits]=await forecastDashboard(state.currentId,requested);
 
     if(requestId!==dashboardMonthRequest)return;
 
@@ -1369,10 +1507,10 @@ $('#energylab-account-form').addEventListener('submit',async event=>{event.preve
 function selectCreditFormTab(name){$$('[data-credit-form-tab]').forEach(button=>button.classList.toggle('active',button.dataset.creditFormTab===name));$$('[data-credit-form-panel]').forEach(panel=>panel.hidden=panel.dataset.creditFormPanel!==name)}
 function inferInstallmentApr(principal,payment,count,balloon=0){if(!(principal>0&&payment>0&&Number.isInteger(count)&&count>0&&balloon>=0&&balloon<=principal))return null;const total=payment*count+balloon;if(total<principal)return null;if(total===principal)return 0;const presentValue=monthly=>{let discount=1,value=0;for(let index=0;index<count;index++){discount*=1+monthly;value+=payment/discount}return value+balloon/discount};let low=0,high=.01;while(presentValue(high)>principal&&high<10)high*=2;if(presentValue(high)>principal)return null;for(let index=0;index<96;index++){const middle=(low+high)/2;if(presentValue(middle)>principal)low=middle;else high=middle}return (low+high)/2*1200}
 function creditPlanBalanceAt(credit,effectiveFrom){if(!credit)return 0;const fallback=Number(credit.remaining_balance_cents??credit.opening_balance_cents??0),asOf=String(credit.as_of||state.asOf||today());if(!effectiveFrom||effectiveFrom<=asOf)return fallback;let balance=fallback;const projected=(credit.payments||[]).filter(item=>{const day=String(item.date||'');return day>asOf&&day<effectiveFrom&&!item.skipped&&Number.isFinite(Number(item.remaining_after_cents))}).sort((a,b)=>String(a.date).localeCompare(String(b.date)));for(const item of projected)balance=Number(item.remaining_after_cents);return balance}
-function updateCreditPlanCheck(){const form=$('#credit-form').elements,count=Number(form.plan_count.value),first=form.plan_first_due.value,rate=euroCents(form.plan_amount.value||0),formOpening=euroCents(form.opening_balance.value||0),currentCredit=creditById(state.editingCreditId),creditType=form.credit_type.value,effectiveFrom=form.plan_change_from?.value||state.asOf||today(),planningBalance=currentCredit&&creditType!=='mortgage'?creditPlanBalanceAt(currentCredit,effectiveFrom):formOpening,opening=Number(planningBalance??formOpening??0),contractPrincipal=currentCredit&&creditType!=='mortgage'?opening:(euroCents(form.product_price?.value||0)||formOpening||0),financing=creditType==='consumer_credit'?euroCents(form.financing_price?.value||0):0,isConsumerFinancing=creditType==='consumer_credit'&&financing>0&&contractPrincipal>0,balloon=euroCents(form.balloon_payment.value||0),enteredRate=String(form.interest_rate.value||'').replace(',','.'),automatic=form.automatic_interest.checked,storedApr=currentCredit?.calculated_interest_rate!=null?Number(currentCredit.calculated_interest_rate):null,inferred=automatic&&!enteredRate?(Number.isFinite(storedApr)?storedApr:inferInstallmentApr(contractPrincipal,rate,count,balloon)):null,apr=enteredRate?Number(enteredRate):Number(inferred||0),target=$('#credit-plan-check'),interestHint=$('#credit-interest-hint');form.interest_rate.placeholder=inferred!=null?Number(inferred).toFixed(4):'';form.interest_rate.dataset.calculated=inferred!=null?String(inferred):'';if(interestHint)interestHint.textContent=inferred!=null?`${currentCredit&&Number.isFinite(storedApr)?'Berechneter Zinssatz':'Vorschlag aus Zahlungsplan'}: ${Number(inferred).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:4})} % p. a.`:enteredRate?'Manuell eingetragener Zinssatz.':'Noch nicht aus den Zahlungsdaten berechenbar.';let suggested=0,suggestionBalance=opening;while(suggestionBalance>balloon&&suggested<1200&&rate>0){if(isConsumerFinancing){suggestionBalance=Math.max(balloon,suggestionBalance-rate);suggested++;continue}const interest=automatic?Math.round(suggestionBalance*apr/1200):0,principal=Math.max(0,rate-interest);if(principal<=0){suggested=0;break}suggestionBalance=Math.max(balloon,suggestionBalance-principal);suggested++}form.plan_count.placeholder=suggested?String(suggested):'';if(!first||!Number.isInteger(count)||count<1){target.className='notice wide suggestion';target.textContent=suggested?`Vorschlag: ${suggested} monatliche Zahlungen${balloon?` bis zur vertraglichen Restschuld von ${eur(balloon)}`:''}.`:'Startdatum und Rate festlegen.';return}const scheduledTotal=rate*count+balloon,comparisonBalance=isConsumerFinancing?opening:0,roundingDifference=comparisonBalance?scheduledTotal-comparisonBalance:0,roundingTolerance=1000;if(comparisonBalance&&Math.abs(roundingDifference)>roundingTolerance){target.className='notice wide error';target.textContent=`Die geplanten Zahlungen ergeben ${eur(scheduledTotal)}, der zum Änderungszeitpunkt offene Finanzierungssaldo beträgt ${eur(comparisonBalance)}. Bitte Rate, Anzahl oder Reststand prüfen.`;return}const end=addMonthsToDate(first,count-1);let remaining=opening;for(let index=0;index<count&&remaining>balloon;index++){if(isConsumerFinancing){remaining=Math.max(balloon,remaining-rate)}else{const interest=automatic?Math.round(remaining*apr/1200):0;remaining=Math.max(balloon,remaining-Math.max(0,rate-interest))}}const shortfall=Math.max(0,remaining-balloon),finalAdjustment=shortfall>0&&shortfall<=1000?shortfall:0,roundingNote=comparisonBalance&&roundingDifference?` Rundungsdifferenz: ${eur(Math.abs(roundingDifference))} (toleriert).`:'';target.className=`notice wide${shortfall>0&&!finalAdjustment?' error':' suggestion'}`;target.textContent=finalAdjustment?`${count} Monatsraten bis ${dateLabel(end)}. Die letzte Rate wird automatisch um ${eur(finalAdjustment)} auf ${eur(rate+finalAdjustment)} angepasst; danach beträgt die vertragliche Restschuld ${eur(balloon)}.`:shortfall>0?`${count} Zahlungen reichen ab dem Reststand von ${eur(opening)} voraussichtlich nicht: Ziel-Restschuld um ${eur(shortfall)} verfehlt. Vorschlag: ${suggested||'–'} Zahlungen.`:`${count} Monatsraten bis ${dateLabel(end)} · gerechnet ab Reststand ${eur(opening)} · danach vertragliche Restschuld ${eur(balloon)}.${roundingNote}${suggested&&suggested<count?` Rechnerisch genügen voraussichtlich ${suggested}.`:''}`}
+function updateCreditPlanCheck(){const form=$('#credit-form').elements,count=Number(form.plan_count.value),first=form.plan_first_due.value,rate=euroCents(form.plan_amount.value||0),formOpening=euroCents(form.opening_balance.value||0),currentCredit=(state.editingCreditSnapshot?.id===state.editingCreditId?state.editingCreditSnapshot:null)||creditById(state.editingCreditId),creditType=form.credit_type.value,effectiveFrom=form.plan_change_from?.value||state.asOf||today(),planningBalance=currentCredit&&creditType!=='mortgage'?creditPlanBalanceAt(currentCredit,effectiveFrom):formOpening,opening=Number(planningBalance??formOpening??0),contractPrincipal=currentCredit&&creditType!=='mortgage'?opening:(euroCents(form.product_price?.value||0)||formOpening||0),financing=creditType==='consumer_credit'?euroCents(form.financing_price?.value||0):0,isConsumerFinancing=creditType==='consumer_credit'&&financing>0&&contractPrincipal>0,balloon=euroCents(form.balloon_payment.value||0),enteredRate=String(form.interest_rate.value||'').replace(',','.'),automatic=form.automatic_interest.checked,storedApr=currentCredit?.calculated_interest_rate!=null?Number(currentCredit.calculated_interest_rate):null,inferred=automatic&&!enteredRate?(Number.isFinite(storedApr)?storedApr:inferInstallmentApr(contractPrincipal,rate,count,balloon)):null,apr=enteredRate?Number(enteredRate):Number(inferred||0),target=$('#credit-plan-check'),interestHint=$('#credit-interest-hint');form.interest_rate.placeholder=inferred!=null?Number(inferred).toFixed(4):'';form.interest_rate.dataset.calculated=inferred!=null?String(inferred):'';if(interestHint)interestHint.textContent=inferred!=null?`${currentCredit&&Number.isFinite(storedApr)?'Berechneter Zinssatz':'Vorschlag aus Zahlungsplan'}: ${Number(inferred).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:4})} % p. a.`:enteredRate?'Manuell eingetragener Zinssatz.':'Noch nicht aus den Zahlungsdaten berechenbar.';let suggested=0,suggestionBalance=opening;while(suggestionBalance>balloon&&suggested<1200&&rate>0){if(isConsumerFinancing){suggestionBalance=Math.max(balloon,suggestionBalance-rate);suggested++;continue}const interest=automatic?Math.round(suggestionBalance*apr/1200):0,principal=Math.max(0,rate-interest);if(principal<=0){suggested=0;break}suggestionBalance=Math.max(balloon,suggestionBalance-principal);suggested++}form.plan_count.placeholder=suggested?String(suggested):'';if(!first||!Number.isInteger(count)||count<1){target.className='notice wide suggestion';target.textContent=suggested?`Vorschlag: ${suggested} monatliche Zahlungen${balloon?` bis zur vertraglichen Restschuld von ${eur(balloon)}`:''}.`:'Startdatum und Rate festlegen.';return}const scheduledTotal=rate*count+balloon,comparisonBalance=isConsumerFinancing?opening:0,roundingDifference=comparisonBalance?scheduledTotal-comparisonBalance:0,roundingTolerance=1000;if(comparisonBalance&&roundingDifference < -roundingTolerance){target.className='notice wide error';target.textContent=`Die geplanten Zahlungen ergeben nur ${eur(scheduledTotal)}, der zum Änderungszeitpunkt offene Finanzierungssaldo beträgt ${eur(comparisonBalance)}. Bitte Rate oder Anzahl prüfen.`;return}const end=addMonthsToDate(first,count-1);let remaining=opening;for(let index=0;index<count&&remaining>balloon;index++){if(isConsumerFinancing){remaining=Math.max(balloon,remaining-rate)}else{const interest=automatic?Math.round(remaining*apr/1200):0;remaining=Math.max(balloon,remaining-Math.max(0,rate-interest))}}const shortfall=Math.max(0,remaining-balloon),finalAdjustment=shortfall>0&&shortfall<=1000?shortfall:0,roundingNote=comparisonBalance&&roundingDifference?` Rundungsdifferenz: ${eur(Math.abs(roundingDifference))} (toleriert).`:'';target.className=`notice wide${shortfall>0&&!finalAdjustment?' error':' suggestion'}`;target.textContent=finalAdjustment?`${count} Monatsraten bis ${dateLabel(end)}. Die letzte Rate wird automatisch um ${eur(finalAdjustment)} auf ${eur(rate+finalAdjustment)} angepasst; danach beträgt die vertragliche Restschuld ${eur(balloon)}.`:shortfall>0?`${count} Zahlungen reichen ab dem Reststand von ${eur(opening)} voraussichtlich nicht: Ziel-Restschuld um ${eur(shortfall)} verfehlt. Vorschlag: ${suggested||'–'} Zahlungen.`:`${count} Monatsraten bis ${dateLabel(end)} · gerechnet ab Reststand ${eur(opening)} · danach vertragliche Restschuld ${eur(balloon)}.${roundingNote}${suggested&&suggested<count?` Rechnerisch genügen voraussichtlich ${suggested}.`:''}`}
 function configureCreditTypeFields(){const form=$('#credit-form').elements,isMortgage=form.credit_type.value==='mortgage';$('#mortgage-fields').hidden=!isMortgage;for(const input of $('#mortgage-fields').querySelectorAll('input'))input.disabled=!isMortgage;$('#credit-opening-label-text').textContent=isMortgage?'Aktuelle Restschuld':'Anfangssaldo';form.automatic_interest.checked=isMortgage?true:form.automatic_interest.checked;form.automatic_interest.disabled=isMortgage;if(isMortgage&&form.fixed_interest_until.value&&form.plan_first_due.value){const start=form.plan_first_due.value.slice(0,7),end=form.fixed_interest_until.value.slice(0,7);const [sy,sm]=start.split('-').map(Number),[ey,em]=end.split('-').map(Number),count=(ey-sy)*12+(em-sm)+1;if(count>0)form.plan_count.value=String(count)}if(isMortgage&&window.syncMortgagePlanV200)window.syncMortgagePlanV200()}
 function mortgagePayload(form){return form.credit_type.value==='mortgage'?{original_principal_cents:euroCents(form.original_principal.value),balance_as_of:form.balance_as_of.value,effective_interest_rate:form.effective_interest_rate.value,repayment_rate:form.repayment_rate.value,fixed_interest_until:form.fixed_interest_until.value,special_repayment_percent:form.special_repayment_percent.value}:{};}
-function openCredit(item=null){state.editingCreditId=item?.id||null;const form=$('#credit-form');form.reset(),plan=item?.payment_plan||null,accounts=state.dashboard.household.accounts.filter(account=>account.kind!=='credit_line'),defaultAccount=accounts.find(account=>account.is_default)||accounts[0];form.elements.credit_type.value=item?.credit_type||'consumer_credit';form.elements.opening_balance.value=item?(Number(item.opening_balance_cents)/100).toFixed(2):'';form.elements.original_principal.value=item?.original_principal_cents?(Number(item.original_principal_cents)/100).toFixed(2):'';form.elements.balance_as_of.value=item?.balance_as_of||today();form.elements.effective_interest_rate.value=item?.effective_interest_rate??'';form.elements.repayment_rate.value=item?.repayment_rate??'';form.elements.fixed_interest_until.value=item?.fixed_interest_until||'';form.elements.special_repayment_percent.value=item?.special_repayment_percent??'';form.elements.interest_rate.value=item?.interest_rate??'';form.elements.automatic_interest.checked=item?Boolean(item.automatic_interest):true;form.elements.name.value=item?.name||'';form.elements.note.value=item?.note||'';form.elements.archived.checked=Boolean(item?.archived);form.elements.balloon_payment.value=(Number(item?.balloon_payment_cents||0)/100).toFixed(2);form.elements.plan_account.innerHTML=accounts.map(account=>`<option value="${escapeHtml(account.id)}">${escapeHtml(account.name)}</option>`).join('');form.elements.plan_account.value=plan?.account_id||defaultAccount?.id||'';form.elements.plan_amount.value=plan?(Number(plan.amount_cents)/100).toFixed(2):'';form.elements.plan_first_due.value=plan?.due_date||today();form.elements.plan_count.value=plan?.occurrence_count||'';form.elements.plan_change_from.value=today();$('#credit-plan-change-field').hidden=!item;$('#credit-edit-payment-list').innerHTML=item?(item.payments.length?item.payments.map(creditPaymentRow).join(''):'<p class="empty">Noch keine Tilgungen vorhanden.</p>'):'<p class="empty">Die Tilgungshistorie steht nach dem Anlegen des Kredits zur Verfügung.</p>';const editPaymentForm=$('#credit-edit-payment-form');editPaymentForm.querySelector('[name="payment_date"]').value=today();editPaymentForm.querySelector('[name="amount"]').value='';$('#credit-edit-payment-error').hidden=true;$('#credit-archive-field').hidden=!item;$('#credit-dialog-title').textContent=item?'Kredit bearbeiten':'Kredit anlegen';$('#delete-credit').hidden=!item;$('#credit-error').hidden=true;selectCreditFormTab('data');configureCreditTypeFields();updateCreditPlanCheck();$('#credit-dialog').showModal()}
+function openCredit(item=null){state.editingCreditId=item?.id||null;state.editingCreditSnapshot=item?.id?item:null;const form=$('#credit-form');form.reset(),plan=item?.payment_plan||null,accounts=state.dashboard.household.accounts.filter(account=>account.kind!=='credit_line'),defaultAccount=accounts.find(account=>account.is_default)||accounts[0];form.elements.credit_type.value=item?.credit_type||'consumer_credit';form.elements.opening_balance.value=item?(Number(item.opening_balance_cents)/100).toFixed(2):'';form.elements.original_principal.value=item?.original_principal_cents?(Number(item.original_principal_cents)/100).toFixed(2):'';form.elements.balance_as_of.value=item?.balance_as_of||today();form.elements.effective_interest_rate.value=item?.effective_interest_rate??'';form.elements.repayment_rate.value=item?.repayment_rate??'';form.elements.fixed_interest_until.value=item?.fixed_interest_until||'';form.elements.special_repayment_percent.value=item?.special_repayment_percent??'';form.elements.interest_rate.value=item?.interest_rate??'';form.elements.automatic_interest.checked=item?Boolean(item.automatic_interest):true;form.elements.name.value=item?.name||'';form.elements.note.value=item?.note||'';form.elements.archived.checked=Boolean(item?.archived);form.elements.balloon_payment.value=(Number(item?.balloon_payment_cents||0)/100).toFixed(2);form.elements.plan_account.innerHTML=accounts.map(account=>`<option value="${escapeHtml(account.id)}">${escapeHtml(account.name)}</option>`).join('');form.elements.plan_account.value=plan?.account_id||defaultAccount?.id||'';form.elements.plan_amount.value=plan?(Number(plan.amount_cents)/100).toFixed(2):'';form.elements.plan_first_due.value=plan?.due_date||today();form.elements.plan_count.value=plan?.occurrence_count||'';form.elements.plan_change_from.value=today();$('#credit-plan-change-field').hidden=!item;$('#credit-edit-payment-list').innerHTML=item?(item.payments.length?item.payments.map(creditPaymentRow).join(''):'<p class="empty">Noch keine Tilgungen vorhanden.</p>'):'<p class="empty">Die Tilgungshistorie steht nach dem Anlegen des Kredits zur Verfügung.</p>';const editPaymentForm=$('#credit-edit-payment-form');editPaymentForm.querySelector('[name="payment_date"]').value=today();editPaymentForm.querySelector('[name="amount"]').value='';$('#credit-edit-payment-error').hidden=true;$('#credit-archive-field').hidden=!item;$('#credit-dialog-title').textContent=item?'Kredit bearbeiten':'Kredit anlegen';$('#delete-credit').hidden=!item;$('#credit-error').hidden=true;selectCreditFormTab('data');configureCreditTypeFields();updateCreditPlanCheck();$('#credit-dialog').showModal()}
 async function openCreditDetail(creditId){const credit=await api(`/api/credits/${encodeURIComponent(creditId)}?household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(today())}`);state.currentCreditId=credit.id;$('#credit-detail-type').textContent=creditTypeLabels[credit.credit_type]||'KREDIT';$('#credit-detail-title').textContent=credit.name;$('#credit-detail-summary').innerHTML=(credit.credit_type==='mortgage'?summaryCard('Ursprüngliche Summe',credit.original_principal_cents)+summaryCard('Restschuld',credit.remaining_balance_cents)+summaryCard('Sollzins',`${credit.interest_rate||'–'} %`)+summaryCard('Tilgung',`${credit.repayment_rate||'–'} %`)+summaryCard('Zinsbindung',dateLabel(credit.fixed_interest_until))+summaryCard('Sondertilgung/Jahr',`${credit.special_repayment_percent||'0'} % · ${eur(credit.special_repayment_limit_cents||0)}`):summaryCard('Anfangssaldo',credit.opening_balance_cents)+summaryCard('Bisher getilgt',credit.paid_cents)+summaryCard('Offener Saldo',credit.remaining_balance_cents))+(credit.contractual_end_date?summaryCard('Vertragliches Ende',dateLabel(credit.contractual_end_date)):'')+(credit.expected_repayment_date?summaryCard('Voraussichtlich getilgt',dateLabel(credit.expected_repayment_date)):'');$('#credit-payment-list').innerHTML=credit.payments.length?credit.payments.map(creditPaymentRow).join(''):'<p class="empty">Noch keine Tilgungen vorhanden.</p>';const form=$('#credit-payment-form');form.reset();form.elements.payment_date.value=today();$('#credit-payment-error').hidden=true;if(!$('#credit-detail-dialog').open)$('#credit-detail-dialog').showModal()}
 $('#new-credit').addEventListener('click',()=>openCredit());
 $('[data-credit-form-tab="data"]').closest('.credit-tabs').addEventListener('click',event=>{const button=event.target.closest('[data-credit-form-tab]');if(button)selectCreditFormTab(button.dataset.creditFormTab)});
@@ -1571,7 +1709,29 @@ $('#energylab-sync').addEventListener('click',async event=>{const button=event.c
 $('#open-excel-export').addEventListener('click',()=>{const form=$('#excel-export-form');form.elements.from_month.value=monthNow();form.elements.through_month.value=shiftMonth(monthNow(),11);$('#excel-export-error').hidden=true;$('#excel-export-dialog').showModal()});
 $('#excel-export-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,error=$('#excel-export-error'),button=event.submitter;error.hidden=true;button.disabled=true;button.textContent='Excel wird erstellt …';try{const query=new URLSearchParams({household_id:state.currentId,from_month:form.from_month.value,through_month:form.through_month.value});const response=await fetch(`/api/export.xlsx?${query}`);if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||'Der Excel-Export konnte nicht erstellt werden.')}const blob=await response.blob(),disposition=response.headers.get('Content-Disposition')||'',match=disposition.match(/filename="([^"]+)"/),filename=match?.[1]||`Haushaltsplaner-${form.from_month.value}-bis-${form.through_month.value}.xlsx`,url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=filename;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);$('#excel-export-dialog').close();toast('Die Excel-Arbeitsmappe wurde erstellt.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false;button.textContent='Excel herunterladen'}});
 $$('[data-close]').forEach(button=>button.addEventListener('click',()=>document.getElementById(button.dataset.close).close()));
-boot().catch(error=>{$('#app').hidden=false;toast(`Die Anwendung konnte nicht gestartet werden: ${error.message}`)});
+boot().catch(error=>{
+  startupLoader(false);
+  console.error('FinanzLab Startfehler:',error);
+
+  const app=$('#app');
+  app.hidden=false;
+
+  const notice=document.createElement('div');
+  notice.className='notice error';
+  notice.setAttribute('role','alert');
+
+  const message=document.createElement('p');
+  message.textContent=
+    `FinanzLab konnte nicht gestartet werden: ${error.message}`;
+
+  const retry=document.createElement('button');
+  retry.type='button';
+  retry.textContent='Erneut laden';
+  retry.addEventListener('click',()=>location.reload());
+
+  notice.append(message,retry);
+  app.prepend(notice);
+});
 
 ;(()=>{const marker="finanzlab-1.6.3-opening-default";
 function bindOpeningDefaultFromFinancing(){
@@ -1695,35 +1855,66 @@ function bindCreditPlanHelper1612(){
     opening.dataset.autoFromFinancing='1';
   };
 
-  const planBase=()=>{
-    const openingCents=cents(opening.value);
-    const financingCents=cents(financing.value);
-    const base=openingCents||financingCents||0;
-    const balloonCents=balloon?cents(balloon.value):0;
-    return Math.max(0,base-balloonCents);
+  // Editing a payment plan must use what is still owed on the effective date,
+  // NOT the historical opening balance stored in the credit form. The original
+  // principal and contractual purchase/financing prices remain unchanged.
+  const editableBalance=()=>{
+    const initial=cents(opening.value)||cents(financing.value)||0;
+    if(!state.editingCreditId)return initial;
+    const snapshot=state.editingCreditSnapshot?.id===state.editingCreditId
+      ?state.editingCreditSnapshot:creditById(state.editingCreditId);
+    if(!snapshot)return initial;
+    return Math.max(0,creditPlanBalanceAt(snapshot,els.plan_change_from?.value||today()));
   };
-
+  const planBase=()=>Math.max(0,editableBalance()-(balloon?cents(balloon.value):0));
+  const planApr=()=>{
+    if((isConsumer()&&cents(product.value)>0&&cents(financing.value)>0)||!els.automatic_interest?.checked)return 0;
+    const explicit=String(els.interest_rate?.value||'').replace(',','.').trim();
+    const snapshot=state.editingCreditSnapshot?.id===state.editingCreditId
+      ?state.editingCreditSnapshot:creditById(state.editingCreditId);
+    const rate=explicit!==''?Number(explicit):Number(snapshot?.calculated_interest_rate||0);
+    return Number.isFinite(rate)&&rate>0?rate:0;
+  };
+  const balanceAfterPayments=(payment,count)=>{
+    let remaining=editableBalance(),target=balloon?cents(balloon.value):0;
+    const apr=planApr();
+    for(let i=0;i<count&&remaining>target;i++){
+      const interest=apr?Math.round(remaining*apr/1200):0;
+      remaining=Math.max(target,remaining-Math.max(0,payment-interest));
+    }
+    return remaining;
+  };
   const recalcPlanFromRate=()=>{
     if(isMortgage())return;
-    const base=planBase();
-    const rate=cents(planAmount.value);
+    const base=planBase(),rate=cents(planAmount.value);
     if(base<=0||rate<=0)return;
-
-    const count=Math.max(1,Math.ceil(base/rate));
-    planCount.value=String(count);
-
+    let count=0;
+    if(planApr()>0){
+      const target=balloon?cents(balloon.value):0;
+      while(count<1200&&balanceAfterPayments(rate,++count)>target){}
+    }else{
+      count=Math.ceil(base/rate);
+    }
+    if(count>0&&count<=1200)planCount.value=String(count);
     try{if(typeof updateCreditPlanCheck==='function')updateCreditPlanCheck();}catch(e){}
   };
-
   const recalcPlanFromCount=()=>{
     if(isMortgage())return;
-    const base=planBase();
-    const count=Number(planCount.value||0);
-    if(base<=0||!Number.isFinite(count)||count<1)return;
-
-    const rate=Math.ceil(base/count);
+    const base=planBase(),count=Number(planCount.value||0);
+    if(base<=0||!Number.isInteger(count)||count<1||count>1200)return;
+    let rate=Math.ceil(base/count);
+    // For ordinary interest-bearing loans, count must include future interest.
+    // A small bounded search uses the same monthly cent rounding as backend.
+    if(planApr()>0){
+      let low=rate,high=Math.max(rate,editableBalance()*2+1000),target=balloon?cents(balloon.value):0;
+      while(low<high){
+        const middle=Math.floor((low+high)/2);
+        if(balanceAfterPayments(middle,count)<=target)high=middle;
+        else low=middle+1;
+      }
+      rate=low;
+    }
     planAmount.value=money(rate);
-
     try{if(typeof updateCreditPlanCheck==='function')updateCreditPlanCheck();}catch(e){}
   };
 

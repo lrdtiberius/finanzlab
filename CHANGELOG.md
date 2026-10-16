@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.4.4 – 16.10.2026
+- „Geliehen“: Manuelle Einzelratenänderungen aus der Vorschau auch in Tilgungshistorie, Restschuld und Schlussrate.
+- „Zinsen“: Laufende Kredite zuerst, vollständig getilgte oder archivierte Kredite zuletzt.
+- Keine Änderung der Tilgungsregeln anderer Kreditarten.
+
+## 2.4.3 – 16.10.2026
+- „Geliehen“: Überholte Monatspläne werden beim Speichern eines neuen Plans ab dessen Änderungsstichtag beendet; alte Teiltilgungen bleiben erhalten.
+- „Geliehen“ aus der Zinsübersicht ausgeschlossen.
+- Ratenhilfe für geänderte Kreditpläne berücksichtigt den noch offenen Saldo.
+
+## 2.4.2 – 16.10.2026
+- Zwölfmonatige Vorausberechnung im Hintergrund sowie Browser- und Servercache für Monatsvorschauen.
+- Navigation, Aktualisierung und Fehlerbehandlung der Zinsansicht verbessert.
+
+
+
+## 2.4.1 – 13.10.2026
+
+- Fehlerbehandlung beim Programmstart verbessert.
+- Dauerhaft sichtbaren Ladebildschirm bei Startfehlern behoben.
+- Zeitbegrenzung für lesende API-Anfragen ergänzt.
+- Verständliche Fehlermeldung mit Neustartmöglichkeit ergänzt.
+- Abgebrochene Clientverbindungen im POST-Handler behandelt.
+- Bestehende Finanzberechnungen unverändert übernommen.
+
 ## 2.4.0 – 10.10.2026
 - Kontostand-Historie: Die neuesten fünf Stände sind sichtbar, ältere nach Monat aufklappbar; Daten und Rechenlogik bleiben unverändert.
 - Personen hinzufügen, umbenennen und unbenutzte Personen löschen; keine feste Begrenzung auf A/B mehr.

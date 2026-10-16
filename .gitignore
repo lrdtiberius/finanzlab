@@ -29,3 +29,7 @@ dist/
 *.orig
 *.before-*
 secrets/
+
+*.pyc
+*.pyo
+.pytest_cache/

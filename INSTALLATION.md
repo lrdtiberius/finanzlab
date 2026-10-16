@@ -1,3 +1,9 @@
+## Upgrade-Hinweise für FinanzLab 2.4.4
+
+Vor dem Update eine **konsistente SQLite-Sicherung mit der SQLite-Backup-API** erstellen und außerhalb des laufenden Volumes verwahren. Beim Upgrade in Portainer **dasselbe** `/data`-Volume verwenden; keine zweite Anwendung gleichzeitig auf dieselbe Datenbank zugreifen lassen. Die öffentliche `Dockerfile` baut vollständig aus dem Quellcode auf `python:3.13-slim`; sie benötigt **kein** lokal vorgebautes FinanzLab-Image. Das Release-Image kann mit Portainer oder Docker Compose eingebunden werden.
+
+Einmalzahlungen und vorhandene Teiltilgungen nicht erneut erfassen. Bereits existierende konkurrierende monatliche „Geliehen“-Ratenpläne werden erst durch bewusste Speicherung eines neuen Plans beendet – nicht beim bloßen Upgrade.
+
 ## Hinweise zum Versionswechsel auf 2.4.0
 
 Vor einem Upgrade eine **konsistente** SQLite-Sicherung anlegen (SQLite-Backup-API) und außerhalb des Docker-Volumes aufbewahren. 2.4.0 führt beim ersten Start bei Bedarf eine Datenbankmigration für die flexible Personenverwaltung durch. Beim Wechsel in Portainer oder Docker Compose muss **derselbe** `/data`-Mount erhalten bleiben. Alte und neue Anwendung nicht gleichzeitig gegen dieselbe Datenbank betreiben. Ein Downgrade auf 2.3.0 erfordert gegebenenfalls die vor der Migration erstellte Sicherung.

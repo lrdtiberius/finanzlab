@@ -1,11 +1,8 @@
-name: Test and release
+name: GitHub-Release erstellen
 
+# Kein automatisches Taggen beim Merge: Tag erst nach erfolgreichem PR-Test anlegen.
 on:
   push:
-    branches:
-      - main
-    paths:
-      - ".release-version"
     tags:
       - "v*"
 
@@ -16,74 +13,42 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Quellstand auschecken
+      - name: Release-Tag auschecken
         uses: actions/checkout@v4
-
-      - name: Release-Version bestimmen und Tag bereitstellen
-        id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Release-Version prüfen
         run: |
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            RELEASE_TAG="${GITHUB_REF_NAME}"
-          else
-            RELEASE_TAG="$(tr -d '[:space:]' < .release-version)"
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            if ! git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
-              git tag -a "${RELEASE_TAG}" -m "Haushaltsplaner ${RELEASE_TAG}"
-              git push origin "${RELEASE_TAG}"
-            fi
-          fi
-          echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-
+          test "$GITHUB_REF_NAME" = "$(tr -d '[:space:]' < .release-version)"
+          test "${GITHUB_REF_NAME#v}" = "$(tr -d '[:space:]' < VERSION)"
       - name: Python einrichten
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
-      - name: Tests ausführen
+          python-version: "3.13"
+      - name: Alle Regressionstests
         run: |
           python -m unittest discover -s tests -v
           node --check app/static/app.js
           node --check app/static/credit-archive.js
-
-      - name: Release-Paket erstellen
-        env:
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          node tests/test_credit_plan_frontend_243.cjs
+          node --test tests/test_startup_v241.cjs
+      - name: Release-Quellcode archivieren
         run: |
           mkdir -p dist
-          git archive --format=tar --prefix="finanzlab-${RELEASE_TAG}/" HEAD | gzip -9 > "dist/finanzlab-${RELEASE_TAG}.tar.gz"
-          shasum -a 256 "dist/finanzlab-${RELEASE_TAG}.tar.gz" > "dist/finanzlab-${RELEASE_TAG}.tar.gz.sha256"
-
-      - name: Docker-Image erstellen
-        env:
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          git archive --format=tar --prefix="finanzlab-${GITHUB_REF_NAME}/" HEAD | gzip -9 > "dist/finanzlab-${GITHUB_REF_NAME}.tar.gz"
+          sha256sum "dist/finanzlab-${GITHUB_REF_NAME}.tar.gz" > "dist/finanzlab-${GITHUB_REF_NAME}.tar.gz.sha256"
+      - name: Docker-Image bauen und exportieren
         run: |
-          IMAGE_VERSION="${RELEASE_TAG#v}"
-          docker build --platform linux/amd64 --tag "finanzlab:${IMAGE_VERSION}" .
-          docker save "finanzlab:${IMAGE_VERSION}" | gzip -9 > "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz"
-          shasum -a 256 "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz" > "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz.sha256"
-
+          docker build --pull --platform linux/amd64 --tag "finanzlab:${GITHUB_REF_NAME#v}" .
+          docker save "finanzlab:${GITHUB_REF_NAME#v}" | gzip -9 > "dist/finanzlab-image-${GITHUB_REF_NAME}-amd64.tar.gz"
+          sha256sum "dist/finanzlab-image-${GITHUB_REF_NAME}-amd64.tar.gz" > "dist/finanzlab-image-${GITHUB_REF_NAME}-amd64.tar.gz.sha256"
       - name: GitHub-Release veröffentlichen
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" \
-              "dist/finanzlab-${RELEASE_TAG}.tar.gz" \
-              "dist/finanzlab-${RELEASE_TAG}.tar.gz.sha256" \
-              "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz" \
-              "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz.sha256" \
-              --clobber
-          else
-            gh release create "$RELEASE_TAG" \
-              "dist/finanzlab-${RELEASE_TAG}.tar.gz" \
-              "dist/finanzlab-${RELEASE_TAG}.tar.gz.sha256" \
-              "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz" \
-              "dist/finanzlab-image-${RELEASE_TAG}-amd64.tar.gz.sha256" \
-              --verify-tag \
-              --title "Haushaltsplaner ${RELEASE_TAG}" \
-              --generate-notes
-          fi
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/finanzlab-${GITHUB_REF_NAME}.tar.gz" \
+            "dist/finanzlab-${GITHUB_REF_NAME}.tar.gz.sha256" \
+            "dist/finanzlab-image-${GITHUB_REF_NAME}-amd64.tar.gz" \
+            "dist/finanzlab-image-${GITHUB_REF_NAME}-amd64.tar.gz.sha256" \
+            --verify-tag \
+            --title "FinanzLab ${GITHUB_REF_NAME}" \
+            --generate-notes

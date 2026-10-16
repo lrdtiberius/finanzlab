@@ -21,7 +21,7 @@ from app.domain.recurrence import (
     recurrence_dates,
 )
 
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.4.4"
 
 SYSTEM_CATEGORIES = {
     "income": [
@@ -956,6 +956,30 @@ class Repository:
                     plan_values["owner_scope"],plan_values["owner_person_id"],plan_values["account_id"],credit_id,
                     plan_values["credit_reduction_cents"]))
         return self.credit_detail(values["household_id"],credit_id)
+    @staticmethod
+    def retire_superseded_monthly_plans(con, credit_id, keep_flow_id, effective):
+        """End competing repayment schedules without erasing payment history.
+
+        This is intentionally limited to *monthly repayment* series of the
+        same loan. One-off repayments, special payments and other loans remain
+        untouched. Version boundaries are exclusive at the new plan's start.
+        """
+        rows=con.execute("""SELECT v.id,v.version_from,v.version_to
+            FROM cash_flow_versions v
+            JOIN cash_flows f ON f.id=v.cash_flow_id
+            WHERE v.credit_id=? AND v.recurrence='monthly'
+              AND f.kind='expense' AND f.id<>? AND v.active=1""",
+            (credit_id,keep_flow_id)).fetchall()
+        for row in rows:
+            if row["version_from"]>=effective:
+                # A future-only version cannot have completed installments.
+                # Keep the record for auditability but prevent any occurrence.
+                con.execute("UPDATE cash_flow_versions SET active=0 WHERE id=?",(row["id"],))
+            elif row["version_to"] is None or row["version_to"]>effective:
+                # Keep all contractual occurrences preceding effective.
+                con.execute("UPDATE cash_flow_versions SET version_to=? WHERE id=?",
+                    (effective,row["id"]))
+
     def update_credit(self,credit_id,payload):
         with self.lock,self.connect() as con:
             current=con.execute("SELECT * FROM credits WHERE id=? AND household_id=?",(credit_id,payload.get("household_id"))).fetchone()
@@ -1035,6 +1059,13 @@ class Repository:
             with self.lock,self.connect() as con:
                 con.execute("UPDATE credits SET payment_count=? WHERE id=? AND household_id=?",
                     (expected_count,credit_id,values["household_id"]))
+                if values["credit_type"]=="borrowed":
+                    # All competing borrowed-money installment schedules become
+                    # historical at the replacement plan's effective date.
+                    # Preserve manual/one-off repayments and past installments.
+                    self.retire_superseded_monthly_plans(
+                        con,credit_id,saved_plan["id"],
+                        plan.get("effective_from") or date.today().isoformat())
         return self.credit_detail(values["household_id"],credit_id)
     def delete_credit(self,hid,credit_id):
         with self.lock,self.connect() as con:
@@ -1081,6 +1112,13 @@ class Repository:
             credit["id"] for credit in credits
             if credit.get("credit_subtype")=="mortgage"
         }
+        # An individual cash-flow amount override changes loan amortisation
+        # ONLY for borrowed-money instalments. Other credit types retain the
+        # existing contract/principal calculations unchanged.
+        borrowed_ids={credit["id"] for credit in credits if credit.get("credit_type")=="borrowed"}
+        borrowed_overrides={row["occurrence_key"]:int(row["amount_cents"])
+            for row in con.execute("""SELECT occurrence_key,amount_cents
+                FROM movement_amount_overrides WHERE household_id=?""",(hid,)).fetchall()}
         events_by_credit={credit["id"]:[] for credit in credits}
         for row in con.execute("""SELECT * FROM credit_payments
                 WHERE household_id=? AND payment_date<=?
@@ -1128,12 +1166,32 @@ class Repository:
                 continue
             for due in due_dates:
                 due_text=due.isoformat()
+                occurrence_key=f"cash-flow:{version['flow_id']}:{due_text}"
+                contractual_amount=int(version["amount_cents"] or 0)
+                contractual_reduction=int(version["credit_reduction_cents"] or 0)
+                borrowed_installment=(version["credit_id"] in borrowed_ids and
+                    (version["recurrence"] or "monthly")=="monthly")
+                overridden=borrowed_installment and occurrence_key in borrowed_overrides
+                if overridden:
+                    # A changed *single* borrowed-money instalment is the
+                    # actual repayment, not an additional special repayment.
+                    # All future instalments retain their contractual rate;
+                    # their final amount is derived from the new residual.
+                    actual_amount=borrowed_overrides[occurrence_key]
+                    actual_reduction=actual_amount
+                else:
+                    actual_amount=contractual_amount
+                    actual_reduction=contractual_reduction
                 events_by_credit.setdefault(version["credit_id"],[]).append({
                     "id":f"expense:{version['flow_id']}:{due_text}","date":due_text,
-                    "requested_reduction_cents":int(version["credit_reduction_cents"] or 0),
-                    "planned_account_amount_cents":int(version["amount_cents"] or 0),
+                    "requested_reduction_cents":actual_reduction,
+                    "planned_account_amount_cents":actual_amount,
+                    "contractual_amount_cents":contractual_amount,
+                    "contractual_reduction_cents":contractual_reduction,
+                    "amount_overridden":bool(overridden),
+                    "borrowed_installment":bool(borrowed_installment),
                     "label":version["label"],"source":"expense","source_id":version["flow_id"],
-                    "occurrence_key":f"cash-flow:{version['flow_id']}:{due_text}",
+                    "occurrence_key":occurrence_key,
                     "is_final_scheduled_occurrence":bool(final_due and due_text==final_due),
                 })
 
@@ -1289,7 +1347,10 @@ class Repository:
                 remaining=max(0,before-balance_reduction_cents)
                 item.update({
                     "amount_cents":requested if item["source"]=="manual" else effective,
-                    "planned_amount_cents":requested,
+                    "planned_amount_cents":(int(item["contractual_amount_cents"])
+                        if item["source"]=="expense" else requested),
+                    "amount_overridden":bool(item.get("amount_overridden")),
+                    "borrowed_installment":bool(item.get("borrowed_installment")),
                     "effective_reduction_cents":effective,
                     "balance_reduction_cents":balance_reduction_cents,
                     "interest_cents":interest_cents,
@@ -1297,6 +1358,7 @@ class Repository:
                     "account_amount_cents":account_amount,
                     "remaining_before_cents":before,"remaining_after_cents":remaining,
                     "adjusted":item["source"]=="expense" and (
+                        bool(item.get("amount_overridden")) or
                         effective!=requested or account_amount!=planned_account),
                     "final_residual_added_cents":final_residual_added,
                     "skipped":skipped,"skip_reason":skip_reason,"overpaid_cents":overpaid,
@@ -1364,10 +1426,22 @@ class Repository:
                 credit["interest_booked_cents"]=int(con.execute(
                     "SELECT COALESCE(SUM(amount_cents),0) FROM credit_interest_bookings WHERE credit_id=? AND booking_date<=?",
                     (credit_id,cutoff)).fetchone()[0] or 0)
-                contractual=con.execute("""SELECT MAX(stream_end) AS end_date
-                    FROM cash_flow_versions
-                    WHERE credit_id=? AND active=1 AND recurrence<>'once' AND stream_end IS NOT NULL""",
-                    (credit_id,)).fetchone()["end_date"]
+                if credit["credit_type"]=="borrowed":
+                    # Superseded borrowed-loan installments must not extend
+                    # the displayed contractual end of the replacement plan.
+                    contractual_row=con.execute("""SELECT v.stream_end AS end_date
+                        FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
+                        WHERE v.credit_id=? AND v.active=1 AND v.recurrence='monthly'
+                          AND v.stream_end IS NOT NULL AND v.version_from<=?
+                          AND (v.version_to IS NULL OR v.version_to>?)
+                        ORDER BY v.version_from DESC,v.rowid DESC LIMIT 1""",
+                        (credit_id,cutoff,cutoff)).fetchone()
+                    contractual=contractual_row["end_date"] if contractual_row else None
+                else:
+                    contractual=con.execute("""SELECT MAX(stream_end) AS end_date
+                        FROM cash_flow_versions
+                        WHERE credit_id=? AND active=1 AND recurrence<>'once' AND stream_end IS NOT NULL""",
+                        (credit_id,)).fetchone()["end_date"]
                 repaid=next((item["date"] for item in reversed(payments)
                     if item["date"]>=cutoff and item["remaining_after_cents"]<=0 and not item["skipped"]),None)
                 credit["contractual_end_date"]=contractual
@@ -1404,14 +1478,18 @@ class Repository:
         view=self.list_credits(hid,as_of)
         cutoff=view.get("as_of") or as_of_date(as_of)
         with self.connect() as con:
-            bookings=[dict(row) for row in con.execute("""SELECT b.*,c.name AS credit_name,c.provider,
-                    a.name AS account_name FROM credit_interest_bookings b
+            all_bookings=[dict(row) for row in con.execute("""SELECT b.*,c.name AS credit_name,c.provider,
+                    c.credit_type AS linked_credit_type,a.name AS account_name
+                    FROM credit_interest_bookings b
                     JOIN credits c ON c.id=b.credit_id LEFT JOIN accounts a ON a.id=b.account_id
                     WHERE b.household_id=? ORDER BY b.booking_date DESC,b.created_at DESC""",(hid,)).fetchall()]
+            # Do not accidentally reintroduce excluded borrowed-loan bookings
+            # as generic interest expenses via their linked cash-flow rows.
+            linked_flow_ids={booking["cash_flow_id"] for booking in all_bookings if booking.get("cash_flow_id")}
+            bookings=[booking for booking in all_bookings if booking["linked_credit_type"]!="borrowed"]
             for booking in bookings:
                 booking["source"]="interest_booking"
                 booking["unassigned"]=False
-            linked_flow_ids={booking["cash_flow_id"] for booking in bookings if booking.get("cash_flow_id")}
             manual_versions=[dict(row) for row in con.execute("""SELECT f.id AS flow_id,
                     COALESCE(v.name,f.name) AS booking_name,v.amount_cents,v.active,v.version_from,v.version_to,
                     v.stream_start,v.stream_end,v.due_date,v.recurrence,v.account_id,a.name AS account_name
@@ -1460,19 +1538,27 @@ class Repository:
                 })
         bookings.extend(manual_bookings)
         bookings.sort(key=lambda item:(item.get("booking_date") or "",item.get("id") or ""),reverse=True)
-        by_credit={item["id"]:item for item in view.get("items",[])}
+        interest_credits=view.get("all_items",view.get("items",[]))
+        by_credit={item["id"]:item for item in interest_credits}
         for booking in bookings: booking["credit"] = by_credit.get(booking["credit_id"])
         rows=[]
-        for credit in view.get("items",[]):
+        for credit in interest_credits:
+            if credit.get("credit_type")=="borrowed":
+                continue
             expected_total=int(credit.get("interest_cents") or 0)+int(credit.get("future_interest_cents") or 0)
             rows.append({"credit_id":credit["id"],"name":credit["name"],"provider":credit.get("provider"),
-                "credit_type":credit["credit_type"],"calculated_interest_cents":int(credit.get("interest_cents") or 0),
+                "credit_type":credit["credit_type"],
+                "completed":bool(credit.get("archived")) or int(credit.get("remaining_balance_cents") or 0)<=0,
+                "calculated_interest_cents":int(credit.get("interest_cents") or 0),
                 "future_interest_cents":int(credit.get("future_interest_cents") or 0),
                 "expected_total_interest_cents":expected_total,
                 "interest_rate":credit.get("interest_rate") or credit.get("calculated_interest_rate"),
                 "interest_rate_inferred":bool(credit.get("interest_rate_inferred")),
                 "booked_interest_cents":int(credit.get("interest_booked_cents") or 0),
                 "difference_cents":int(credit.get("interest_cents") or 0)-int(credit.get("interest_booked_cents") or 0)})
+        # Stable partition: preserve existing order *within* active and
+        # completed groups, but display all settled/archived loans last.
+        rows.sort(key=lambda row: bool(row["completed"]))
         unassigned_total=sum(int(item["amount_cents"] or 0) for item in manual_bookings)
         credit_interest_total=sum(row["calculated_interest_cents"] for row in rows)
         planned_credit_interest_total=sum(row["future_interest_cents"] for row in rows)
@@ -1499,6 +1585,8 @@ class Repository:
         with self.connect() as con:
             credit=con.execute("SELECT * FROM credits WHERE id=? AND household_id=?",(credit_id,hid)).fetchone()
             if not credit: raise ValueError("Kredit nicht gefunden.")
+            if credit["credit_type"]=="borrowed":
+                raise ValueError("Geliehen wird nicht auf der Zinsen-Seite erfasst.")
             account_id=payload.get("account_id") or None
             if account_id and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone():
                 raise ValueError("Das gewählte Konto gehört nicht zum Haushalt.")
@@ -2944,8 +3032,15 @@ class Repository:
                 if version["kind"]=="expense" and version["credit_id"]:
                     adjustment=credit_occurrences.get(occurrence_key)
                     if adjustment:
-                        effective_amount=(actual_override if actual_override is not None
-                            else int(adjustment["account_amount_cents"] or 0))
+                        # For borrowed loans the credit timeline has already
+                        # applied the single-occurrence override and capped it
+                        # to remaining principal. Do not override that result
+                        # again on the cash-account side.
+                        if adjustment.get("borrowed_installment"):
+                            effective_amount=int(adjustment["account_amount_cents"] or 0)
+                        else:
+                            effective_amount=(actual_override if actual_override is not None
+                                else int(adjustment["account_amount_cents"] or 0))
                         amount=-effective_amount
                         event_meta.update({
                             "credit_id":version["credit_id"],

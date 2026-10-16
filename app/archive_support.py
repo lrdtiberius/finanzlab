@@ -1,4 +1,6 @@
 from datetime import date, datetime, timezone
+from copy import deepcopy
+from threading import RLock
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -175,13 +177,50 @@ def install_repository_archive_support(Repository):
         }
         return result
 
+    def _forecast_data_revision(self):
+        # SQLite verwendet im Produktivbetrieb WAL. Hauptdatei UND -wal
+        # berücksichtigen, damit auch EnergyLab-/Fremdänderungen ohne
+        # expliziten Web-API-Aufruf einen zwischengespeicherten Stand verwerfen.
+        revision = []
+        for file in (Path(self.path), Path(self.path + "-wal")):
+            try:
+                stat = file.stat()
+                revision.append((stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size))
+            except FileNotFoundError:
+                revision.append(None)
+        return tuple(revision)
+
     def monthly_preview(self, hid, month, account_ids, credit_ids):
-        # Der normale /api/credits-Ladevorgang synchronisiert den Archivstatus.
-        # Für jede Monatsvorschau erneut alle Kreditpläne aufzubauen war teuer
-        # und ändert das Ergebnis der Kontenprojektion nicht.
+        # Originalberechnung unverändert; identische Monatsabfragen im Server
+        # und beim Excel-Export können ihren bereits berechneten Wert teilen.
+        if not hasattr(self, "_forecast_cache_lock"):
+            with self.lock:
+                if not hasattr(self, "_forecast_cache_lock"):
+                    self._forecast_cache_lock = RLock()
+                    self._forecast_cache_months = {}
+                    self._forecast_cache_revision = None
+        key = (hid, str(month), tuple(account_ids or []), tuple(credit_ids or []))
+        before = _forecast_data_revision(self)
+        with self._forecast_cache_lock:
+            if before != self._forecast_cache_revision:
+                self._forecast_cache_months.clear()
+                self._forecast_cache_revision = before
+            cached = self._forecast_cache_months.get(key)
+            if cached is not None:
+                return deepcopy(cached)
+
+        # Archivfilter gehört zum Berechnungspfad, bleibt wie in 2.4.1.
         states = archive_states(self, hid)
-        active_credit_ids = [credit_id for credit_id in credit_ids if not states.get(credit_id, {}).get("archived")]
-        return original_monthly_preview(self, hid, month, account_ids, active_credit_ids)
+        active_credit_ids = [credit_id for credit_id in (credit_ids or []) if not states.get(credit_id, {}).get("archived")]
+        result = original_monthly_preview(self, hid, month, account_ids, active_credit_ids)
+        after = _forecast_data_revision(self)
+        if before == after:
+            with self._forecast_cache_lock:
+                if self._forecast_cache_revision == before:
+                    if len(self._forecast_cache_months) >= 60:
+                        self._forecast_cache_months.pop(next(iter(self._forecast_cache_months)))
+                    self._forecast_cache_months[key] = deepcopy(result)
+        return result
 
     Repository.initialize = initialize
     Repository._credit_archive_states = archive_states
@@ -207,7 +246,7 @@ def install_web_archive_support(Handler):
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "2.4.0"})
+                return self.json_response({"status": "ok", "version": "2.4.4"})
             if path == "/api/credits":
                 hid = (query.get("household_id") or [""])[0]
                 as_of = (query.get("as_of") or [None])[0]
