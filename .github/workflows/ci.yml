@@ -1,0 +1,33 @@
+name: Tests und Docker-Build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Quellstand auschecken
+        uses: actions/checkout@v4
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Regressionstests
+        run: python -m unittest discover -s tests -v
+      - name: JavaScript-Syntax
+        run: |
+          node --check app/static/app.js
+          node --check app/static/credit-archive.js
+      - name: Ratenhelfer-Regressionstest
+        run: node tests/test_credit_plan_frontend_243.cjs
+      - name: Startup-Regressionstest
+        run: node --test tests/test_startup_v241.cjs
+      - name: Docker-Image-Build
+        run: docker build --pull --tag finanzlab:ci .

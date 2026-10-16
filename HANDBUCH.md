@@ -1,6 +1,10 @@
+## Ergänzung: FinanzLab 2.4.4
+
+Die aktuellen Regeln für „Geliehen“, Einzelraten, Zinsanzeige und Prognosecache sind in [Ergänzungen zu 2.4.2–2.4.4](docs/NEUERUNGEN_2.4.2_BIS_2.4.4.md) beschrieben. Bei „Geliehen“ werden neue Ratenpläne ab ihrem Änderungsstichtag wirksam; frühere Teilzahlungen bleiben bestehen. Manuelle Korrekturen einer einzelnen Rate fließen auch in Restschuld und Tilgungshistorie ein. „Geliehen“ erscheint nicht unter Zinsen.
+
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **2.1.1**
+Gültig für Version **2.4.0**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
@@ -74,13 +78,13 @@ Für eine Portainer-Installation wird das fertig gebaute Docker-Image aus dem Gi
 
 Vorgehen:
 
-1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v2.1.1-amd64.tar.gz` importieren,
+1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v2.4.0-amd64.tar.gz` importieren,
 2. unter **Stacks → Add stack** einen Stack mit dem Inhalt aus [`portainer-stack.yaml`](portainer-stack.yaml) anlegen,
 3. den Stack bereitstellen,
 4. den Zustand des Containers `finanzlab` kontrollieren,
 5. Port `8798` im Browser öffnen.
 
-Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:2.1.1` für `linux/amd64`. Das Quellarchiv `finanzlab-v2.1.1.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
+Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:2.4.0` für `linux/amd64`. Das Quellarchiv `finanzlab-v2.4.0.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
 
 Das Volume wird im Container unter `/data` eingebunden. Dort liegt insbesondere die Datenbankdatei `planner.db`.
 
@@ -113,6 +117,10 @@ Die Anwendung enthält folgende Seiten:
 | Umbuchungen | Geldbewegungen zwischen eigenen Konten |
 | Einstellungen | Haushalte, Personen, EnergyLab-Verbindung, Excel-Export und Datenprüfung |
 
+### 4.1 Dynamische Personenverwaltung (2.4.0)
+
+Unter **Einstellungen → Personen / Zuordnung** können weitere Personen mit **+ Person hinzufügen** angelegt und bestehende Einträge umbenannt werden. Dabei bleiben die internen Personen-IDs und alle vorhandenen Konto-/Zahlungszuordnungen bestehen. Eine Person lässt sich nur löschen, wenn sie in keiner aktiven oder historischen Verknüpfung mehr verwendet wird; mindestens eine Person bleibt erhalten. Bei mehreren Personen kann die Zuordnung **Gemeinsam** gewählt werden.
+
 ## 5. Konten und Kontostände
 
 ### 5.1 Konto anlegen
@@ -137,7 +145,7 @@ Jeder neu gespeicherte Kontostand wird als eigener historischer Eintrag abgelegt
 
 Beim Öffnen des Kontodialogs wird das aktuell in der Anwendung gewählte Stichtagsdatum für den neuen Eintrag vorbelegt. Nach dem Speichern wechselt die Ansicht auf dieses Datum, damit der übernommene Kontostand sofort kontrolliert werden kann. Existiert für das gewählte Datum bereits ein Eintrag, wird genau dieser aktualisiert; andere Tage der Historie bleiben erhalten.
 
-Die Historie ist im Bearbeitungsdialog des Kontos sichtbar. Manuell erfasste Einträge können gelöscht werden, solange mindestens ein verwendbarer Kontostand für das Konto erhalten bleibt.
+Die Historie ist im Bearbeitungsdialog des Kontos sichtbar. Ab Version 2.4.0 erscheinen zuerst nur die fünf neuesten Einträge. Ältere Salden können nach Monaten aufgeklappt werden; die Anzeige begrenzt weder Speicherung noch Berechnung. Manuell erfasste Einträge können gelöscht werden, solange mindestens ein verwendbarer Kontostand für das Konto erhalten bleibt.
 
 ### 5.4 Checkbox für Tagesbuchungen
 
@@ -179,7 +187,7 @@ Erforderliche Angaben:
 - Rhythmus
 - erste beziehungsweise nächste Fälligkeit
 - Konto
-- bei einem Paar die Zuordnung zu einer Person oder gemeinsam
+- Zuordnung zu einer Person oder – bei mehreren Personen – gemeinsam
 
 Verfügbare Rhythmen:
 
@@ -570,7 +578,7 @@ docker compose up --build -d
 
 Die Anwendung führt notwendige Schemaanpassungen beim Start aus. Das persistente Daten-Volume darf beim Update nicht gelöscht werden.
 
-Bei Portainer wird das neue Image zuerst unter **Images → Import** eingespielt. Anschließend im bestehenden Stack die Zeile `image: finanzlab:2.1.1` setzen und den Stack neu bereitstellen. Der bestehende Stackname und das Volume müssen erhalten bleiben. Eine ausführliche Schrittfolge einschließlich Sicherung und Wiederherstellung steht in [INSTALLATION.md](INSTALLATION.md#11-aktualisieren-auf-eine-neue-version).
+Bei Portainer wird das neue Image zuerst unter **Images → Import** eingespielt. Anschließend im bestehenden Stack die Zeile `image: finanzlab:2.4.0` setzen und den Stack neu bereitstellen. Der bestehende Stackname und das Volume müssen erhalten bleiben. Eine ausführliche Schrittfolge einschließlich Sicherung und Wiederherstellung steht in [INSTALLATION.md](INSTALLATION.md#11-aktualisieren-auf-eine-neue-version).
 
 ## 17. Fehlerbehebung
 

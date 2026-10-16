@@ -21,7 +21,7 @@ from app.domain.recurrence import (
     recurrence_dates,
 )
 
-APP_VERSION = "2.1.1"
+APP_VERSION = "2.4.4"
 
 SYSTEM_CATEGORIES = {
     "income": [
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS households(
  currency TEXT NOT NULL DEFAULT 'EUR', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS persons(
  id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
- slot TEXT NOT NULL CHECK(slot IN('A','B')), display_name TEXT NOT NULL,
+ slot TEXT NOT NULL, display_name TEXT NOT NULL,
  UNIQUE(household_id,slot));
 CREATE TABLE IF NOT EXISTS accounts(
  id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
@@ -335,6 +335,7 @@ class Repository:
         else: Path(path).parent.mkdir(parents=True,exist_ok=True)
         self.path=str(path); self.lock=RLock()
         upgrade_backup=self._prepare_upgrade_backup()
+        self._migrate_person_slots()
         self.initialize()
         if upgrade_backup:
             with self.lock,self.connect() as con:
@@ -369,6 +370,38 @@ class Repository:
             "database_sha256":hashlib.sha256(target.read_bytes()).hexdigest(),
             "size_bytes":target.stat().st_size,"created_at":timestamp(),
         }
+    def _migrate_person_slots(self):
+        """Remove the v2.3 A/B-only CHECK while keeping IDs, owners and all FK targets.
+
+        Runs once before normal schema initialization. The SQLite transaction is
+        atomic, and the release backup was created before this step.
+        """
+        con=sqlite3.connect(self.path)
+        try:
+            row=con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='persons'").fetchone()
+            if not row or "CHECK(slotIN('A','B'))" not in (row[0] or "").replace(" ", ""):
+                return
+            con.execute("PRAGMA foreign_keys=OFF")
+            con.execute("BEGIN IMMEDIATE")
+            con.execute("""CREATE TABLE persons_v240 (
+                id TEXT PRIMARY KEY,
+                household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+                slot TEXT NOT NULL, display_name TEXT NOT NULL,
+                UNIQUE(household_id,slot))""")
+            con.execute("""INSERT INTO persons_v240(id,household_id,slot,display_name)
+                SELECT id,household_id,slot,display_name FROM persons""")
+            con.execute("DROP TABLE persons")
+            con.execute("ALTER TABLE persons_v240 RENAME TO persons")
+            violations=con.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise ValueError("Personen-Migration: Fremdschlüsselprüfung fehlgeschlagen.")
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        finally:
+            con.close()
+
     @contextmanager
     def connect(self):
         con=sqlite3.connect(self.path); con.row_factory=sqlite3.Row; con.execute("PRAGMA foreign_keys=ON"); con.execute("PRAGMA busy_timeout=5000")
@@ -544,6 +577,66 @@ class Repository:
         with self.connect() as con:
             rows=con.execute("SELECT id,name,mode FROM households ORDER BY created_at").fetchall()
             return [dict(r) for r in rows]
+    @staticmethod
+    def resolve_owner(con,hid,owner):
+        """Resolve stable person IDs; accept old A/B slots for legacy clients."""
+        persons=con.execute("SELECT id,slot FROM persons WHERE household_id=? ORDER BY CASE slot WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, rowid",(hid,)).fetchall()
+        if not persons: raise ValueError("Für den Haushalt ist keine Person vorhanden.")
+        if owner == "joint":
+            if len(persons)<2: raise ValueError("Gemeinsam ist erst ab zwei Personen verfügbar.")
+            return "joint",None
+        if not owner:
+            return "person",persons[0]["id"]
+        for person in persons:
+            if owner in (person["id"],person["slot"]):
+                return "person",person["id"]
+        raise ValueError("Ungültige Besitzerzuordnung.")
+
+    @staticmethod
+    def _person_name(con,hid,name,exclude_id=None):
+        value=str(name or "").strip()
+        if not value or len(value)>100:
+            raise ValueError("Der Personenname muss 1 bis 100 Zeichen enthalten.")
+        matches=con.execute("SELECT id,display_name FROM persons WHERE household_id=?",(hid,)).fetchall()
+        if any(row["id"]!=exclude_id and row["display_name"].casefold()==value.casefold() for row in matches):
+            raise ValueError("Eine Person mit diesem Namen ist bereits vorhanden.")
+        return value
+
+    def create_person(self,payload):
+        hid=str(payload.get("household_id") or "").strip()
+        with self.lock,self.connect() as con:
+            if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone():
+                raise ValueError("Haushalt nicht gefunden.")
+            name=self._person_name(con,hid,payload.get("display_name"))
+            person_id=uid()
+            # A stable opaque slot preserves the legacy schema/API without a fixed A/B limit.
+            slot="P-"+person_id
+            con.execute("INSERT INTO persons(id,household_id,slot,display_name) VALUES(?,?,?,?)",
+                (person_id,hid,slot,name))
+        return {"id":person_id,"household_id":hid,"slot":slot,"display_name":name}
+
+    def update_person(self,person_id,payload):
+        hid=str(payload.get("household_id") or "").strip()
+        with self.lock,self.connect() as con:
+            if not con.execute("SELECT 1 FROM persons WHERE id=? AND household_id=?",(person_id,hid)).fetchone():
+                raise ValueError("Person nicht gefunden.")
+            name=self._person_name(con,hid,payload.get("display_name"),person_id)
+            con.execute("UPDATE persons SET display_name=? WHERE id=? AND household_id=?",(name,person_id,hid))
+            row=con.execute("SELECT id,household_id,slot,display_name FROM persons WHERE id=?",(person_id,)).fetchone()
+        return dict(row)
+
+    def delete_person(self,hid,person_id):
+        with self.lock,self.connect() as con:
+            person=con.execute("SELECT id,display_name FROM persons WHERE id=? AND household_id=?",(person_id,hid)).fetchone()
+            if not person: raise ValueError("Person nicht gefunden.")
+            if con.execute("SELECT COUNT(*) FROM persons WHERE household_id=?",(hid,)).fetchone()[0]<=1:
+                raise ValueError("Die letzte Person eines Haushalts darf nicht gelöscht werden.")
+            for table in ("accounts","account_versions","cash_flows","cash_flow_versions"):
+                if con.execute(f"SELECT 1 FROM {table} WHERE owner_person_id=? LIMIT 1",(person_id,)).fetchone():
+                    raise ValueError("Die Person wird noch verwendet. Bitte zuerst alle Konten und Positionen einschließlich historischer Versionen umordnen.")
+            con.execute("DELETE FROM persons WHERE id=? AND household_id=?",(person_id,hid))
+        return {"id":person_id,"deleted":True}
+
     def create_household(self,payload):
         name=str(payload.get("name","")).strip(); mode=payload.get("mode")
         if not name or mode not in ("single","couple"): raise ValueError("Haushalt und Modell sind erforderlich.")
@@ -582,11 +675,8 @@ class Repository:
         kind=str(payload.get("kind") or "checking").strip()
         if kind not in ("checking","credit_line"): raise ValueError("Ungültige Kontoart.")
         with self.lock,self.connect() as con:
-            people={r["slot"]:r["id"] for r in con.execute("SELECT id,slot FROM persons WHERE household_id=?",(hid,)).fetchall()}
-            if not people: raise ValueError("Haushalt nicht gefunden.")
-            if owner=="joint": scope="joint"; owner_id=None
-            elif owner in people: scope="person"; owner_id=people[owner]
-            else: raise ValueError("Ungültiger Kontobesitzer.")
+            if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone(): raise ValueError("Haushalt nicht gefunden.")
+            scope,owner_id=self.resolve_owner(con,hid,owner)
             if con.execute("SELECT 1 FROM accounts WHERE household_id=? AND name=?",(hid,name)).fetchone(): raise ValueError("Ein Konto mit diesem Namen existiert bereits.")
             account_id=uid(); overdraft_limit_cents,overdraft_apr=overdraft_values(payload)
             linked_account_id=str(payload.get("linked_account_id") or "").strip() or None
@@ -616,10 +706,7 @@ class Repository:
             kind=str(payload.get("kind") or current["kind"] or "checking").strip()
             if kind not in ("checking","credit_line"): raise ValueError("Ungültige Kontoart.")
             linked_account_id=str(payload.get("linked_account_id") or "").strip() or None
-            people={r["slot"]:r["id"] for r in con.execute("SELECT id,slot FROM persons WHERE household_id=?",(hid,)).fetchall()}
-            if owner=="joint": scope="joint"; owner_id=None
-            elif owner in people: scope="person"; owner_id=people[owner]
-            else: raise ValueError("Ungültiger Kontobesitzer.")
+            scope,owner_id=self.resolve_owner(con,hid,owner)
             duplicate=con.execute("SELECT 1 FROM accounts WHERE household_id=? AND name=? AND id<>?",(hid,name,account_id)).fetchone()
             if duplicate: raise ValueError("Ein Konto mit diesem Namen existiert bereits.")
             if kind=="credit_line":
@@ -851,7 +938,7 @@ class Repository:
                     "category":values["credit_type"],"amount_cents":plan.get("amount_cents"),
                     "recurrence":"monthly","due_date":plan.get("first_due_date"),
                     "duration_months":plan.get("occurrence_count"),"account_id":plan.get("account_id"),
-                    "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner") or "A",
+                    "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner"),
                     "active":True,
                 }
                 plan_values=self.cash_flow_values(con,plan_payload,"expense")
@@ -869,6 +956,30 @@ class Repository:
                     plan_values["owner_scope"],plan_values["owner_person_id"],plan_values["account_id"],credit_id,
                     plan_values["credit_reduction_cents"]))
         return self.credit_detail(values["household_id"],credit_id)
+    @staticmethod
+    def retire_superseded_monthly_plans(con, credit_id, keep_flow_id, effective):
+        """End competing repayment schedules without erasing payment history.
+
+        This is intentionally limited to *monthly repayment* series of the
+        same loan. One-off repayments, special payments and other loans remain
+        untouched. Version boundaries are exclusive at the new plan's start.
+        """
+        rows=con.execute("""SELECT v.id,v.version_from,v.version_to
+            FROM cash_flow_versions v
+            JOIN cash_flows f ON f.id=v.cash_flow_id
+            WHERE v.credit_id=? AND v.recurrence='monthly'
+              AND f.kind='expense' AND f.id<>? AND v.active=1""",
+            (credit_id,keep_flow_id)).fetchall()
+        for row in rows:
+            if row["version_from"]>=effective:
+                # A future-only version cannot have completed installments.
+                # Keep the record for auditability but prevent any occurrence.
+                con.execute("UPDATE cash_flow_versions SET active=0 WHERE id=?",(row["id"],))
+            elif row["version_to"] is None or row["version_to"]>effective:
+                # Keep all contractual occurrences preceding effective.
+                con.execute("UPDATE cash_flow_versions SET version_to=? WHERE id=?",
+                    (effective,row["id"]))
+
     def update_credit(self,credit_id,payload):
         with self.lock,self.connect() as con:
             current=con.execute("SELECT * FROM credits WHERE id=? AND household_id=?",(credit_id,payload.get("household_id"))).fetchone()
@@ -929,7 +1040,7 @@ class Repository:
                 "category":values["credit_type"],"amount_cents":plan.get("amount_cents"),
                 "recurrence":"monthly","due_date":plan.get("first_due_date"),
                 "duration_months":plan.get("occurrence_count"),"account_id":plan.get("account_id"),
-                "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner") or "A",
+                "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner"),
                 "active":True,"effective_from":plan.get("effective_from") or date.today().isoformat(),
                 "replace_future":True,
                 })
@@ -939,7 +1050,7 @@ class Repository:
                     "category":values["credit_type"],"amount_cents":plan.get("amount_cents"),
                     "recurrence":"monthly","due_date":plan.get("first_due_date"),
                     "duration_months":plan.get("occurrence_count"),"account_id":plan.get("account_id"),
-                    "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner") or "A",
+                    "credit_id":credit_id,"credit_reduction_cents":"","owner":plan.get("owner"),
                     "active":True,"effective_from":plan.get("effective_from") or date.today().isoformat(),
                 })
             expected_count=values["payment_count"]
@@ -948,6 +1059,13 @@ class Repository:
             with self.lock,self.connect() as con:
                 con.execute("UPDATE credits SET payment_count=? WHERE id=? AND household_id=?",
                     (expected_count,credit_id,values["household_id"]))
+                if values["credit_type"]=="borrowed":
+                    # All competing borrowed-money installment schedules become
+                    # historical at the replacement plan's effective date.
+                    # Preserve manual/one-off repayments and past installments.
+                    self.retire_superseded_monthly_plans(
+                        con,credit_id,saved_plan["id"],
+                        plan.get("effective_from") or date.today().isoformat())
         return self.credit_detail(values["household_id"],credit_id)
     def delete_credit(self,hid,credit_id):
         with self.lock,self.connect() as con:
@@ -994,6 +1112,13 @@ class Repository:
             credit["id"] for credit in credits
             if credit.get("credit_subtype")=="mortgage"
         }
+        # An individual cash-flow amount override changes loan amortisation
+        # ONLY for borrowed-money instalments. Other credit types retain the
+        # existing contract/principal calculations unchanged.
+        borrowed_ids={credit["id"] for credit in credits if credit.get("credit_type")=="borrowed"}
+        borrowed_overrides={row["occurrence_key"]:int(row["amount_cents"])
+            for row in con.execute("""SELECT occurrence_key,amount_cents
+                FROM movement_amount_overrides WHERE household_id=?""",(hid,)).fetchall()}
         events_by_credit={credit["id"]:[] for credit in credits}
         for row in con.execute("""SELECT * FROM credit_payments
                 WHERE household_id=? AND payment_date<=?
@@ -1041,12 +1166,32 @@ class Repository:
                 continue
             for due in due_dates:
                 due_text=due.isoformat()
+                occurrence_key=f"cash-flow:{version['flow_id']}:{due_text}"
+                contractual_amount=int(version["amount_cents"] or 0)
+                contractual_reduction=int(version["credit_reduction_cents"] or 0)
+                borrowed_installment=(version["credit_id"] in borrowed_ids and
+                    (version["recurrence"] or "monthly")=="monthly")
+                overridden=borrowed_installment and occurrence_key in borrowed_overrides
+                if overridden:
+                    # A changed *single* borrowed-money instalment is the
+                    # actual repayment, not an additional special repayment.
+                    # All future instalments retain their contractual rate;
+                    # their final amount is derived from the new residual.
+                    actual_amount=borrowed_overrides[occurrence_key]
+                    actual_reduction=actual_amount
+                else:
+                    actual_amount=contractual_amount
+                    actual_reduction=contractual_reduction
                 events_by_credit.setdefault(version["credit_id"],[]).append({
                     "id":f"expense:{version['flow_id']}:{due_text}","date":due_text,
-                    "requested_reduction_cents":int(version["credit_reduction_cents"] or 0),
-                    "planned_account_amount_cents":int(version["amount_cents"] or 0),
+                    "requested_reduction_cents":actual_reduction,
+                    "planned_account_amount_cents":actual_amount,
+                    "contractual_amount_cents":contractual_amount,
+                    "contractual_reduction_cents":contractual_reduction,
+                    "amount_overridden":bool(overridden),
+                    "borrowed_installment":bool(borrowed_installment),
                     "label":version["label"],"source":"expense","source_id":version["flow_id"],
-                    "occurrence_key":f"cash-flow:{version['flow_id']}:{due_text}",
+                    "occurrence_key":occurrence_key,
                     "is_final_scheduled_occurrence":bool(final_due and due_text==final_due),
                 })
 
@@ -1202,7 +1347,10 @@ class Repository:
                 remaining=max(0,before-balance_reduction_cents)
                 item.update({
                     "amount_cents":requested if item["source"]=="manual" else effective,
-                    "planned_amount_cents":requested,
+                    "planned_amount_cents":(int(item["contractual_amount_cents"])
+                        if item["source"]=="expense" else requested),
+                    "amount_overridden":bool(item.get("amount_overridden")),
+                    "borrowed_installment":bool(item.get("borrowed_installment")),
                     "effective_reduction_cents":effective,
                     "balance_reduction_cents":balance_reduction_cents,
                     "interest_cents":interest_cents,
@@ -1210,6 +1358,7 @@ class Repository:
                     "account_amount_cents":account_amount,
                     "remaining_before_cents":before,"remaining_after_cents":remaining,
                     "adjusted":item["source"]=="expense" and (
+                        bool(item.get("amount_overridden")) or
                         effective!=requested or account_amount!=planned_account),
                     "final_residual_added_cents":final_residual_added,
                     "skipped":skipped,"skip_reason":skip_reason,"overpaid_cents":overpaid,
@@ -1277,10 +1426,22 @@ class Repository:
                 credit["interest_booked_cents"]=int(con.execute(
                     "SELECT COALESCE(SUM(amount_cents),0) FROM credit_interest_bookings WHERE credit_id=? AND booking_date<=?",
                     (credit_id,cutoff)).fetchone()[0] or 0)
-                contractual=con.execute("""SELECT MAX(stream_end) AS end_date
-                    FROM cash_flow_versions
-                    WHERE credit_id=? AND active=1 AND recurrence<>'once' AND stream_end IS NOT NULL""",
-                    (credit_id,)).fetchone()["end_date"]
+                if credit["credit_type"]=="borrowed":
+                    # Superseded borrowed-loan installments must not extend
+                    # the displayed contractual end of the replacement plan.
+                    contractual_row=con.execute("""SELECT v.stream_end AS end_date
+                        FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
+                        WHERE v.credit_id=? AND v.active=1 AND v.recurrence='monthly'
+                          AND v.stream_end IS NOT NULL AND v.version_from<=?
+                          AND (v.version_to IS NULL OR v.version_to>?)
+                        ORDER BY v.version_from DESC,v.rowid DESC LIMIT 1""",
+                        (credit_id,cutoff,cutoff)).fetchone()
+                    contractual=contractual_row["end_date"] if contractual_row else None
+                else:
+                    contractual=con.execute("""SELECT MAX(stream_end) AS end_date
+                        FROM cash_flow_versions
+                        WHERE credit_id=? AND active=1 AND recurrence<>'once' AND stream_end IS NOT NULL""",
+                        (credit_id,)).fetchone()["end_date"]
                 repaid=next((item["date"] for item in reversed(payments)
                     if item["date"]>=cutoff and item["remaining_after_cents"]<=0 and not item["skipped"]),None)
                 credit["contractual_end_date"]=contractual
@@ -1317,14 +1478,18 @@ class Repository:
         view=self.list_credits(hid,as_of)
         cutoff=view.get("as_of") or as_of_date(as_of)
         with self.connect() as con:
-            bookings=[dict(row) for row in con.execute("""SELECT b.*,c.name AS credit_name,c.provider,
-                    a.name AS account_name FROM credit_interest_bookings b
+            all_bookings=[dict(row) for row in con.execute("""SELECT b.*,c.name AS credit_name,c.provider,
+                    c.credit_type AS linked_credit_type,a.name AS account_name
+                    FROM credit_interest_bookings b
                     JOIN credits c ON c.id=b.credit_id LEFT JOIN accounts a ON a.id=b.account_id
                     WHERE b.household_id=? ORDER BY b.booking_date DESC,b.created_at DESC""",(hid,)).fetchall()]
+            # Do not accidentally reintroduce excluded borrowed-loan bookings
+            # as generic interest expenses via their linked cash-flow rows.
+            linked_flow_ids={booking["cash_flow_id"] for booking in all_bookings if booking.get("cash_flow_id")}
+            bookings=[booking for booking in all_bookings if booking["linked_credit_type"]!="borrowed"]
             for booking in bookings:
                 booking["source"]="interest_booking"
                 booking["unassigned"]=False
-            linked_flow_ids={booking["cash_flow_id"] for booking in bookings if booking.get("cash_flow_id")}
             manual_versions=[dict(row) for row in con.execute("""SELECT f.id AS flow_id,
                     COALESCE(v.name,f.name) AS booking_name,v.amount_cents,v.active,v.version_from,v.version_to,
                     v.stream_start,v.stream_end,v.due_date,v.recurrence,v.account_id,a.name AS account_name
@@ -1373,19 +1538,27 @@ class Repository:
                 })
         bookings.extend(manual_bookings)
         bookings.sort(key=lambda item:(item.get("booking_date") or "",item.get("id") or ""),reverse=True)
-        by_credit={item["id"]:item for item in view.get("items",[])}
+        interest_credits=view.get("all_items",view.get("items",[]))
+        by_credit={item["id"]:item for item in interest_credits}
         for booking in bookings: booking["credit"] = by_credit.get(booking["credit_id"])
         rows=[]
-        for credit in view.get("items",[]):
+        for credit in interest_credits:
+            if credit.get("credit_type")=="borrowed":
+                continue
             expected_total=int(credit.get("interest_cents") or 0)+int(credit.get("future_interest_cents") or 0)
             rows.append({"credit_id":credit["id"],"name":credit["name"],"provider":credit.get("provider"),
-                "credit_type":credit["credit_type"],"calculated_interest_cents":int(credit.get("interest_cents") or 0),
+                "credit_type":credit["credit_type"],
+                "completed":bool(credit.get("archived")) or int(credit.get("remaining_balance_cents") or 0)<=0,
+                "calculated_interest_cents":int(credit.get("interest_cents") or 0),
                 "future_interest_cents":int(credit.get("future_interest_cents") or 0),
                 "expected_total_interest_cents":expected_total,
                 "interest_rate":credit.get("interest_rate") or credit.get("calculated_interest_rate"),
                 "interest_rate_inferred":bool(credit.get("interest_rate_inferred")),
                 "booked_interest_cents":int(credit.get("interest_booked_cents") or 0),
                 "difference_cents":int(credit.get("interest_cents") or 0)-int(credit.get("interest_booked_cents") or 0)})
+        # Stable partition: preserve existing order *within* active and
+        # completed groups, but display all settled/archived loans last.
+        rows.sort(key=lambda row: bool(row["completed"]))
         unassigned_total=sum(int(item["amount_cents"] or 0) for item in manual_bookings)
         credit_interest_total=sum(row["calculated_interest_cents"] for row in rows)
         planned_credit_interest_total=sum(row["future_interest_cents"] for row in rows)
@@ -1412,6 +1585,8 @@ class Repository:
         with self.connect() as con:
             credit=con.execute("SELECT * FROM credits WHERE id=? AND household_id=?",(credit_id,hid)).fetchone()
             if not credit: raise ValueError("Kredit nicht gefunden.")
+            if credit["credit_type"]=="borrowed":
+                raise ValueError("Geliehen wird nicht auf der Zinsen-Seite erfasst.")
             account_id=payload.get("account_id") or None
             if account_id and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone():
                 raise ValueError("Das gewählte Konto gehört nicht zum Haushalt.")
@@ -1483,8 +1658,8 @@ class Repository:
             if not config or not household: raise ValueError("Die EnergyLab-Verbindung ist nicht eingerichtet.")
             account_id=config["account_id"]
             if account_id and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone(): account_id=None
-            person=con.execute("SELECT id FROM persons WHERE household_id=? AND slot='A'",(hid,)).fetchone()
-            owner_scope="joint" if household["mode"]=="couple" else "person"; owner_person_id=None if owner_scope=="joint" else person["id"]
+            persons=con.execute("SELECT id FROM persons WHERE household_id=? ORDER BY CASE slot WHEN 'A' THEN 0 ELSE 1 END,rowid",(hid,)).fetchall()
+            owner_scope="joint" if household["mode"]=="couple" else "person"; owner_person_id=None if owner_scope=="joint" else persons[0]["id"]
             for segment in segments:
                 segment_id=str(segment.get("id") or "")
                 if segment_id not in labels: continue
@@ -1579,9 +1754,9 @@ class Repository:
         default_account=config["account_id"]
         if default_account and not con.execute("SELECT 1 FROM accounts WHERE id=? AND household_id=?",(default_account,hid)).fetchone():
             default_account=None
-        person=con.execute("SELECT id FROM persons WHERE household_id=? AND slot='A'",(hid,)).fetchone()
+        persons=con.execute("SELECT id FROM persons WHERE household_id=? ORDER BY CASE slot WHEN 'A' THEN 0 ELSE 1 END,rowid",(hid,)).fetchall()
         owner_scope="joint" if household["mode"]=="couple" else "person"
-        owner_person_id=None if owner_scope=="joint" else person["id"]
+        owner_person_id=None if owner_scope=="joint" else persons[0]["id"]
         labels={"electricity":"Strom","gas":"Gas","water":"Wasser","wastewater":"Abwasser"}
         desired={}; unmatched=[]; warnings=[]
         for segment in segments:
@@ -2297,11 +2472,7 @@ class Repository:
                 raise ValueError("Das Enddatum darf nicht vor der ersten Fälligkeit liegen.")
         household=con.execute("SELECT mode FROM households WHERE id=?",(hid,)).fetchone()
         if not household: raise ValueError("Haushalt nicht gefunden.")
-        people={row["slot"]:row["id"] for row in con.execute("SELECT id,slot FROM persons WHERE household_id=?",(hid,)).fetchall()}
-        owner="A" if household["mode"]=="single" else payload.get("owner")
-        if owner=="joint": scope="joint"; owner_id=None
-        elif owner in people: scope="person"; owner_id=people[owner]
-        else: raise ValueError("Ungültiger Besitzer.")
+        scope,owner_id=self.resolve_owner(con,hid,payload.get("owner"))
         account_id=payload.get("account_id") or None
         if account_id:
             account=con.execute("SELECT id,kind FROM accounts WHERE id=? AND household_id=?",(account_id,hid)).fetchone()
@@ -2477,19 +2648,129 @@ class Repository:
                 expected_label=date.fromisoformat(expected_end).strftime("%d.%m.%Y")
                 raise ValueError(f"Enddatum und Anzahl passen nicht zusammen. Bei {occurrence_count} Ausführungen ist das Enddatum {expected_label}.")
         if source_account.get("kind")=="credit_line":
-            if recurrence!="once":
-                raise ValueError("Rahmenkredit-Auszahlungen werden einzeln erfasst. Für weitere Auszahlungen bitte jeweils eine weitere Umbuchung anlegen.")
             limit=int(source_account.get("overdraft_limit_cents") or 0)
-            detail=self.household_detail(hid,due)
-            if not detail: raise ValueError("Haushalt nicht gefunden.")
-            self.projected_account_balances(con,hid,detail["accounts"],due,excluded_transfer_ids={transfer_id} if transfer_id else None)
-            line=next((item for item in detail["accounts"] if item["id"]==source),None)
-            balance=None if line is None else line.get("projected_balance_cents")
-            if balance is None: raise ValueError("Für den Rahmenkredit ist kein Kontostand verfügbar.")
-            available=max(0,limit-max(0,-int(balance)))
-            if amount>available:
-                available_label=f"{available/100:.2f}".replace(".",","); limit_label=f"{limit/100:.2f}".replace(".",",")
-                raise ValueError(f"Auszahlung nicht möglich: verfügbarer Kreditrahmen am {date.fromisoformat(due).strftime('%d.%m.%Y')} nur {available_label} €. Das Limit von {limit_label} € darf nicht überschritten werden.")
+
+            # Wiederkehrende Rahmen-Auszahlungen müssen begrenzt sein,
+            # damit jede einzelne zukünftige Auszahlung geprüft werden kann.
+            if recurrence!="once" and occurrence_count is None and not end_date:
+                raise ValueError(
+                    "Für eine wiederkehrende Rahmenkredit-Auszahlung "
+                    "muss ein Enddatum oder eine Anzahl angegeben werden."
+                )
+
+            if recurrence=="once":
+                occurrence_dates=[date.fromisoformat(due)]
+            else:
+                validation_end=(
+                    last_occurrence_date(
+                        due,
+                        recurrence,
+                        occurrence_count
+                    ).isoformat()
+                    if occurrence_count is not None
+                    else end_date
+                )
+
+                occurrence_dates=recurrence_dates(
+                    due,
+                    recurrence,
+                    (
+                        date.fromisoformat(due)
+                        - timedelta(days=1)
+                    ).isoformat(),
+                    validation_end,
+                    active_from=due,
+                    stream_start=due,
+                    stream_end=end_date,
+                    max_occurrences=occurrence_count
+                )
+
+            if not occurrence_dates:
+                raise ValueError(
+                    "Für die Rahmenkredit-Auszahlung konnten "
+                    "keine Fälligkeiten ermittelt werden."
+                )
+
+            excluded={transfer_id} if transfer_id else None
+
+            for index,occurrence in enumerate(occurrence_dates):
+                occurrence_text=occurrence.isoformat()
+
+                detail=self.household_detail(
+                    hid,
+                    occurrence_text
+                )
+
+                if not detail:
+                    raise ValueError("Haushalt nicht gefunden.")
+
+                self.projected_account_balances(
+                    con,
+                    hid,
+                    detail["accounts"],
+                    occurrence_text,
+                    excluded_transfer_ids=excluded
+                )
+
+                line=next(
+                    (
+                        item
+                        for item in detail["accounts"]
+                        if item["id"]==source
+                    ),
+                    None
+                )
+
+                balance=(
+                    None
+                    if line is None
+                    else line.get("projected_balance_cents")
+                )
+
+                if balance is None:
+                    raise ValueError(
+                        "Für den Rahmenkredit ist kein "
+                        "Kontostand verfügbar."
+                    )
+
+                # Die bestehende Projektion kennt die neu anzulegende
+                # Serie noch nicht. Frühere Ausführungen derselben neuen
+                # Serie deshalb kumuliert berücksichtigen.
+                balance_before=(
+                    int(balance)
+                    - amount*index
+                )
+
+                available=max(
+                    0,
+                    limit-max(0,-balance_before)
+                )
+
+                if amount>available:
+                    available_label=(
+                        f"{available/100:.2f}".replace(".",",")
+                    )
+                    limit_label=(
+                        f"{limit/100:.2f}".replace(".",",")
+                    )
+                    date_label=occurrence.strftime("%d.%m.%Y")
+
+                    if len(occurrence_dates)>1:
+                        position=(
+                            f"Ausführung {index+1} von "
+                            f"{len(occurrence_dates)}: "
+                        )
+                    else:
+                        position=""
+
+                    raise ValueError(
+                        f"Auszahlung nicht möglich: {position}"
+                        f"verfügbarer Kreditrahmen am "
+                        f"{date_label} nur {available_label} €. "
+                        f"Das Limit von {limit_label} € "
+                        f"darf nicht überschritten werden."
+                    )
+
         active=0 if payload.get("active") in (False,0,"0") else 1
         return {"household_id":hid,"name":name,"source_account_id":source,"target_account_id":target,
             "amount_cents":amount,"recurrence":recurrence,"due_date":due,"end_date":end_date,
@@ -2590,7 +2871,7 @@ class Repository:
         with self.connect() as con:
             household=con.execute("SELECT id,name,mode FROM households WHERE id=?",(hid,)).fetchone()
             if not household: return None
-            people=con.execute("SELECT id,slot,display_name FROM persons WHERE household_id=? ORDER BY slot",(hid,)).fetchall()
+            people=con.execute("SELECT id,slot,display_name FROM persons WHERE household_id=? ORDER BY CASE slot WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END,rowid",(hid,)).fetchall()
             account_rows=con.execute("""SELECT a.id,COALESCE(v.name,a.name) AS name,COALESCE(v.owner_scope,a.owner_scope) AS owner_scope,
                 COALESCE(v.owner_person_id,a.owner_person_id) AS owner_person_id,
                 COALESCE(v.overdraft_limit_cents,a.overdraft_limit_cents) AS overdraft_limit_cents,a.is_default,a.kind,a.linked_account_id
@@ -2751,8 +3032,15 @@ class Repository:
                 if version["kind"]=="expense" and version["credit_id"]:
                     adjustment=credit_occurrences.get(occurrence_key)
                     if adjustment:
-                        effective_amount=(actual_override if actual_override is not None
-                            else int(adjustment["account_amount_cents"] or 0))
+                        # For borrowed loans the credit timeline has already
+                        # applied the single-occurrence override and capped it
+                        # to remaining principal. Do not override that result
+                        # again on the cash-account side.
+                        if adjustment.get("borrowed_installment"):
+                            effective_amount=int(adjustment["account_amount_cents"] or 0)
+                        else:
+                            effective_amount=(actual_override if actual_override is not None
+                                else int(adjustment["account_amount_cents"] or 0))
                         amount=-effective_amount
                         event_meta.update({
                             "credit_id":version["credit_id"],

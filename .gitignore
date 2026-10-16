@@ -18,3 +18,18 @@ screenshots/
 backups/
 dist/
 
+
+*.db-*
+*.sqlite-*
+*.sqlite3-*
+*.tar.gz
+*.zip
+*.bak
+*.bak-*
+*.orig
+*.before-*
+secrets/
+
+*.pyc
+*.pyo
+.pytest_cache/

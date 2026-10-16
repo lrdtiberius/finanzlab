@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -294,7 +295,17 @@ class PlanningModelV011Tests(unittest.TestCase):
         self.assertEqual("credit", expense["category"])
 
     def test_credit_history_annuity_split_and_preview_are_separate_from_accounts(self):
-        today = date.today()
+        # Fester Werktag: Der Test darf nicht vom aktuellen Datum abhängen.
+        today = date(2026, 10, 12)
+
+        class FrozenDate(date):
+            @classmethod
+            def today(cls):
+                return today
+
+        clock = patch('app.infrastructure.repository.date', FrozenDate)
+        clock.start()
+        self.addCleanup(clock.stop)
         tomorrow = today + timedelta(days=1)
         credit = self.repository.create_credit(
             {

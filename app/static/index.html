@@ -9,8 +9,8 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
   <link rel="manifest" href="/site.webmanifest">
   <title>Haushaltsplaner · by Lrd.Tiberius</title>
-  <link rel="stylesheet" href="styles.css?v=2.1.1">
-  <link rel="stylesheet" href="refinements.css?v=2.1.1">
+  <link rel="stylesheet" href="styles.css?v=2.4.4">
+  <link rel="stylesheet" href="refinements.css?v=2.4.4">
 </head>
 <body>
   <div id="app" hidden>
@@ -39,7 +39,7 @@
       <section id="dashboard-view" class="view">
         <div class="hero">
           <div class="dashboard-hero-copy"><p class="eyebrow">PROGNOSTIZIERTE KONTEN GESAMT</p><h1 id="dashboard-balance">0,00 €</h1><p id="dashboard-balance-note">Noch kein Kontostand hinterlegt</p><div class="dashboard-quick-actions" aria-label="Schnellerfassung"><button id="dashboard-new-expense" class="button" type="button">+ Ausgabe hinzufügen</button><button id="dashboard-new-income" class="button secondary" type="button">+ Einnahme hinzufügen</button></div></div>
-          <div class="month-control dashboard-month-control"><span class="month-control-caption">Monat</span><button id="dashboard-prev" class="month-arrow" type="button" aria-label="Einen Monat zurück">←</button><label class="dashboard-month-picker" aria-label="Monat auswählen"><strong id="dashboard-month-label" class="dashboard-month-label" aria-live="polite"></strong><input id="dashboard-month" type="month" aria-label="Monat auswählen"></label><button id="dashboard-next" class="month-arrow" type="button" aria-label="Einen Monat vor">→</button><button id="dashboard-current" class="secondary" type="button">Aktueller Monat</button></div>
+          <div class="month-control dashboard-month-control"><span class="month-control-caption">Monat</span><button id="dashboard-prev" class="month-arrow" type="button" aria-label="Einen Monat zurück">←</button><label class="dashboard-month-picker" aria-label="Monat auswählen"><select id="dashboard-month" aria-label="Monat auswählen"></select></label><button id="dashboard-next" class="month-arrow" type="button" aria-label="Einen Monat vor">→</button><button id="dashboard-current" class="secondary" type="button">Aktueller Monat</button></div>
         </div>
         <div id="dashboard-warnings"></div>
         <div class="metric-grid four">
@@ -48,26 +48,34 @@
           <article class="metric"><span>Operativ frei</span><strong id="dashboard-operating-surplus">0,00 €</strong><small>Einnahmen minus Ausgaben</small></article>
           <article class="metric accent"><span>Liquiditätsänderung</span><strong id="dashboard-liquidity-delta">0,00 €</strong><small>Bankkonten inkl. Umbuchungen, ohne Rahmenkredit</small></article>
         </div>
-        <section id="dashboard-outlook-panel"
+        <details id="dashboard-outlook-panel"
                  class="panel liquidity-outlook-panel">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">LIQUIDITÄTSVORSCHAU</p>
-              <h2>Nächste 6 Monate</h2>
+
+          <summary class="liquidity-outlook-summary">
+            <span class="outlook-summary-copy">
+              <span class="eyebrow">LIQUIDITÄTSVORSCHAU</span>
+              <strong>Nächste 6 Monate</strong>
+            </span>
+
+            <span class="outlook-summary-meta">
+              <span class="badge">15. + Monatsende</span>
+              <span class="outlook-chevron"
+                    aria-hidden="true">⌄</span>
+            </span>
+          </summary>
+
+          <div class="liquidity-outlook-body">
+            <div id="dashboard-outlook-selectors"
+                 class="outlook-account-selectors"
+                 role="group"
+                 aria-label="Bankkonten für die Liquiditätsvorschau"></div>
+
+            <div id="dashboard-outlook-list"
+                 class="liquidity-outlook-groups">
+              <p class="empty">Vorschau wird bei Bedarf berechnet …</p>
             </div>
-            <span class="badge">15. + Monatsende</span>
           </div>
-
-          <div id="dashboard-outlook-selectors"
-               class="outlook-account-selectors"
-               role="group"
-               aria-label="Bankkonten für die Liquiditätsvorschau"></div>
-
-          <div id="dashboard-outlook-list"
-               class="liquidity-outlook-groups">
-            <p class="empty">Vorschau wird berechnet …</p>
-          </div>
-        </section>
+        </details>
 
         <section id="dashboard-financing-panel"
                  class="panel financing-panel"
@@ -173,6 +181,7 @@
           <section class="panel">
             <div class="section-heading">
               <div><p class="eyebrow">PERSONEN</p><h2>Zuordnung</h2></div>
+              <div class="section-actions"><button id="new-person" class="button secondary" type="button">+ Person hinzufügen</button></div>
             </div>
             <div id="person-list" class="person-list"></div>
           </section>
@@ -204,7 +213,7 @@
               <div><p class="eyebrow">DATENSICHERHEIT</p><h2>Sicherungen</h2></div>
               <button id="create-backup" class="button secondary compact" type="button">Jetzt sichern</button>
             </div>
-            <p class="panel-copy">Vor dem Wechsel auf Version 2.1.1 wird automatisch eine Datenbanksicherung angelegt. Vor jeder Wiederherstellung entsteht zusätzlich eine Sicherheitssicherung.</p>
+            <p class="panel-copy">Vor einem Versionswechsel wird eine Datenbanksicherung angelegt. Vor jeder Wiederherstellung entsteht zusätzlich eine Sicherheitssicherung.</p>
             <div id="backup-list" class="diagnostics-list"></div>
           </section>
 
@@ -249,8 +258,10 @@
       </section>
     </main>
 
-    <footer><span>Haushaltsplaner <b>by Lrd.Tiberius</b> · Version 2.1.1</span><a href="https://www.buymeacoffee.com/" target="_blank" rel="noreferrer">☕ Buy me a coffee</a></footer>
+    <footer><span>Haushaltsplaner <b>by Lrd.Tiberius</b> · Version 2.4.4</span><a href="https://www.paypal.com/paypalme/SebastianM207" target="_blank" rel="noreferrer">☕ Buy me a coffee (PayPal)</a></footer>
   </div>
+
+  <dialog id="person-dialog" class="modal small-modal"><form id="person-form"><div class="modal-head"><div><p class="eyebrow">PERSONENVERWALTUNG</p><h2 id="person-dialog-title">Person hinzufügen</h2></div><button class="icon-button" type="button" data-close="person-dialog">×</button></div><div class="form-grid"><label class="wide">Name der Person<input name="display_name" maxlength="100" autocomplete="off" required></label></div><div id="person-error" class="notice error" hidden></div><div class="modal-actions split"><button id="delete-person" class="button danger" type="button" hidden>Löschen</button><button id="person-submit" class="button" type="submit">Person hinzufügen</button></div></form></dialog>
 
   <dialog id="setup-dialog" class="modal small-modal"><form id="setup-form"><div class="modal-head"><div><p class="eyebrow">HAUSHALT ANLEGEN</p><h2>Willkommen</h2></div><button id="close-setup" class="icon-button" type="button" data-close="setup-dialog">×</button></div><div class="form-grid"><label class="wide">Name des Haushalts<input name="name" required></label><fieldset class="wide"><legend>Haushaltsmodell</legend><label class="choice"><input type="radio" name="mode" value="single" checked> Einzelperson</label><label class="choice"><input type="radio" name="mode" value="couple"> Paar</label></fieldset><label>Name Person A<input name="person_a" required></label><label id="person-b-field" hidden>Name Person B<input name="person_b"></label><label class="wide">Erstes Konto <span class="hint">optional</span><input name="account_name"></label><label>Kontostand<input name="balance" type="number" step="0.01" value="0"></label><label>Stand vom<input name="anchor_date" type="date"></label><label>Disporahmen<input name="overdraft_limit" type="number" step="0.01" min="0" value="0"></label><label class="check wide"><input name="bookings_applied" type="checkbox"> Alle Buchungen des Stichtags sind bereits im Kontostand enthalten</label></div><div id="setup-error" class="notice error" hidden></div><div class="modal-actions"><button class="button" type="submit">Haushalt anlegen</button></div></form></dialog>
 
@@ -273,7 +284,7 @@
   <dialog id="excel-export-dialog" class="modal small-modal"><form id="excel-export-form"><div class="modal-head"><div><p class="eyebrow">STRUKTURIERTE ARBEITSMAPPE</p><h2>Excel-Export</h2></div><button class="icon-button" type="button" data-close="excel-export-dialog">×</button></div><p>Wähle den Vorschauzeitraum. Alle eingegebenen Einnahmen, Ausgaben und Kredite werden unabhängig davon vollständig exportiert.</p><div class="form-grid"><label>Startmonat<input name="from_month" type="month" required></label><label>Endmonat<input name="through_month" type="month" required></label><p class="hint wide">Maximal 24 Monate. Die Vorschau berücksichtigt jede tatsächliche Fälligkeit, die Kredit-Historien und die Kontostand-Historie.</p></div><div id="excel-export-error" class="notice error" hidden></div><div class="modal-actions"><button class="button" type="submit">Excel herunterladen</button></div></form></dialog>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js?v=2.1.1"></script>
-  <script src="credit-archive.js?v=2.1.1"></script>
+  <script src="app.js?v=2.4.4"></script>
+  <script src="credit-archive.js?v=2.4.4"></script>
 </body>
 </html>
