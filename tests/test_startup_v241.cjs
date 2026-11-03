@@ -10,7 +10,7 @@ const source = fs.readFileSync(
 
 const start = source.indexOf('async function api(');
 const forecastStart = source.indexOf(
-  'const FORECAST_MONTHS=12;', start
+  '// 2.4.2: Prognose-Ergebnisse', start
 );
 const end = forecastStart >= 0
   ? forecastStart

@@ -89,24 +89,47 @@ def recurrence_dates(first_due_date,recurrence,start_exclusive,end_inclusive,
         occurrence_limit=int(max_occurrences)
         if occurrence_limit<1: return []
     if recurrence=="once": return [first] if effective(first) and occurrence_limit!=0 else []
+    months=RECURRENCE_MONTHS.get(recurrence)
+    if recurrence!="weekly" and months is None:
+        raise ValueError(f"Unbekannter Zahlungsrhythmus: {recurrence}")
+
+    # There is no need to replay every historical occurrence before the
+    # requested interval.  Start at the first contractual date that can
+    # possibly be effective while keeping the cadence anchored to ``first``.
+    # ``start`` remains exclusive, hence the explicit candidate check below
+    # instead of adding one day (which would overflow for ``date.max``).
+    lower_bound=max(first,start,valid_from,stream_from)
+    effective_end=min(end,stream_until) if stream_until is not None else end
+    if effective_end<lower_bound or effective_end<=start:
+        return []
+
     if recurrence=="weekly":
-        result=[]; occurrence_number=0
+        distance=max(0,(lower_bound-first).days)
+        occurrence_number=(distance+WEEKLY_DAYS-1)//WEEKLY_DAYS
+        due=first+timedelta(days=occurrence_number*WEEKLY_DAYS)
+        if due<=start:
+            occurrence_number+=1
+        result=[]
         while True:
             if occurrence_limit is not None and occurrence_number>=occurrence_limit: break
             due=first+timedelta(days=occurrence_number*WEEKLY_DAYS)
-            if due>end: break
+            if due>effective_end or (valid_to is not None and due>=valid_to): break
             if effective(due): result.append(due)
             occurrence_number+=1
         return result
-    months=RECURRENCE_MONTHS.get(recurrence)
-    if months is None: raise ValueError(f"Unbekannter Zahlungsrhythmus: {recurrence}")
-    result=[]; offset=0; occurrence_number=0
+
+    month_distance=(lower_bound.year-first.year)*12+lower_bound.month-first.month
+    occurrence_number=max(0,month_distance//months)
+    due=add_months_anchored(first,occurrence_number*months)
+    if due<lower_bound or due<=start:
+        occurrence_number+=1
+    result=[]
     while True:
         if occurrence_limit is not None and occurrence_number>=occurrence_limit: break
-        due=add_months_anchored(first,offset)
-        if due>end: break
+        due=add_months_anchored(first,occurrence_number*months)
+        if due>effective_end or (valid_to is not None and due>=valid_to): break
         if effective(due): result.append(due)
-        offset+=months; occurrence_number+=1
+        occurrence_number+=1
     return result
 
 

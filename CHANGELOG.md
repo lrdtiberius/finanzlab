@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.6.3 – 03.11.2026
+- Finanzassistent in den Einstellungen über die gesamte Breite angeordnet; Haushalt und Personen stehen darunter nebeneinander.
+- Sicherungsansicht und Datenhaltung auf die zwölf neuesten oder zuletzt wiederhergestellten Sicherungen begrenzt.
+- Wiederherstellungsablauf schützt die ausgewählte Sicherung, bis die zusätzliche Sicherheitssicherung angelegt und die Wiederherstellung abgeschlossen ist.
+
+## 2.6.2 – 02.11.2026
+- Neue Vorschau-Option „Entfällt“ für Positionen, die sichtbar bleiben, aber nicht in Kontostand, Einnahmen/Ausgaben, Operativ frei oder Liquiditätsänderung einfließen.
+- „Vorgang erledigt“ und „Entfällt“ schließen sich gegenseitig aus.
+- Betragsänderungen und Entfall aktualisieren Vorschau und Dashboard unmittelbar.
+
+## 2.6.1 – 01.11.2026
+- Nach Änderungen an „Vorgang erledigt“ oder „Betrag ändern“ wird der Prognosecache geleert und die sichtbare Monatsvorschau sofort neu geladen.
+- Veraltete Tages- und Monatswerte bis zum manuellen Neuladen behoben.
+
+## 2.6.0 – 01.11.2026
+- Wiederkehrende Termine werden mathematisch vorgespult; Vorschau- und Kreditberechnungen wurden gebündelt und zwischengespeichert.
+- Startdaten für Kredite deutlich verkleinert und selten benötigte Einstellungen, Diagnosen, Sicherungen, EnergyLab-Status und Zinsdaten verzögert geladen.
+- Gzip-Auslieferung und langfristiges Caching versionierter statischer Dateien ergänzt.
+- EnergyLab-Migration um Buchungsdatum und kanonischen Ereignistyp erweitert.
+
 ## 2.4.4 – 16.10.2026
 - „Geliehen“: Manuelle Einzelratenänderungen aus der Vorschau auch in Tilgungshistorie, Restschuld und Schlussrate.
 - „Zinsen“: Laufende Kredite zuerst, vollständig getilgte oder archivierte Kredite zuletzt.

@@ -1,1 +1,1 @@
-"""FinanzLab Haushaltsplaner 2.4.4."""
+"""FinanzLab Haushaltsplaner 2.6.3."""

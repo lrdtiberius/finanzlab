@@ -21,7 +21,13 @@ from app.domain.recurrence import (
     recurrence_dates,
 )
 
-APP_VERSION = "2.4.4"
+BASE_VERSION = "2.6.3"
+APP_VERSION = (
+    f"{BASE_VERSION}-testsystem"
+    if os.getenv("FINANZLAB_TEST_MODE") == "1"
+    else BASE_VERSION
+)
+BACKUP_RETENTION_LIMIT = 12
 
 SYSTEM_CATEGORIES = {
     "income": [
@@ -180,6 +186,13 @@ CREATE TABLE IF NOT EXISTS movement_completions(
  UNIQUE(household_id,occurrence_key));
 CREATE INDEX IF NOT EXISTS movement_completions_source
  ON movement_completions(household_id,source_type,source_id,occurrence_date);
+CREATE TABLE IF NOT EXISTS movement_omissions(
+ id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+ occurrence_key TEXT NOT NULL, source_type TEXT NOT NULL CHECK(source_type IN('cash_flow','transfer')),
+ source_id TEXT NOT NULL, occurrence_date TEXT NOT NULL, omitted_at TEXT NOT NULL,
+ UNIQUE(household_id,occurrence_key));
+CREATE INDEX IF NOT EXISTS movement_omissions_source
+ ON movement_omissions(household_id,source_type,source_id,occurrence_date);
 CREATE TABLE IF NOT EXISTS movement_amount_overrides(
  id TEXT PRIMARY KEY, household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
  occurrence_key TEXT NOT NULL, cash_flow_id TEXT NOT NULL REFERENCES cash_flows(id) ON DELETE CASCADE,
@@ -188,6 +201,10 @@ CREATE TABLE IF NOT EXISTS movement_amount_overrides(
  UNIQUE(household_id,occurrence_key));
 CREATE INDEX IF NOT EXISTS movement_amount_overrides_source
  ON movement_amount_overrides(household_id,cash_flow_id,occurrence_date);
+CREATE TABLE IF NOT EXISTS forecast_revisions(
+ household_id TEXT PRIMARY KEY REFERENCES households(id) ON DELETE CASCADE,
+ revision INTEGER NOT NULL DEFAULT 0,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS schema_migrations(
  name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS bank_statement_previews(
@@ -227,6 +244,116 @@ CREATE TABLE IF NOT EXISTS account_reconciliations(
 CREATE INDEX IF NOT EXISTS bank_transactions_projection ON bank_transactions(household_id,account_id,booking_date);
 CREATE INDEX IF NOT EXISTS account_reconciliations_active ON account_reconciliations(account_id,balance_date,status);
 """
+
+# Only tables and columns which can change a forecast belong here. Audit logs,
+# custom categories, people and EnergyLab connection/status data deliberately do
+# not invalidate calculated months.
+FORECAST_REVISION_TABLES = {
+    "accounts": (
+        "name","owner_scope","owner_person_id","kind","overdraft_limit_cents",
+        "is_default","linked_account_id",
+    ),
+    "account_versions": (
+        "name","owner_scope","owner_person_id","overdraft_limit_cents",
+        "valid_from","valid_to",
+    ),
+    "balance_anchors": ("anchor_date","balance_cents","bookings_applied"),
+    "credits": (
+        "name","credit_type","opening_balance_cents","interest_rate",
+        "automatic_interest","free_special_repayment","balloon_payment_cents",
+        "provider","product_price_cents","financing_price_cents",
+        "installment_surcharge_cents","payment_count","credit_subtype",
+        "original_principal_cents","balance_as_of","effective_interest_rate",
+        "repayment_rate","fixed_interest_until","special_repayment_percent",
+    ),
+    "credit_payments": ("payment_date","amount_cents","note"),
+    "credit_interest_bookings": (
+        "credit_id","booking_date","amount_cents","account_id","cash_flow_id",
+    ),
+    "cash_flows": (
+        "kind","name","owner_scope","owner_person_id","account_id","source_key","category",
+    ),
+    "transfers": (
+        "name","source_account_id","target_account_id","amount_cents","recurrence",
+        "due_date","end_date","occurrence_count","active",
+    ),
+    "movement_completions": (
+        "occurrence_key","source_type","source_id","occurrence_date","completed_at",
+    ),
+    "movement_omissions": (
+        "occurrence_key","source_type","source_id","occurrence_date","omitted_at",
+    ),
+    "movement_amount_overrides": (
+        "occurrence_key","cash_flow_id","occurrence_date","amount_cents",
+    ),
+    "bank_transactions": (
+        "account_id","booking_date","value_date","amount_cents","currency",
+        "counterparty","purpose","bank_reference",
+    ),
+    "account_reconciliations": (
+        "account_id","balance_date","closing_balance_cents","status",
+    ),
+}
+
+FORECAST_REVISION_LOOKUPS = {
+    "cash_flow_versions": (
+        "cash_flows","cash_flow_id",
+        (
+            "cash_flow_id","amount_cents","active","version_from","version_to",
+            "stream_start","stream_end","due_date","recurrence","name","category",
+            "owner_scope","owner_person_id","account_id","credit_id",
+            "credit_reduction_cents","credit_payment_type",
+        ),
+    ),
+    "bank_transaction_matches": (
+        "bank_transactions","transaction_id",
+        (
+            "transaction_id","target_type","target_id","planned_date","occurrence_key",
+            "match_method","confirmed","status","reversal_of_transaction_id",
+        ),
+    ),
+}
+
+
+def install_forecast_revision_triggers(con):
+    """Track forecast changes per household without coupling caches to DB mtime."""
+    con.execute("""INSERT OR IGNORE INTO forecast_revisions(household_id,revision)
+        SELECT id,0 FROM households""")
+    con.execute("""CREATE TRIGGER IF NOT EXISTS forecast_revision_household_insert
+        AFTER INSERT ON households BEGIN
+        INSERT OR IGNORE INTO forecast_revisions(household_id,revision) VALUES(NEW.id,0);
+        END""")
+
+    def upsert(household_sql):
+        return f"""INSERT INTO forecast_revisions(household_id,revision,updated_at)
+            SELECT {household_sql},1,CURRENT_TIMESTAMP
+            WHERE {household_sql} IS NOT NULL
+              AND EXISTS(SELECT 1 FROM households WHERE id={household_sql})
+            ON CONFLICT(household_id) DO UPDATE SET
+                revision=forecast_revisions.revision+1,
+                updated_at=CURRENT_TIMESTAMP;"""
+
+    for table,columns in FORECAST_REVISION_TABLES.items():
+        changed=" OR ".join(f"OLD.{column} IS NOT NEW.{column}" for column in columns)
+        con.execute(f"""CREATE TRIGGER IF NOT EXISTS forecast_revision_{table}_insert
+            AFTER INSERT ON {table} BEGIN {upsert('NEW.household_id')} END""")
+        con.execute(f"""CREATE TRIGGER IF NOT EXISTS forecast_revision_{table}_update
+            AFTER UPDATE ON {table} WHEN {changed}
+            BEGIN {upsert('NEW.household_id')} END""")
+        con.execute(f"""CREATE TRIGGER IF NOT EXISTS forecast_revision_{table}_delete
+            AFTER DELETE ON {table} BEGIN {upsert('OLD.household_id')} END""")
+
+    for table,(parent,parent_key,columns) in FORECAST_REVISION_LOOKUPS.items():
+        changed=" OR ".join(f"OLD.{column} IS NOT NEW.{column}" for column in columns)
+        new_household=f"(SELECT household_id FROM {parent} WHERE id=NEW.{parent_key})"
+        old_household=f"(SELECT household_id FROM {parent} WHERE id=OLD.{parent_key})"
+        con.execute(f"""CREATE TRIGGER IF NOT EXISTS forecast_revision_{table}_insert
+            AFTER INSERT ON {table} BEGIN {upsert(new_household)} END""")
+        con.execute(f"""CREATE TRIGGER IF NOT EXISTS forecast_revision_{table}_update
+            AFTER UPDATE ON {table} WHEN {changed}
+            BEGIN {upsert(new_household)} END""")
+        con.execute(f"""CREATE TRIGGER IF NOT EXISTS forecast_revision_{table}_delete
+            AFTER DELETE ON {table} BEGIN {upsert(old_household)} END""")
 
 def uid(): return str(uuid4())
 def timestamp(): return datetime.now(timezone.utc).isoformat(timespec="microseconds")
@@ -347,6 +474,7 @@ class Repository:
                 ))
         marker=self._upgrade_marker(); marker.parent.mkdir(parents=True,exist_ok=True)
         marker.write_text(APP_VERSION+"\n",encoding="utf-8")
+        self._prune_backups()
 
     def _upgrade_marker(self):
         return self._backup_directory()/f".finanzlab-upgrade-{APP_VERSION}.done"
@@ -424,8 +552,10 @@ class Repository:
             self.ensure_column(con,"cash_flow_versions","account_id","TEXT")
             self.ensure_column(con,"cash_flow_versions","credit_id","TEXT")
             self.ensure_column(con,"cash_flow_versions","credit_reduction_cents","INTEGER NOT NULL DEFAULT 0")
+            self.ensure_column(con,"cash_flow_versions","credit_payment_type","TEXT NOT NULL DEFAULT 'regular'")
             self.ensure_column(con,"credits","interest_rate","TEXT")
             self.ensure_column(con,"credits","automatic_interest","INTEGER NOT NULL DEFAULT 0")
+            self.ensure_column(con,"credits","free_special_repayment","INTEGER NOT NULL DEFAULT 0")
             self.ensure_column(con,"credits","balloon_payment_cents","INTEGER NOT NULL DEFAULT 0")
             self.ensure_column(con,"credits","provider","TEXT")
             self.ensure_column(con,"credits","product_price_cents","INTEGER")
@@ -453,6 +583,7 @@ class Repository:
                 cash_flow_id TEXT REFERENCES cash_flows(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
             con.execute("CREATE INDEX IF NOT EXISTS credit_interest_bookings_dates ON credit_interest_bookings(household_id,booking_date)")
+            con.execute("CREATE INDEX IF NOT EXISTS credit_interest_bookings_credit_date ON credit_interest_bookings(credit_id,booking_date)")
             self.ensure_column(con,"accounts","is_default","INTEGER NOT NULL DEFAULT 0")
             self.ensure_column(con,"accounts","kind","TEXT NOT NULL DEFAULT 'checking'")
             self.ensure_column(con,"accounts","linked_account_id","TEXT")
@@ -468,14 +599,29 @@ class Repository:
             self.ensure_column(con,"bank_transaction_matches","confirmed","INTEGER NOT NULL DEFAULT 0")
             self.ensure_column(con,"bank_transaction_matches","status","TEXT NOT NULL DEFAULT 'confirmed'")
             self.ensure_column(con,"bank_transaction_matches","reversal_of_transaction_id","TEXT")
-            con.execute("""UPDATE energylab_payment_events SET
-                booking_date=COALESCE(booking_date,occurrence_date),
-                canonical_event_type=COALESCE(canonical_event_type,CASE event_type
-                    WHEN 'payment' THEN 'regular_payment'
-                    WHEN 'refund' THEN 'credit_payout'
-                    WHEN 'chargeback' THEN 'chargeback'
-                    WHEN 'correction' THEN 'correction'
-                    WHEN 'skipped' THEN 'suspension' END)""")
+            payment_event_migration=con.execute(
+                "SELECT 1 FROM schema_migrations WHERE name='v2.6-energylab-payment-event-fields'"
+            ).fetchone()
+            if not payment_event_migration:
+                # Older releases installed the immutable-history trigger after
+                # filling these fields, but repeated the UPDATE on every start.
+                # Once an event existed, the next restart therefore failed.
+                # Temporarily remove only this table's UPDATE guard for the
+                # one-time migration; it is recreated below in the same
+                # transaction.
+                con.execute("DROP TRIGGER IF EXISTS energylab_payment_events_no_update")
+                con.execute("""UPDATE energylab_payment_events SET
+                    booking_date=COALESCE(booking_date,occurrence_date),
+                    canonical_event_type=COALESCE(canonical_event_type,CASE event_type
+                        WHEN 'payment' THEN 'regular_payment'
+                        WHEN 'refund' THEN 'credit_payout'
+                        WHEN 'chargeback' THEN 'chargeback'
+                        WHEN 'correction' THEN 'correction'
+                        WHEN 'skipped' THEN 'suspension' END)
+                    WHERE booking_date IS NULL OR canonical_event_type IS NULL""")
+                con.execute(
+                    "INSERT INTO schema_migrations(name) VALUES('v2.6-energylab-payment-event-fields')"
+                )
             legacy_match_confirmation=con.execute(
                 "SELECT 1 FROM schema_migrations WHERE name='v1.3-confirm-legacy-bank-matches'"
             ).fetchone()
@@ -498,6 +644,7 @@ class Repository:
             con.execute("CREATE INDEX IF NOT EXISTS credits_household_order ON credits(household_id,created_at,name)")
             con.execute("CREATE INDEX IF NOT EXISTS bank_transactions_household_date ON bank_transactions(household_id,booking_date)")
             con.execute("CREATE INDEX IF NOT EXISTS movement_completions_projection ON movement_completions(household_id,occurrence_date)")
+            con.execute("CREATE INDEX IF NOT EXISTS movement_omissions_projection ON movement_omissions(household_id,occurrence_date)")
             con.execute("CREATE INDEX IF NOT EXISTS movement_amount_overrides_projection ON movement_amount_overrides(household_id,occurrence_date)")
             migration=con.execute("SELECT 1 FROM schema_migrations WHERE name='v0.11-remove-loans-and-validity'").fetchone()
             if not migration:
@@ -569,6 +716,7 @@ class Repository:
                 WHEN EXISTS(SELECT 1 FROM energylab_billing_snapshots s
                     JOIN households h ON h.id=s.household_id WHERE s.id=OLD.snapshot_id)
                 BEGIN SELECT RAISE(ABORT,'Abrechnungssnapshots sind unveränderlich'); END""")
+            install_forecast_revision_triggers(con)
     @staticmethod
     def ensure_column(con,table,column,declaration):
         if column not in {row["name"] for row in con.execute(f"PRAGMA table_info({table})").fetchall()}:
@@ -577,6 +725,14 @@ class Repository:
         with self.connect() as con:
             rows=con.execute("SELECT id,name,mode FROM households ORDER BY created_at").fetchall()
             return [dict(r) for r in rows]
+    def forecast_revision_value(self,hid):
+        with self.connect() as con:
+            if not con.execute("SELECT 1 FROM households WHERE id=?",(hid,)).fetchone():
+                raise ValueError("Haushalt nicht gefunden.")
+            row=con.execute("SELECT revision FROM forecast_revisions WHERE household_id=?",(hid,)).fetchone()
+        return int(row["revision"] if row else 0)
+    def forecast_revision(self,hid):
+        return {"household_id":hid,"revision":self.forecast_revision_value(hid)}
     @staticmethod
     def resolve_owner(con,hid,owner):
         """Resolve stable person IDs; accept old A/B slots for legacy clients."""
@@ -784,6 +940,7 @@ class Repository:
             if transfer_ids:
                 placeholders=",".join("?" for _ in transfer_ids)
                 con.execute(f"DELETE FROM movement_completions WHERE household_id=? AND source_type='transfer' AND source_id IN ({placeholders})",(hid,*transfer_ids))
+                con.execute(f"DELETE FROM movement_omissions WHERE household_id=? AND source_type='transfer' AND source_id IN ({placeholders})",(hid,*transfer_ids))
             con.execute("DELETE FROM accounts WHERE id=? AND household_id=?",(account_id,hid))
             if account["is_default"]:
                 replacement=con.execute("SELECT id FROM accounts WHERE household_id=? ORDER BY created_at,id LIMIT 1",(hid,)).fetchone()
@@ -821,6 +978,7 @@ class Repository:
                 raise ValueError("Der Sollzinssatz darf nicht negativ sein.")
             interest_rate=format(interest.normalize(),"f")
         automatic_interest=0 if payload.get("automatic_interest") in (False,0,"0",None,"") else 1
+        free_special_repayment=1 if str(payload.get("free_special_repayment",0)).lower() in ("1","true","on","yes") else 0
         try: balloon_payment_cents=int(payload.get("balloon_payment_cents") or 0)
         except (TypeError,ValueError): raise ValueError("Die vertragliche Restschuld muss ein gültiger Geldwert sein.")
         if balloon_payment_cents<0 or balloon_payment_cents>opening_balance_cents:
@@ -909,7 +1067,7 @@ class Repository:
             balloon_payment_cents=0
         return {"household_id":hid,"name":name,"credit_type":credit_type,"stored_credit_type":stored_credit_type,
             "credit_subtype":credit_subtype,"opening_balance_cents":opening_balance_cents,"interest_rate":interest_rate,
-            "automatic_interest":automatic_interest,"balloon_payment_cents":balloon_payment_cents,"note":note,
+            "automatic_interest":automatic_interest,"free_special_repayment":free_special_repayment,"balloon_payment_cents":balloon_payment_cents,"note":note,
             "provider":provider,"product_price_cents":product_price_cents,
             "financing_price_cents":financing_price_cents,"installment_surcharge_cents":installment_surcharge_cents,
             "payment_count":payment_count,"original_principal_cents":original_principal_cents,"balance_as_of":balance_as_of,
@@ -931,6 +1089,8 @@ class Repository:
                  values["provider"],values["product_price_cents"],values["financing_price_cents"],values["installment_surcharge_cents"],
                  values["payment_count"],values["credit_subtype"],values["original_principal_cents"],values["balance_as_of"],
                  values["effective_interest_rate"],values["repayment_rate"],values["fixed_interest_until"],values["special_repayment_percent"]))
+            con.execute("UPDATE credits SET free_special_repayment=? WHERE id=?",
+                (values["free_special_repayment"],credit_id))
             plan=payload.get("payment_plan")
             if plan:
                 plan_payload={
@@ -988,6 +1148,7 @@ class Repository:
             merged=dict(payload)
             merged.setdefault("interest_rate",current["interest_rate"])
             merged.setdefault("automatic_interest",current["automatic_interest"])
+            merged.setdefault("free_special_repayment",current["free_special_repayment"])
             merged.setdefault("balloon_payment_cents",current["balloon_payment_cents"])
             merged.setdefault("provider",current["provider"])
             merged.setdefault("product_price_cents",current["product_price_cents"])
@@ -1025,6 +1186,8 @@ class Repository:
                  values["credit_subtype"],values["original_principal_cents"],values["balance_as_of"],
                  values["effective_interest_rate"],values["repayment_rate"],values["fixed_interest_until"],
                  values["special_repayment_percent"],credit_id,values["household_id"]))
+            con.execute("UPDATE credits SET free_special_repayment=? WHERE id=? AND household_id=?",
+                (values["free_special_repayment"],credit_id,values["household_id"]))
         plan=payload.get("payment_plan")
         if plan:
             flow_id=plan.get("flow_id")
@@ -1119,6 +1282,9 @@ class Repository:
         borrowed_overrides={row["occurrence_key"]:int(row["amount_cents"])
             for row in con.execute("""SELECT occurrence_key,amount_cents
                 FROM movement_amount_overrides WHERE household_id=?""",(hid,)).fetchall()}
+        omitted_occurrences={row["occurrence_key"] for row in con.execute(
+            """SELECT occurrence_key FROM movement_omissions
+               WHERE household_id=? AND occurrence_date<=?""",(hid,through_date)).fetchall()}
         events_by_credit={credit["id"]:[] for credit in credits}
         for row in con.execute("""SELECT * FROM credit_payments
                 WHERE household_id=? AND payment_date<=?
@@ -1131,14 +1297,16 @@ class Repository:
                 "source_id":row["id"],"occurrence_key":None,
             })
         versions=con.execute("""SELECT f.id AS flow_id,COALESCE(v.name,f.name) AS label,
-                    v.amount_cents,v.credit_reduction_cents,v.credit_id,
+                    v.amount_cents,v.credit_reduction_cents,v.credit_id,v.credit_payment_type,
                     v.version_from,v.version_to,v.stream_start,v.stream_end,v.due_date,v.recurrence
                 FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
                 WHERE f.household_id=? AND f.kind='expense' AND v.credit_id IS NOT NULL
                   AND v.active=1 AND v.version_from<=?""",(hid,through_date)).fetchall()
         latest_monthly_plans={}
         for version in versions:
-            if version["recurrence"]!="monthly" or not version["stream_end"] or not version["due_date"]:
+            if (version["recurrence"]!="monthly" or
+                    version["credit_payment_type"]=="special" or
+                    not version["stream_end"] or not version["due_date"]):
                 continue
             current=latest_monthly_plans.get(version["credit_id"])
             if current is None or (version["version_from"],version["flow_id"])>(current["version_from"],current["flow_id"]):
@@ -1146,9 +1314,15 @@ class Repository:
         for version in versions:
             if not version["due_date"]: continue
             try:
-                start=(date.fromisoformat(version["due_date"])-timedelta(days=1)).isoformat()
                 final_due=None
                 move_weekends_forward=version["credit_id"] not in mortgage_credit_ids
+                contractual_first=date.fromisoformat(version["due_date"])
+                first_booking=(next_weekday(contractual_first) if move_weekends_forward
+                    else previous_friday(contractual_first))
+                # Bound the series by its first booking date. A mortgage due on
+                # Saturday/Sunday is booked on the preceding Friday; using the
+                # contractual date minus one day dropped that first rate.
+                start=(first_booking-timedelta(days=1)).isoformat()
                 if version["stream_end"] and (
                     version["version_to"] is None or version["version_to"]>version["stream_end"]
                 ):
@@ -1169,7 +1343,11 @@ class Repository:
                 occurrence_key=f"cash-flow:{version['flow_id']}:{due_text}"
                 contractual_amount=int(version["amount_cents"] or 0)
                 contractual_reduction=int(version["credit_reduction_cents"] or 0)
+                payment_type=version["credit_payment_type"] or "regular"
+                if payment_type=="special":
+                    contractual_reduction=contractual_amount
                 borrowed_installment=(version["credit_id"] in borrowed_ids and
+                    payment_type=="regular" and
                     (version["recurrence"] or "monthly")=="monthly")
                 overridden=borrowed_installment and occurrence_key in borrowed_overrides
                 if overridden:
@@ -1190,8 +1368,10 @@ class Repository:
                     "contractual_reduction_cents":contractual_reduction,
                     "amount_overridden":bool(overridden),
                     "borrowed_installment":bool(borrowed_installment),
+                    "credit_payment_type":payment_type,
                     "label":version["label"],"source":"expense","source_id":version["flow_id"],
                     "occurrence_key":occurrence_key,
+                    "omitted":occurrence_key in omitted_occurrences,
                     "is_final_scheduled_occurrence":bool(final_due and due_text==final_due),
                 })
 
@@ -1227,7 +1407,11 @@ class Repository:
             else:
                 interest_remaining=remaining
             events=events_by_credit.get(credit["id"],[])
-            events.sort(key=lambda item:(item["date"],0 if item["source"]=="manual" else 1,item["id"]))
+            events.sort(key=lambda item:(
+                item["date"],
+                0 if item["source"]=="manual" else
+                (1 if item.get("credit_payment_type")=="special" else 2),
+                item["id"]))
             for raw in events:
                 item=dict(raw); before=remaining
                 requested_raw=int(item["requested_reduction_cents"] or 0)
@@ -1240,7 +1424,13 @@ class Repository:
                 interest_cents=0
                 final_residual_added=0
                 balance_reduction_cents=None
-                if item["source"]=="manual":
+                if item.get("omitted"):
+                    # A deliberately omitted instalment neither leaves the
+                    # cash account nor reduces the linked credit balance. The
+                    # next instalment therefore starts from the unchanged debt.
+                    effective=0; account_amount=0; skipped=False; skip_reason=None
+                    overpaid=0; balance_reduction_cents=0
+                elif item["source"]=="manual":
                     effective=(requested if requested<0 else min(requested,before))
                     account_amount=0; skipped=False; skip_reason=None
                     overpaid=max(0,requested-effective) if requested>0 else 0
@@ -1265,6 +1455,19 @@ class Repository:
                 elif item["source"]=="expense" and before<=contractual_residual:
                     effective=0; account_amount=0; skipped=True; skip_reason="contractual_residual_reached"
                     overpaid=0
+                elif item.get("credit_payment_type")=="special":
+                    available_principal=max(0,before-contractual_residual)
+                    effective=min(max(0,planned_account),available_principal)
+                    account_amount=effective
+                    balance_reduction_cents=effective
+                    overpaid=max(0,planned_account-effective)
+                    skipped=False; skip_reason=None
+                    if is_consumer_financing:
+                        interest_remaining=max(0,interest_remaining-effective)
+                        if effective>0 and interest_remaining<=0:
+                            balance_reduction_cents=max(
+                                balance_reduction_cents,
+                                max(0,before-contractual_residual))
                 elif automatic:
                     apr=Decimal(str(effective_rate))
                     if is_consumer_financing and item["source"]=="expense":
@@ -1350,14 +1553,16 @@ class Repository:
                     "planned_amount_cents":(int(item["contractual_amount_cents"])
                         if item["source"]=="expense" else requested),
                     "amount_overridden":bool(item.get("amount_overridden")),
+                    "omitted":bool(item.get("omitted")),
                     "borrowed_installment":bool(item.get("borrowed_installment")),
                     "effective_reduction_cents":effective,
+                    "credit_payment_type":item.get("credit_payment_type") or "regular",
                     "balance_reduction_cents":balance_reduction_cents,
                     "interest_cents":interest_cents,
                     "automatic_calculation":automatic and item["source"]=="expense",
                     "account_amount_cents":account_amount,
                     "remaining_before_cents":before,"remaining_after_cents":remaining,
-                    "adjusted":item["source"]=="expense" and (
+                    "adjusted":item["source"]=="expense" and not item.get("omitted") and (
                         bool(item.get("amount_overridden")) or
                         effective!=requested or account_amount!=planned_account),
                     "final_residual_added_cents":final_residual_added,
@@ -1388,6 +1593,42 @@ class Repository:
                 ).fetchone()["last_date"]
                 if manual_end and manual_end>through_date: through_date=manual_end
             schedule=self._credit_timelines(con,hid,through_date)
+            interest_booked={row["credit_id"]:int(row["total"] or 0) for row in con.execute(
+                """SELECT credit_id,COALESCE(SUM(amount_cents),0) AS total
+                   FROM credit_interest_bookings
+                   WHERE household_id=? AND booking_date<=?
+                   GROUP BY credit_id""",(hid,cutoff)).fetchall()}
+            contractual_ends={row["credit_id"]:row["end_date"] for row in con.execute(
+                """SELECT v.credit_id,MAX(v.stream_end) AS end_date
+                   FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
+                   WHERE f.household_id=? AND v.credit_id IS NOT NULL
+                     AND v.active=1 AND v.recurrence<>'once' AND v.stream_end IS NOT NULL
+                   GROUP BY v.credit_id""",(hid,)).fetchall()}
+            borrowed_ends={row["credit_id"]:row["end_date"] for row in con.execute(
+                """SELECT credit_id,end_date FROM (
+                       SELECT v.credit_id,v.stream_end AS end_date,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY v.credit_id
+                                  ORDER BY v.version_from DESC,v.rowid DESC
+                              ) AS position
+                       FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
+                       WHERE f.household_id=? AND v.credit_id IS NOT NULL
+                         AND v.active=1 AND v.recurrence='monthly'
+                         AND v.stream_end IS NOT NULL AND v.version_from<=?
+                         AND (v.version_to IS NULL OR v.version_to>?)
+                   ) WHERE position=1""",(hid,cutoff,cutoff)).fetchall()}
+            plan_rows={row["credit_id"]:row for row in con.execute(
+                """SELECT * FROM (
+                       SELECT v.credit_id,f.id AS flow_id,v.amount_cents,v.due_date,v.stream_end,
+                              v.account_id,v.version_from,v.owner_scope,v.owner_person_id,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY v.credit_id
+                                  ORDER BY v.version_from DESC,v.rowid DESC
+                              ) AS position
+                       FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
+                       WHERE f.household_id=? AND v.credit_id IS NOT NULL
+                         AND v.active=1 AND v.recurrence='monthly'
+                   ) WHERE position=1""",(hid,)).fetchall()}
             result=[]
             for credit_id,timeline in schedule["credits"].items():
                 credit=dict(timeline["credit"])
@@ -1423,36 +1664,23 @@ class Repository:
                     int(item.get("interest_cents") or 0) for item in payments if item["date"]<=cutoff)
                 credit["future_interest_cents"]=sum(
                     int(item.get("interest_cents") or 0) for item in payments if item["date"]>cutoff)
-                credit["interest_booked_cents"]=int(con.execute(
-                    "SELECT COALESCE(SUM(amount_cents),0) FROM credit_interest_bookings WHERE credit_id=? AND booking_date<=?",
-                    (credit_id,cutoff)).fetchone()[0] or 0)
+                credit["interest_booked_cents"]=interest_booked.get(credit_id,0)
                 if credit["credit_type"]=="borrowed":
                     # Superseded borrowed-loan installments must not extend
                     # the displayed contractual end of the replacement plan.
-                    contractual_row=con.execute("""SELECT v.stream_end AS end_date
-                        FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
-                        WHERE v.credit_id=? AND v.active=1 AND v.recurrence='monthly'
-                          AND v.stream_end IS NOT NULL AND v.version_from<=?
-                          AND (v.version_to IS NULL OR v.version_to>?)
-                        ORDER BY v.version_from DESC,v.rowid DESC LIMIT 1""",
-                        (credit_id,cutoff,cutoff)).fetchone()
-                    contractual=contractual_row["end_date"] if contractual_row else None
+                    contractual=borrowed_ends.get(credit_id)
                 else:
-                    contractual=con.execute("""SELECT MAX(stream_end) AS end_date
-                        FROM cash_flow_versions
-                        WHERE credit_id=? AND active=1 AND recurrence<>'once' AND stream_end IS NOT NULL""",
-                        (credit_id,)).fetchone()["end_date"]
+                    contractual=contractual_ends.get(credit_id)
                 repaid=next((item["date"] for item in reversed(payments)
                     if item["date"]>=cutoff and item["remaining_after_cents"]<=0 and not item["skipped"]),None)
                 credit["contractual_end_date"]=contractual
                 credit["expected_repayment_date"]=repaid
-                plan_row=con.execute("""SELECT f.id AS flow_id,v.amount_cents,v.due_date,v.stream_end,
-                        v.account_id,v.version_from,v.owner_scope,v.owner_person_id
-                    FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
-                    WHERE v.credit_id=? AND v.active=1 AND v.recurrence='monthly'
-                    ORDER BY v.version_from DESC,v.rowid DESC LIMIT 1""",(credit_id,)).fetchone()
+                plan_row=plan_rows.get(credit_id)
                 if plan_row:
-                    plan_data=dict(plan_row)
+                    plan_data={key:plan_row[key] for key in (
+                        "flow_id","amount_cents","due_date","stream_end","account_id",
+                        "version_from","owner_scope","owner_person_id",
+                    )}
                     derived_count=len(recurrence_dates(
                         plan_data["due_date"],"monthly",date.fromisoformat(plan_data["due_date"])-timedelta(days=1),
                         plan_data["stream_end"])) if plan_data.get("stream_end") else None
@@ -2062,6 +2290,15 @@ class Repository:
         event_type={"paid":"payment","reversal":"chargeback","reversed":"chargeback","pause":"skipped"}.get(event_type,event_type)
         if event_type not in ("payment","refund","chargeback","correction","skipped"):
             raise ValueError("Unbekannter Typ des Zahlungsereignisses.")
+        booking_value=payload.get("booking_date") or payload.get("bookingDate")
+        booking_date=as_of_date(booking_value) if booking_value else occurrence
+        canonical_event_type={
+            "payment":"regular_payment",
+            "refund":"credit_payout",
+            "chargeback":"chargeback",
+            "correction":"correction",
+            "skipped":"suspension",
+        }[event_type]
         amount=self._event_cents(payload,("actual_amount_cents","actualAmountCents","amount_cents","amountCents"),("actual_amount","actualAmount","amount"),0)
         if event_type=="payment": amount=abs(amount)
         elif event_type in ("refund","chargeback"): amount=-abs(amount)
@@ -2084,9 +2321,11 @@ class Repository:
         if supersedes and not con.execute("SELECT 1 FROM energylab_payment_events WHERE id=? AND household_id=?",(supersedes,hid)).fetchone():
             raise ValueError("Das zu korrigierende Zahlungsereignis wurde nicht gefunden.")
         event_id=uid(); created=timestamp(); confirmed=1 if payload.get("confirmed",status=="confirmed") else 0
-        con.execute("""INSERT INTO energylab_payment_events(id,household_id,source_key,occurrence_date,planned_amount_cents,
-            actual_amount_cents,event_type,status,bank_transaction_id,external_id,note,confirmed,created_at,supersedes_event_id)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(event_id,hid,source_key,occurrence,planned,amount,event_type,status,
+        con.execute("""INSERT INTO energylab_payment_events(id,household_id,source_key,occurrence_date,booking_date,
+            planned_amount_cents,actual_amount_cents,event_type,canonical_event_type,status,bank_transaction_id,
+            external_id,note,confirmed,created_at,supersedes_event_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(event_id,hid,source_key,occurrence,booking_date,planned,amount,
+            event_type,canonical_event_type,status,
             payload.get("bank_transaction_id") or None,external_id,str(payload.get("note") or "").strip()[:500] or None,
             confirmed,created,supersedes))
         return dict(con.execute("SELECT * FROM energylab_payment_events WHERE id=?",(event_id,)).fetchone())|{"already_recorded":False}
@@ -2250,7 +2489,27 @@ class Repository:
             if os.access(candidate,os.R_OK|os.W_OK|os.X_OK): return candidate
         raise PermissionError("Im FinanzLab-Datenvolume ist kein beschreibbarer Sicherungsordner verfügbar.")
 
-    def create_backup(self,reason="manual"):
+    def _prune_backups(self,keep=BACKUP_RETENTION_LIMIT):
+        """Keep the newest or most recently restored backups and remove older files."""
+        keep=max(0,int(keep)); backup_dir=self._backup_directory().resolve(); removed=[]
+        with self.lock,self.connect() as con:
+            rows=con.execute("""SELECT * FROM app_backups
+                ORDER BY COALESCE(NULLIF(restored_at,''),created_at) DESC, created_at DESC, rowid DESC""").fetchall()
+            for row in rows[keep:]:
+                candidate=(backup_dir/row["file_name"]).resolve()
+                if candidate.parent!=backup_dir:
+                    continue
+                try:
+                    candidate.unlink(missing_ok=True)
+                except OSError:
+                    # Keep the catalogue entry when the file cannot be removed;
+                    # a later startup or backup attempt can retry safely.
+                    continue
+                con.execute("DELETE FROM app_backups WHERE id=?",(row["id"],))
+                removed.append(row["id"])
+        return removed
+
+    def create_backup(self,reason="manual",*,prune=True):
         backup_dir=self._backup_directory(); backup_dir.mkdir(parents=True,exist_ok=True)
         backup_id=uid(); compact=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         file_name=f"finanzlab-{compact}-{backup_id[:8]}.sqlite3"; target=backup_dir/file_name
@@ -2262,17 +2521,23 @@ class Repository:
             with self.connect() as con:
                 con.execute("INSERT INTO app_backups(id,file_name,reason,database_sha256,size_bytes,created_at) VALUES(?,?,?,?,?,?)",
                     (backup_id,file_name,str(reason or "manual")[:200],digest,size,created))
+        if prune: self._prune_backups()
         return {"id":backup_id,"file_name":file_name,"reason":str(reason or "manual")[:200],
             "database_sha256":digest,"size_bytes":size,"created_at":created,"restored_at":None}
 
     def list_backups(self):
         backup_dir=self._backup_directory()
-        with self.connect() as con: rows=[dict(row) for row in con.execute("SELECT * FROM app_backups ORDER BY created_at DESC").fetchall()]
+        with self.connect() as con:
+            rows=[dict(row) for row in con.execute("""SELECT * FROM app_backups
+                ORDER BY COALESCE(NULLIF(restored_at,''),created_at) DESC, created_at DESC, rowid DESC
+                LIMIT ?""",(BACKUP_RETENTION_LIMIT,)).fetchall()]
         for row in rows: row["available"]=(backup_dir/row["file_name"]).is_file()
         return rows
 
     def restore_backup(self,backup_id):
-        with self.connect() as con: selected=con.execute("SELECT * FROM app_backups WHERE id=?",(backup_id,)).fetchone()
+        with self.connect() as con:
+            registry=[dict(row) for row in con.execute("SELECT * FROM app_backups").fetchall()]
+            selected=con.execute("SELECT * FROM app_backups WHERE id=?",(backup_id,)).fetchone()
         if not selected: raise ValueError("Sicherung nicht gefunden.")
         selected=dict(selected); source_path=(self._backup_directory()/selected["file_name"]).resolve()
         if source_path.parent!=self._backup_directory().resolve() or not source_path.is_file(): raise ValueError("Sicherungsdatei fehlt.")
@@ -2284,17 +2549,32 @@ class Repository:
             required={row[0] for row in verify.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if not {"households","cash_flows","cash_flow_versions"}.issubset(required): raise ValueError("Datei ist keine FinanzLab-Sicherung.")
         finally: verify.close()
-        safety=self.create_backup(f"automatisch vor Wiederherstellung {backup_id}")
+        # Do not prune here: the selected backup may currently be the oldest
+        # entry and still has to remain available until the restore is done.
+        safety=self.create_backup(f"automatisch vor Wiederherstellung {backup_id}",prune=False)
         with self.lock:
             source=sqlite3.connect(source_path); destination=sqlite3.connect(self.path)
             try: source.backup(destination); destination.commit()
             finally: destination.close(); source.close()
-            self.initialize(); restored=timestamp()
+            self.initialize()
+            # A restored database can legitimately contain the same numeric
+            # revision as the database it replaced. Never reuse in-memory
+            # monthly results across that boundary.
+            if hasattr(self,"_forecast_cache_lock"):
+                with self._forecast_cache_lock:
+                    self._forecast_cache_months.clear()
+                    self._forecast_cache_revisions.clear()
+            if hasattr(self,"_liquidity_cache_lock"):
+                with self._liquidity_cache_lock:
+                    self._liquidity_cache.clear()
+                    self._liquidity_cache_revisions.clear()
+            restored=timestamp()
             with self.connect() as con:
-                for row in (selected,safety):
+                for row in (*registry,safety):
                     con.execute("""INSERT OR IGNORE INTO app_backups(id,file_name,reason,database_sha256,size_bytes,created_at,restored_at)
                         VALUES(?,?,?,?,?,?,?)""",(row["id"],row["file_name"],row.get("reason"),row["database_sha256"],row["size_bytes"],row["created_at"],row.get("restored_at")))
                 con.execute("UPDATE app_backups SET restored_at=? WHERE id=?",(restored,backup_id))
+        self._prune_backups()
         return {"id":backup_id,"restored":True,"restored_at":restored,"safety_backup_id":safety["id"]}
 
     def update_energylab_cash_flow_account(self,flow_id,payload):
@@ -2338,7 +2618,7 @@ class Repository:
                 item=dict(flow)
                 for field in ("name","category","owner_scope","owner_person_id","account_id","credit_id"):
                     item[field]=shown.get(field) if shown.get(field) is not None else item.get(field)
-                for field in ("amount_cents","active","version_from","version_to","stream_start","stream_end","due_date","recurrence","credit_reduction_cents"):
+                for field in ("amount_cents","active","version_from","version_to","stream_start","stream_end","due_date","recurrence","credit_reduction_cents","credit_payment_type"):
                     item[field]=shown.get(field)
                 item["configured_active"]=int(bool(shown.get("active")))
                 lifecycle_end=item.get("stream_end") or (item.get("due_date") if item.get("recurrence")=="once" else None)
@@ -2493,7 +2773,18 @@ class Repository:
             if credit_reduction_cents<0 or credit_reduction_cents>amount:
                 raise ValueError("Der Tilgungsanteil muss zwischen 0,00 € und dem Ausgabenbetrag liegen.")
         active=0 if payload.get("active") in (False,0,"0") else 1
-        return {"household_id":hid,"name":name,"category":category,"amount_cents":amount,"gross_amount_cents":None,"recurrence":recurrence,"effective_from":effective,"due_date":due,"stream_end":stream_end,"duration_months":duration_months,"active":active,"owner_scope":scope,"owner_person_id":owner_id,"account_id":account_id,"credit_id":credit_id,"credit_reduction_cents":credit_reduction_cents}
+        credit_payment_type=str(
+            payload.get("credit_payment_type") or "regular"
+        ).strip().lower()
+        if credit_payment_type not in ("regular","special"):
+            raise ValueError("Ungültige Kredit-Zahlungsart.")
+        if credit_payment_type=="special":
+            if kind!="expense" or not credit_id:
+                raise ValueError(
+                    "Sondertilgungen müssen einem Kredit zugeordnet sein."
+                )
+            credit_reduction_cents=amount
+        return {"household_id":hid,"name":name,"category":category,"amount_cents":amount,"gross_amount_cents":None,"recurrence":recurrence,"effective_from":effective,"due_date":due,"stream_end":stream_end,"duration_months":duration_months,"active":active,"owner_scope":scope,"owner_person_id":owner_id,"account_id":account_id,"credit_id":credit_id,"credit_reduction_cents":credit_reduction_cents,"credit_payment_type":credit_payment_type}
     def create_cash_flow(self,payload):
         kind=payload.get("kind")
         with self.lock,self.connect() as con:
@@ -2501,8 +2792,8 @@ class Repository:
             flow_id=uid()
             con.execute("""INSERT INTO cash_flows(id,household_id,kind,name,owner_scope,owner_person_id,account_id,source_key,category)
                 VALUES(?,?,?,?,?,?,?,?,?)""",(flow_id,values["household_id"],kind,values["name"],values["owner_scope"],values["owner_person_id"],values["account_id"],None,values["category"]))
-            con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,owner_scope,owner_person_id,account_id,credit_id,credit_reduction_cents)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,values["amount_cents"],values["active"],values["effective_from"],None,values["effective_from"],values["stream_end"],values["due_date"],"Manuell erstellt",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],values["credit_id"],values["credit_reduction_cents"]))
+            con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,owner_scope,owner_person_id,account_id,credit_id,credit_reduction_cents,credit_payment_type)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,values["amount_cents"],values["active"],values["effective_from"],None,values["effective_from"],values["stream_end"],values["due_date"],"Manuell erstellt",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],values["credit_id"],values["credit_reduction_cents"],values["credit_payment_type"]))
         return next(item for item in self.list_cash_flows(values["household_id"],kind,values["effective_from"]) if item["id"]==flow_id)
     def update_cash_flow(self,flow_id,payload):
         kind=payload.get("kind")
@@ -2524,15 +2815,15 @@ class Repository:
             same=next((row for row in versions if row["version_from"]==effective),None)
             next_date=next((row["version_from"] for row in versions if row["version_from"]>effective),None)
             if same:
-                con.execute("""UPDATE cash_flow_versions SET amount_cents=?,active=?,version_to=?,stream_start=?,stream_end=?,due_date=?,source_reference=?,gross_amount_cents=?,recurrence=?,name=?,category=?,owner_scope=?,owner_person_id=?,account_id=?,credit_id=?,credit_reduction_cents=? WHERE id=?""",
-                    (values["amount_cents"],values["active"],None if replace_future else same["version_to"],effective,values["stream_end"],values["due_date"],"Manuelle Änderung",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],values["credit_id"],values["credit_reduction_cents"],same["id"]))
+                con.execute("""UPDATE cash_flow_versions SET amount_cents=?,active=?,version_to=?,stream_start=?,stream_end=?,due_date=?,source_reference=?,gross_amount_cents=?,recurrence=?,name=?,category=?,owner_scope=?,owner_person_id=?,account_id=?,credit_id=?,credit_reduction_cents=?,credit_payment_type=? WHERE id=?""",
+                    (values["amount_cents"],values["active"],None if replace_future else same["version_to"],effective,values["stream_end"],values["due_date"],"Manuelle Änderung",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],values["credit_id"],values["credit_reduction_cents"],values["credit_payment_type"],same["id"]))
             else:
                 previous=[row for row in versions if row["version_from"]<effective]
                 if previous:
                     prior=previous[-1]
                     if prior["version_to"] is None or prior["version_to"]>effective: con.execute("UPDATE cash_flow_versions SET version_to=? WHERE id=?",(effective,prior["id"]))
-                con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,owner_scope,owner_person_id,account_id,credit_id,credit_reduction_cents)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,values["amount_cents"],values["active"],effective,next_date,effective,values["stream_end"],values["due_date"],"Manuelle Änderung",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],values["credit_id"],values["credit_reduction_cents"]))
+                con.execute("""INSERT INTO cash_flow_versions(id,cash_flow_id,amount_cents,active,version_from,version_to,stream_start,stream_end,due_date,source_reference,gross_amount_cents,recurrence,name,category,owner_scope,owner_person_id,account_id,credit_id,credit_reduction_cents,credit_payment_type)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid(),flow_id,values["amount_cents"],values["active"],effective,next_date,effective,values["stream_end"],values["due_date"],"Manuelle Änderung",values["gross_amount_cents"],values["recurrence"],values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],values["credit_id"],values["credit_reduction_cents"],values["credit_payment_type"]))
             if effective<=date.today().isoformat():
                 con.execute("UPDATE cash_flows SET name=?,category=?,owner_scope=?,owner_person_id=?,account_id=?,source_key=NULL WHERE id=?",(values["name"],values["category"],values["owner_scope"],values["owner_person_id"],values["account_id"],flow_id))
             else:
@@ -2544,6 +2835,7 @@ class Repository:
             if not flow: raise ValueError("Zahlungsstrom nicht gefunden.")
             if str(flow["source_key"] or "").startswith("energylab:advance:"): raise ValueError("Diese Ausgabe wird von EnergyLab verwaltet und kann nur dort entfernt werden.")
             con.execute("DELETE FROM movement_completions WHERE household_id=? AND source_type='cash_flow' AND source_id=?",(hid,flow_id))
+            con.execute("DELETE FROM movement_omissions WHERE household_id=? AND source_type='cash_flow' AND source_id=?",(hid,flow_id))
             con.execute("DELETE FROM cash_flows WHERE id=?",(flow_id,))
         return {"id":flow_id,"name":flow["name"],"deleted":True}
     def list_categories(self,hid):
@@ -2800,6 +3092,7 @@ class Repository:
             row=con.execute("SELECT id,name FROM transfers WHERE id=? AND household_id=?",(transfer_id,hid)).fetchone()
             if not row: raise ValueError("Umbuchung nicht gefunden.")
             con.execute("DELETE FROM movement_completions WHERE household_id=? AND source_type='transfer' AND source_id=?",(hid,transfer_id))
+            con.execute("DELETE FROM movement_omissions WHERE household_id=? AND source_type='transfer' AND source_id=?",(hid,transfer_id))
             con.execute("DELETE FROM transfers WHERE id=?",(transfer_id,))
         return {"id":transfer_id,"name":row["name"],"deleted":True}
 
@@ -2828,9 +3121,42 @@ class Repository:
                     VALUES(?,?,?,?,?,?,?)
                     ON CONFLICT(household_id,occurrence_key) DO UPDATE SET completed_at=excluded.completed_at""",
                     (uid(),hid,occurrence_key,source_type,source_id,occurrence_date,timestamp()))
+                con.execute("DELETE FROM movement_omissions WHERE household_id=? AND occurrence_key=?",(hid,occurrence_key))
             else:
                 con.execute("DELETE FROM movement_completions WHERE household_id=? AND occurrence_key=?",(hid,occurrence_key))
         return {"household_id":hid,"occurrence_key":occurrence_key,"completed":completed,
+            "occurrence_date":occurrence_date}
+
+    def set_movement_omission(self,payload):
+        """Exclude exactly one planned occurrence from every forecast calculation."""
+        hid=str(payload.get("household_id") or "").strip()
+        occurrence_key=str(payload.get("occurrence_key") or "").strip()
+        raw_omitted=payload.get("omitted")
+        if not hid or not occurrence_key:
+            raise ValueError("Haushalt und Bewegung sind erforderlich.")
+        if raw_omitted not in (True,False,0,1,"0","1"):
+            raise ValueError("Der Entfällt-Status ist ungültig.")
+        omitted=raw_omitted in (True,1,"1")
+        parts=occurrence_key.split(":")
+        if len(parts)!=3 or parts[0] not in ("cash-flow","transfer"):
+            raise ValueError("Die Bewegung ist ungültig.")
+        source_type="cash_flow" if parts[0]=="cash-flow" else "transfer"
+        source_id=parts[1]
+        try: occurrence_date=date.fromisoformat(parts[2]).isoformat()
+        except ValueError: raise ValueError("Das Bewegungsdatum ist ungültig.")
+        with self.lock,self.connect() as con:
+            table="cash_flows" if source_type=="cash_flow" else "transfers"
+            if not con.execute(f"SELECT 1 FROM {table} WHERE id=? AND household_id=?",(source_id,hid)).fetchone():
+                raise ValueError("Die Bewegung gehört nicht zu diesem Haushalt oder existiert nicht mehr.")
+            if omitted:
+                con.execute("""INSERT INTO movement_omissions(id,household_id,occurrence_key,source_type,source_id,occurrence_date,omitted_at)
+                    VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(household_id,occurrence_key) DO UPDATE SET omitted_at=excluded.omitted_at""",
+                    (uid(),hid,occurrence_key,source_type,source_id,occurrence_date,timestamp()))
+                con.execute("DELETE FROM movement_completions WHERE household_id=? AND occurrence_key=?",(hid,occurrence_key))
+            else:
+                con.execute("DELETE FROM movement_omissions WHERE household_id=? AND occurrence_key=?",(hid,occurrence_key))
+        return {"household_id":hid,"occurrence_key":occurrence_key,"omitted":omitted,
             "occurrence_date":occurrence_date}
 
     def set_movement_amount(self,payload):
@@ -2897,7 +3223,8 @@ class Repository:
                 item["bookings_applied"]=int(anchor["bookings_applied"]) if anchor else 0
                 accounts.append(item)
             return {**dict(household),"as_of":selected_date,"persons":[dict(x) for x in people],"accounts":accounts}
-    def projected_account_balances(self,con,hid,accounts,selected_date,excluded_cash_flow_ids=None,excluded_transfer_ids=None):
+    def projected_account_balances(self,con,hid,accounts,selected_date,excluded_cash_flow_ids=None,excluded_transfer_ids=None,
+                                   credit_occurrences=None):
         excluded_cash_flow_ids={str(value) for value in (excluded_cash_flow_ids or [])}
         excluded_transfer_ids={str(value) for value in (excluded_transfer_ids or [])}
         account_by_id={account["id"]:account for account in accounts}
@@ -2925,6 +3252,9 @@ class Repository:
         completed_occurrences={row["occurrence_key"] for row in con.execute(
             "SELECT occurrence_key FROM movement_completions WHERE household_id=? AND occurrence_date>=? AND occurrence_date<=?",
             (hid,projection_start,selected_date)).fetchall()}
+        omitted_occurrences={row["occurrence_key"] for row in con.execute(
+            "SELECT occurrence_key FROM movement_omissions WHERE household_id=? AND occurrence_date>=? AND occurrence_date<=?",
+            (hid,projection_start,selected_date)).fetchall()}
         amount_overrides={row["occurrence_key"]:int(row["amount_cents"]) for row in con.execute(
             "SELECT occurrence_key,amount_cents FROM movement_amount_overrides WHERE household_id=? AND occurrence_date>=? AND occurrence_date<=?",
             (hid,projection_start,selected_date)).fetchall()}
@@ -2940,16 +3270,23 @@ class Repository:
         def add_event(account_id,event_date,amount_cents,kind,label,source_id,occurrence_key,origin,
                       show_on_anchor=False,completion_key=None,applied_override=None,event_meta=None):
             completion_allowed=bool(completion_key)
-            completed=completion_allowed and completion_key in completed_occurrences
+            omission_allowed=bool(completion_key)
+            omitted=omission_allowed and completion_key in omitted_occurrences
+            completed=completion_allowed and not omitted and completion_key in completed_occurrences
             event={
                 "date":event_date,"account_id":account_id,"kind":kind,"label":label,
                 "source_id":source_id,"occurrence_key":occurrence_key,
                 "origin":origin,"amount_cents":amount_cents,
                 "completion_key":completion_key,"completion_allowed":completion_allowed,
-                "completed":completed,
+                "completed":completed,"omission_allowed":omission_allowed,"omitted":omitted,
             }
             if event_meta: event.update(event_meta)
             target=projected.get(account_id)
+            if omitted:
+                omitted_event={**event,"applied_to_projection":False}
+                if target is None: result["unassigned_events"].append(omitted_event)
+                else: result["events"].append(omitted_event)
+                return
             if completed:
                 completed_event={**event,"applied_to_projection":False}
                 if target is None: result["unassigned_events"].append(completed_event)
@@ -2981,11 +3318,12 @@ class Repository:
             else: target["expense_cents"]+=-amount_cents
             result["events"].append({**event,"applied_to_projection":True})
 
-        credit_occurrences=self._credit_timelines(con,hid,selected_date)["occurrences"]
+        if credit_occurrences is None:
+            credit_occurrences=self._credit_timelines(con,hid,selected_date)["occurrences"]
         versions=con.execute("""SELECT f.id AS flow_id,f.kind,COALESCE(v.name,f.name) AS label,
                    v.amount_cents,v.active,v.version_from,v.version_to,v.stream_start,v.stream_end,
                    v.due_date,v.recurrence,COALESCE(v.account_id,f.account_id) AS account_id,
-                   v.credit_id,v.credit_reduction_cents,COALESCE(v.category,f.category) AS category
+                   v.credit_id,v.credit_reduction_cents,v.credit_payment_type,COALESCE(v.category,f.category) AS category
             FROM cash_flow_versions v JOIN cash_flows f ON f.id=v.cash_flow_id
             WHERE f.household_id=? AND v.active=1 AND v.version_from<=?
               AND (v.stream_start IS NULL OR v.stream_start<=?)""",(hid,selected_date,selected_date)).fetchall()
@@ -3036,21 +3374,28 @@ class Repository:
                         # applied the single-occurrence override and capped it
                         # to remaining principal. Do not override that result
                         # again on the cash-account side.
-                        if adjustment.get("borrowed_installment"):
-                            effective_amount=int(adjustment["account_amount_cents"] or 0)
+                        is_omitted=occurrence_key in omitted_occurrences
+                        if not is_omitted:
+                            if adjustment.get("borrowed_installment"):
+                                effective_amount=int(adjustment["account_amount_cents"] or 0)
+                            else:
+                                effective_amount=(actual_override if actual_override is not None
+                                    else int(adjustment["account_amount_cents"] or 0))
+                            amount=-effective_amount
                         else:
-                            effective_amount=(actual_override if actual_override is not None
-                                else int(adjustment["account_amount_cents"] or 0))
-                        amount=-effective_amount
+                            # Keep the omitted amount visible in the row while
+                            # the projection and credit timeline apply zero.
+                            effective_amount=0
                         event_meta.update({
                             "credit_id":version["credit_id"],
                             "credit_reduction_cents":min(effective_amount,int(adjustment["effective_reduction_cents"] or 0)),
                             "planned_credit_reduction_cents":int(version["credit_reduction_cents"] or 0),
+                            "credit_payment_type":version["credit_payment_type"] or "regular",
                             "credit_adjusted":bool(adjustment["adjusted"]),
                             "final_residual_added_cents":int(adjustment.get("final_residual_added_cents") or 0),
                             "skip_reason":adjustment["skip_reason"],
                         })
-                        if adjustment["skipped"]:
+                        if adjustment["skipped"] and not is_omitted:
                             applied_override=False; completion_key=None
                 add_event(version["account_id"],due_text,amount,version["kind"],version["label"],version["flow_id"],
                     occurrence_key,"planned",completion_key=completion_key,
@@ -3824,6 +4169,18 @@ class Repository:
             index=first.year*12+(first.month-1)+offset
             return date(index//12,index%12+1,1)
 
+        final_month_start=shift_month(base,count)
+        final_projection_date=(shift_month(final_month_start,1)-timedelta(days=1)).isoformat()
+
+        # The credit timeline is chronological.  A timeline calculated through
+        # the final requested day contains the same adjustment for every prior
+        # occurrence, so all 15th/month-end projections can safely share it.
+        # Previously every point rebuilt the complete timeline independently.
+        with self.connect() as projection_con:
+            shared_credit_occurrences=self._credit_timelines(
+                projection_con,hid,final_projection_date
+            )["occurrences"]
+
         def projected_accounts(point):
             point_detail=self.household_detail(hid,point.isoformat())
             if not point_detail:
@@ -3833,7 +4190,8 @@ class Repository:
 
             with self.connect() as con:
                 self.projected_account_balances(
-                    con,hid,selected,point.isoformat()
+                    con,hid,selected,point.isoformat(),
+                    credit_occurrences=shared_credit_occurrences,
                 )
 
             return {
@@ -4199,6 +4557,10 @@ class Repository:
             next_month=(month_start.replace(day=28)+timedelta(days=4)).replace(day=1)
             month_end=next_month-timedelta(days=1)
             credit_occurrences=self._credit_timelines(con,hid,month_end.isoformat())["occurrences"]
+            omitted_occurrences={row["occurrence_key"] for row in con.execute(
+                """SELECT occurrence_key FROM movement_omissions
+                   WHERE household_id=? AND occurrence_date>=? AND occurrence_date<=?""",
+                (hid,month_start.isoformat(),month_end.isoformat())).fetchall()}
             def monthly_values(kind):
                 rows=con.execute("""SELECT f.id AS flow_id,COALESCE(v.name,f.name) AS name,
                         v.amount_cents,v.recurrence,v.due_date,v.credit_id,COALESCE(v.category,f.category) AS category,
@@ -4227,6 +4589,8 @@ class Repository:
                     amount=0
                     for due in due_dates:
                         occurrence_key=f"cash-flow:{row['flow_id']}:{due.isoformat()}"
+                        if occurrence_key in omitted_occurrences:
+                            continue
                         adjustment=credit_occurrences.get(occurrence_key) if kind=="expense" and row["credit_id"] else None
                         occurrence_amount=(overrides[occurrence_key] if kind=="expense" and occurrence_key in overrides
                             else int(adjustment["account_amount_cents"]) if adjustment is not None

@@ -1,6 +1,6 @@
 const $=selector=>document.querySelector(selector);
 const $$=selector=>[...document.querySelectorAll(selector)];
-const state={households:[],currentId:null,asOf:null,dashboard:null,incomes:[],expenses:[],transfers:[],credits:[],dashboardCredits:[],energylab:null,incomeFilter:'active',expenseFilter:'active',dashboardExpenseCategory:'all',dashboardMonth:null,transferFilter:'active',creditFilter:'all',diagnostics:null,settingsLoadedFor:null,settingsLoading:false,preview:null,previewMonth:null,previewAccountIds:[],previewCreditIds:[],previewSelectedDay:null,editingFlowId:null,editingFlowKind:null,editingIncomeChangeId:null,editingEnergyFlowId:null,editingAccountId:null,editingAccountHistory:[],editingTransferId:null,editingCreditId:null,currentCreditId:null,categories:[],outlook:null,outlookBaseMonth:null,outlookRequest:0,outlookAccountIds:[],outlookSelectionFor:null,outlookLoadingKey:null,outlookAvailableAccountIds:[],outlookAvailabilityFor:null,outlookManagerOpen:false};
+const state={assistant:null,assistantError:null,households:[],currentId:null,asOf:null,dashboard:null,incomes:[],expenses:[],transfers:[],credits:[],archivedCredits:[],dashboardCredits:[],energylab:null,energylabStatus:null,backups:[],incomeFilter:'active',expenseFilter:'active',dashboardExpenseCategory:'all',dashboardMonth:null,transferFilter:'active',creditFilter:'all',diagnostics:null,settingsLoadedFor:null,settingsLoading:false,preview:null,previewMonth:null,previewAccountIds:[],previewCreditIds:[],previewSelectedDay:null,editingFlowId:null,editingFlowKind:null,editingIncomeChangeId:null,editingEnergyFlowId:null,editingAccountId:null,editingAccountHistory:[],editingTransferId:null,editingCreditId:null,currentCreditId:null,categories:[],outlook:null,outlookBaseMonth:null,outlookRequest:0,outlookAccountIds:[],outlookSelectionFor:null,outlookLoadingKey:null,outlookAvailableAccountIds:[],outlookAvailabilityFor:null,outlookManagerOpen:false};
 const recurrenceLabels={weekly:'wöchentlich',monthly:'monatlich',quarterly:'vierteljährlich',semiannual:'halbjährlich',yearly:'jährlich',once:'einmalig'};
 const categoryLabels={salary:'Gehalt',pension:'Rente',benefit:'Leistung',family:'Familie',other_income:'Sonstige Einnahme',housing:'Wohnen',energy:'Energie',insurance:'Versicherung',food:'Lebensmittel',mobility:'Mobilität',consumer_credit:'Konsumkredit',credit:'Kredit',borrowed:'Geliehen',mortgage:'Darlehen',interest:'Zinsen',leisure:'Freizeit',other_expense:'Sonstige Ausgabe',other:'Sonstiges'};
 const creditTypeLabels={consumer_credit:'Konsumkredit',credit:'Kredit',borrowed:'Geliehen',mortgage:'Darlehen'};
@@ -68,6 +68,7 @@ function creditById(id){return state.credits.find(credit=>credit.id===id)}
 function creditName(id){return creditById(id)?.name||'Kein Kredit'}
 function ownerValue(item){if(item?.owner_scope==='joint')return 'joint';return state.dashboard.household.persons.find(person=>person.id===item?.owner_person_id)?.id||state.dashboard.household.persons[0]?.id||''}
 function isArchived(item){const archiveDate=item?.end_date||(item?.recurrence==='once'?item?.due_date:null);return item?.lifecycle_status==='ended'||Boolean(archiveDate&&archiveDate<today())}
+function activePositionTotal(items){return items.filter(item=>!isArchived(item)&&Boolean(item.configured_active)).reduce((sum,item)=>sum+Number(item.amount_cents||0),0)}
 async function api(url,options={}){
   const isRead=!options.method||options.method.toUpperCase()==='GET';
   const controller=isRead?new AbortController():null;
@@ -92,10 +93,17 @@ async function api(url,options={}){
     }
 
     const method=(options.method||'GET').toUpperCase();
-    const readOnlyPost=new Set(['/api/preview/monthly','/api/dashboard/simulation','/api/integrations/energylab/preview']);
-    if(method!=='GET'&&!(method==='POST'&&readOnlyPost.has(url.split('?')[0]))){
+    const path=url.split('?')[0];
+    // Personen sind Teil der Dashboard-Antwort, beeinflussen aber keine
+    // Finanzberechnung. Nur den Dashboard-Eintrag verwerfen, nicht alle Monate.
+    if(method!=='GET'&&path.startsWith('/api/persons')){
+      invalidateDashboardCache();
+    }
+    // Eine Wiederherstellung kann auf eine ältere, zufällig gleiche Revision
+    // zurückspringen. Daher ist sie der einzige erzwungene Voll-Reset.
+    if(method==='POST'&&path.startsWith('/api/backups/')&&path.endsWith('/restore')){
+      forecastCache.revision=null;
       invalidateForecastCache();
-      scheduleForecastWarmup();
     }
     return data;
   }catch(error){
@@ -109,23 +117,47 @@ async function api(url,options={}){
 }
 // 2.4.2: Prognose-Ergebnisse pro Haushalt, Monat und Auswahl zwischenspeichern.
 // Die Finanzformeln bleiben vollständig im bestehenden Python-Backend.
-const FORECAST_MONTHS=12;
-const forecastCache={generation:0,day:today(),householdId:null,values:new Map(),pending:new Map(),warmTimer:null,warmRun:0};
+const forecastCache={generation:0,day:today(),householdId:null,revision:null,values:new Map(),pending:new Map(),hiddenAt:null};
 let previewRequest=0;
 function invalidateForecastCache(){
   forecastCache.generation++;
   forecastCache.values.clear();
   forecastCache.pending.clear();
-  forecastCache.warmRun++;
-  if(forecastCache.warmTimer!==null){clearTimeout(forecastCache.warmTimer);forecastCache.warmTimer=null;}
+  state.outlook=null;
+  state.outlookBaseMonth=null;
+}
+function invalidateDashboardCache(){
+  // Prevent an already running dashboard request from repopulating the cache
+  // with metadata from before the change.
+  forecastCache.generation++;
+  for(const key of forecastCache.values.keys()){
+    if(String(key).startsWith('dashboard:'))forecastCache.values.delete(key);
+  }
+  for(const key of forecastCache.pending.keys()){
+    if(String(key).startsWith('dashboard:'))forecastCache.pending.delete(key);
+  }
 }
 function syncForecastCacheContext(){
   const day=today();
   if(forecastCache.day!==day||forecastCache.householdId!==state.currentId){
     invalidateForecastCache();
+    if(forecastCache.householdId!==state.currentId)forecastCache.revision=null;
     forecastCache.day=day;
     forecastCache.householdId=state.currentId;
   }
+}
+async function refreshForecastRevision(){
+  if(!state.currentId)return false;
+  syncForecastCacheContext();
+  const householdId=state.currentId;
+  const result=await api(`/api/forecast-revision?household_id=${encodeURIComponent(householdId)}`);
+  if(householdId!==state.currentId)return false;
+  const next=Number(result.revision||0);
+  const unknown=forecastCache.revision===null;
+  const changed=forecastCache.revision!==null&&forecastCache.revision!==next;
+  if(changed||(unknown&&state.outlook))invalidateForecastCache();
+  forecastCache.revision=next;
+  return changed;
 }
 async function forecastMemo(key,request){
   syncForecastCacheContext();
@@ -148,10 +180,16 @@ async function forecastMemo(key,request){
 function forecastDashboard(householdId,month){
   const asOf=monthEndDate(month);
   const query=`household_id=${encodeURIComponent(householdId)}&as_of=${encodeURIComponent(asOf)}`;
-  return forecastMemo(`dashboard:${householdId}:${month}`,()=>Promise.all([
-    api(`/api/dashboard?${query}`),
-    api(`/api/credits?${query}&simulate_future=1`)
-  ]));
+  return forecastMemo(`dashboard:${householdId}:${month}`,async()=>{
+    const dashboard=await api(`/api/dashboard?${query}`);
+    // Seit 2.6.0 liefert das Dashboard die bereits intern berechneten
+    // Kredit-Summen direkt mit. Der Fallback hält ältere Backends kompatibel,
+    // ohne im Normalfall eine zweite, teure Kreditberechnung auszulösen.
+    const creditItems=Array.isArray(dashboard.credit_items)
+      ? dashboard.credit_items
+      : (await api(`/api/credits?${query}&simulate_future=1&summary=1`)).items||[];
+    return [dashboard,{items:creditItems}];
+  });
 }
 function forecastPreview(householdId,month,accountIds,creditIds){
   const accounts=[...accountIds];
@@ -162,42 +200,17 @@ function forecastPreview(householdId,month,accountIds,creditIds){
     body:JSON.stringify({household_id:householdId,month,account_ids:accounts,credit_ids:credits})
   }));
 }
-function scheduleForecastWarmup(){
-  if(!state.currentId||!state.dashboard)return;
-  syncForecastCacheContext();
-  if(forecastCache.warmTimer!==null)clearTimeout(forecastCache.warmTimer);
-  const run=++forecastCache.warmRun;
-  const generation=forecastCache.generation;
-  const householdId=state.currentId;
-  const accounts=[...state.previewAccountIds];
-  const credits=[...state.previewCreditIds];
-  const firstMonth=monthNow();
-  // Erst nach der sichtbaren Oberfläche anfangen. Pro Durchgang nur ein Monat:
-  // ein manueller Monatswechsel darf nicht hinter zwölf Anfragen warten.
-  forecastCache.warmTimer=setTimeout(async()=>{
-    forecastCache.warmTimer=null;
-    for(let i=0;i<FORECAST_MONTHS;i++){
-      if(run!==forecastCache.warmRun||generation!==forecastCache.generation||householdId!==state.currentId||firstMonth!==monthNow())return;
-      const month=shiftMonth(firstMonth,i);
-      try{
-        await forecastDashboard(householdId,month);
-        if(run!==forecastCache.warmRun||generation!==forecastCache.generation)return;
-        await forecastPreview(householdId,month,accounts,credits);
-      }catch(error){
-        // Hintergrundfehler weder verschleiern noch die Oberfläche blockieren.
-        console.warn('FinanzLab-Prognose konnte nicht vorbereitet werden:',month,error);
-      }
-      await new Promise(resolve=>setTimeout(resolve,75));
-    }
-  },450);
-}
-window.addEventListener('visibilitychange',()=>{
-  // Externe Änderungen (etwa EnergyLab-Synchronisierung) nach längerer Pause
-  // nicht auf unbestimmte Zeit mit einem alten Browser-Cache verdecken.
+window.addEventListener('visibilitychange',async()=>{
   if(document.visibilityState==='hidden')forecastCache.hiddenAt=Date.now();
   if(document.visibilityState==='visible'&&Date.now()-(forecastCache.hiddenAt||Date.now())>60000){
-    invalidateForecastCache();
-    scheduleForecastWarmup();
+    try{
+      // Nach einer Pause nur die günstige Haushaltsrevision prüfen. Ein Reload
+      // erfolgt nur bei relevanten Änderungen oder nach einem Tageswechsel.
+      const dayChanged=forecastCache.day!==today();
+      if((await refreshForecastRevision())||dayChanged)await loadAll();
+    }catch(error){
+      console.warn('FinanzLab-Prognoserevision konnte nicht geprüft werden:',error);
+    }
   }
 });
 function toast(message){const element=$('#toast');element.textContent=message;element.hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>element.hidden=true,3800)}
@@ -408,12 +421,14 @@ function saveStartupCache(){
   try{
     window.localStorage.setItem(key,JSON.stringify({
       savedAt:Date.now(),
+      forecastRevision:forecastCache.revision,
       dashboardMonth:state.dashboardMonth,
       dashboard:state.dashboard,
       incomes:state.incomes,
       expenses:state.expenses,
       transfers:state.transfers,
       credits:state.credits,
+      archivedCredits:state.archivedCredits,
       dashboardCredits:state.dashboardCredits,
       categories:state.categories,
       outlook:state.outlook,
@@ -446,11 +461,17 @@ function restoreStartupCache(){
     if(cachedMonth!==currentMonth)return false;
 
     state.dashboardMonth=currentMonth;
+    forecastCache.householdId=state.currentId;
+    forecastCache.day=today();
+    forecastCache.revision=Number.isFinite(Number(cached.forecastRevision))
+      ? Number(cached.forecastRevision)
+      : null;
     state.dashboard=cached.dashboard;
     state.incomes=Array.isArray(cached.incomes)?cached.incomes:[];
     state.expenses=Array.isArray(cached.expenses)?cached.expenses:[];
     state.transfers=Array.isArray(cached.transfers)?cached.transfers:[];
     state.credits=Array.isArray(cached.credits)?cached.credits:[];
+    state.archivedCredits=Array.isArray(cached.archivedCredits)?cached.archivedCredits:[];
     state.dashboardCredits=Array.isArray(cached.dashboardCredits)?cached.dashboardCredits:[];
     state.categories=Array.isArray(cached.categories)?cached.categories:[];
     syncCategoryState();
@@ -544,14 +565,8 @@ async function boot(){
 function syncCategoryState(){for(const item of state.categories||[]){categoryLabels[item.key]=item.name}for(const target of [incomeCategories,expenseCategories])target.splice(0,target.length);for(const item of (state.categories||[]).filter(item=>item.active)){(item.kind==='income'?incomeCategories:expenseCategories).push([item.key,item.name])}}
 async function loadAll(){
   const householdId=state.currentId;
-  const dashboardAsOf=monthEndDate(
-    state.dashboardMonth||monthNow()
-  );
-
-  const dashboardQuery=
-    `household_id=${encodeURIComponent(householdId)}`+
-    `&as_of=${encodeURIComponent(dashboardAsOf)}`;
-
+  await refreshForecastRevision();
+  if(householdId!==state.currentId)return;
   const managementQuery=
     `household_id=${encodeURIComponent(householdId)}`+
     `&as_of=${encodeURIComponent(today())}`;
@@ -559,37 +574,35 @@ async function loadAll(){
   state.settingsLoadedFor=null;
 
   const [
-    dashboard,
+    dashboardBundle,
     incomes,
     expenses,
     transfers,
     credits,
-    dashboardCredits,
     categories
   ]=await Promise.all([
-    api(`/api/dashboard?${dashboardQuery}`),
+    forecastDashboard(householdId,state.dashboardMonth||monthNow()),
     api(`/api/cash-flows?${managementQuery}&kind=income`),
     api(`/api/cash-flows?${managementQuery}&kind=expense`),
     api(`/api/transfers?household_id=${encodeURIComponent(householdId)}`),
     api(
       `/api/credits?household_id=${encodeURIComponent(householdId)}`+
-      `&as_of=${encodeURIComponent(today())}`
-    ),
-    api(
-      `/api/credits?household_id=${encodeURIComponent(householdId)}`+
-      `&as_of=${encodeURIComponent(dashboardAsOf)}`+
-      `&simulate_future=1`
+      `&as_of=${encodeURIComponent(today())}`+
+      `&summary=1`
     ),
     api(`/api/categories?household_id=${encodeURIComponent(householdId)}`)
   ]);
 
   if(householdId!==state.currentId)return;
 
+  const [dashboard,dashboardCredits]=dashboardBundle;
   state.dashboard=dashboard;
+  state.assistant=null;state.assistantError=null;
   state.incomes=incomes.items;
   state.expenses=expenses.items;
   state.transfers=transfers.items;
-  state.credits=credits.items;
+  state.credits=credits.items||[];
+  state.archivedCredits=credits.archived_items||[];
   state.dashboardCredits=dashboardCredits.items||[];
   state.categories=categories.items||[];
 
@@ -597,7 +610,7 @@ async function loadAll(){
   ensureSelections();
   renderAll();
   saveStartupCache();
-  scheduleForecastWarmup();
+  loadRepaymentAssistant(state.dashboardMonth||monthNow());
   // Die 6-Monats-Prognose wird nur bei geöffneter
   // Dashboard-Kachel berechnet.
   loadDashboardOutlookIfOpen(state.dashboardMonth);
@@ -608,6 +621,11 @@ async function loadAll(){
         `Einstellungen konnten nicht vollständig geladen werden: `+
         error.message
       )
+    );
+  }
+  if(location.hash==='#interest'&&typeof loadInterest==='function'){
+    loadInterest().catch(error=>
+      toast(`Zinsen konnten nicht geladen werden: ${error.message}`)
     );
   }
 }
@@ -1044,8 +1062,8 @@ function renderDashboard(){
       .map(group=>creditSummaryCard(group))
       .join('');
 
-  $('#dashboard-warnings').innerHTML=
-    warningHtml(state.dashboard.overdraft_warnings);
+  // Dispoüberschreitungen erscheinen ausschließlich oben in der Vorschau.
+  renderRepaymentAssistant();
 
   $('#dashboard-account-list').innerHTML=
     accounts.length
@@ -1108,6 +1126,229 @@ function renderDashboard(){
     );
 }
 
+// FinanzLab 2.5.7: computed on the server, no JS financial guesswork.
+// Dashboard assistant preferences are per household and browser, with no
+// changes to saved banking data. Bank account filters affect ONLY alerts.
+const ASSISTANT_PREFS_PREFIX='finanzlab-255-assistant-preferences-v3-';
+let assistantPrefsHousehold=null;
+let assistantPrefs={reserveCents:10000,thresholdCents:40000,warningAccounts:[],creditIds:[]};
+function assistantBankAccounts(){
+  return (state.dashboard?.household?.accounts||[]).filter(a=>a.kind!=='credit_line');
+}
+function assistantCreditOptions(){
+  return (state.credits||[]).filter(c=>c.credit_type==='consumer_credit'&&!c.archived);
+}
+function assistantPrefsKey(){return ASSISTANT_PREFS_PREFIX+state.currentId;}
+function ensureAssistantPrefs(){
+  if(!state.currentId||assistantPrefsHousehold===state.currentId)return;
+  assistantPrefsHousehold=state.currentId;
+  const accounts=assistantBankAccounts(),credits=assistantCreditOptions();
+  const defaultIds=accounts.filter(a=>a.kind==='checking'||/giro/i.test(a.name)).map(a=>a.id);
+  let stored=null;
+  try{stored=JSON.parse(localStorage.getItem(assistantPrefsKey())||'null');}catch(error){}
+  // One-time migration of prior v2 preferences; do not lose user account choices.
+  if(!stored){try{stored=JSON.parse(localStorage.getItem('finanzlab-255-assistant-preferences-v2-'+state.currentId)||'null');}catch(error){}}
+  const validAccounts=new Set(accounts.map(a=>a.id));
+  const validCredits=new Set(credits.map(c=>c.id));
+  const n=(value,fallback,max)=>Number.isInteger(value)&&value>=0&&value<=max?value:fallback;
+  assistantPrefs={
+    reserveCents:n(stored?.reserveCents,10000,100000),
+    thresholdCents:n(stored?.thresholdCents,40000,5000000),
+    warningAccounts:(Array.isArray(stored?.warningAccounts)
+      ?stored.warningAccounts:defaultIds.length?defaultIds:accounts.map(a=>a.id)).filter(id=>validAccounts.has(id)),
+    creditIds:(Array.isArray(stored?.creditIds)?stored.creditIds:credits.map(c=>c.id)).filter(id=>validCredits.has(id))
+  };
+  renderAssistantPrefs();
+}
+function saveAssistantPrefs(){
+  try{localStorage.setItem(assistantPrefsKey(),JSON.stringify(assistantPrefs));}catch(error){}
+}
+function renderAssistantPrefs(){
+  const accounts=$('#assistant-warning-accounts'),credits=$('#assistant-credit-accounts');
+  if(accounts){
+    const selected=new Set(assistantPrefs.warningAccounts);
+    accounts.innerHTML=assistantBankAccounts().map(a=>`<label><input type="checkbox" data-assistant-warning-account="${escapeHtml(a.id)}" ${selected.has(a.id)?'checked':''}>${escapeHtml(a.name)}</label>`).join('')||'<small>Keine Bankkonten vorhanden.</small>';
+  }
+  if(credits){
+    const selected=new Set(assistantPrefs.creditIds);
+    credits.innerHTML=assistantCreditOptions().map(c=>`<label><input type="checkbox" data-assistant-credit-id="${escapeHtml(c.id)}" ${selected.has(c.id)?'checked':''}>${escapeHtml(c.name)}</label>`).join('')||'<small>Keine laufenden Kredite vorhanden.</small>';
+  }
+  if($('#assistant-reserve'))$('#assistant-reserve').value=String(assistantPrefs.reserveCents/100);
+}
+function applyAssistantEuroPreference(event,key,maxCents){
+  const field=event.target;
+  const raw=String(field.value).trim();
+  const euro=Number(raw.replace(',','.'));
+  if(!raw||!Number.isFinite(euro)||euro<0||Math.round(euro*100)>maxCents){
+    field.setCustomValidity(`Betrag zwischen 0 und ${maxCents/100} € eingeben.`);
+    field.reportValidity();
+    field.value=String(assistantPrefs[key]/100);
+    field.setCustomValidity('');
+    return;
+  }
+  assistantPrefs[key]=Math.round(euro*100);
+  saveAssistantPrefs();
+  loadRepaymentAssistant(state.dashboardMonth||monthNow());
+}
+$('#assistant-reserve').addEventListener('change',event=>applyAssistantEuroPreference(event,'reserveCents',100000));
+$('#assistant-warning-accounts').addEventListener('change',event=>{
+  const input=event.target.closest('[data-assistant-warning-account]');
+  if(!input)return;
+  const selected=new Set(assistantPrefs.warningAccounts);
+  if(input.checked)selected.add(input.dataset.assistantWarningAccount);
+  else selected.delete(input.dataset.assistantWarningAccount);
+  assistantPrefs.warningAccounts=[...selected];
+  saveAssistantPrefs();if(state.preview)renderPreviewOverdraft();
+});
+$('#assistant-credit-accounts').addEventListener('change',event=>{
+  const input=event.target.closest('[data-assistant-credit-id]');
+  if(!input)return;
+  const selected=new Set(assistantPrefs.creditIds);
+  if(input.checked)selected.add(input.dataset.assistantCreditId);
+  else selected.delete(input.dataset.assistantCreditId);
+  assistantPrefs.creditIds=[...selected];
+  saveAssistantPrefs();renderRepaymentAssistant();
+});
+let repaymentAssistantRequest=0;
+async function loadRepaymentAssistant(month){
+  const requestId=++repaymentAssistantRequest;
+  const householdId=state.currentId;
+  const selected=month||monthNow();
+  ensureAssistantPrefs();
+  const repayment=$('#dashboard-repayment-assistant');
+  if(repayment)repayment.innerHTML='<p class="empty">Kreditprüfung wird berechnet …</p>';
+  try{
+    const data=await api(`/api/dashboard/assistant?household_id=${encodeURIComponent(householdId)}&month=${encodeURIComponent(selected)}&reserve_cents=${encodeURIComponent(assistantPrefs.reserveCents)}&large_debit_cents=${encodeURIComponent(assistantPrefs.thresholdCents)}`);
+    if(requestId!==repaymentAssistantRequest||state.currentId!==householdId||state.dashboardMonth!==selected)return;
+    state.assistant=data;state.assistantError=null;
+  }catch(error){
+    if(requestId!==repaymentAssistantRequest||state.currentId!==householdId||state.dashboardMonth!==selected)return;
+    state.assistant=null;state.assistantError=error.message;
+  }
+  renderRepaymentAssistant();
+}
+function renderRepaymentAssistant(){
+  const repayment=$('#dashboard-repayment-assistant');
+  const panel=$('#dashboard-repayment-panel');
+  if(!repayment||!panel)return;
+  const a=state.assistant;
+  const enabled=new Set(assistantPrefs.creditIds);
+  const selectedIds=new Set(assistantCreditOptions().map(option=>option.id));
+  // Never display a blocked/planned credit as a recommendation. When no
+  // candidate passed the complete daily check, the whole added tile stays
+  // hidden; the original dashboard cards are unaffected.
+  const chosen=(!state.assistantError&&a?.status==='ok')
+    ?(a.recommendations||[]).find(c=>c.status==='recommended'&&
+        enabled.has(c.credit_id)&&selectedIds.has(c.credit_id))
+    :null;
+  if(!chosen){
+    repayment.innerHTML='';
+    panel.hidden=true;
+    return;
+  }
+  panel.hidden=false;
+  const savings=Math.max(0,Number(chosen.monthly_rate_cents)||0);
+  const earliest=escapeHtml(dateLabel(chosen.date));
+  const checkedThrough=chosen.checked_through?escapeHtml(dateLabel(chosen.checked_through)):'';
+  const remainder=Number(chosen.minimum_dispo_headroom_after_cents);
+  // Derived from the real scheduled repayments, not balance / nominal rate.
+  const avoidedCount=Number(chosen.avoided_installment_count||0);
+  const germanMonths=['Januar','Februar','März','April','Mai','Juni',
+    'Juli','August','September','Oktober','November','Dezember'];
+  const avoidedMonths=[...new Set((chosen.avoided_installment_dates||[])
+    .filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d)).map(d=>d.slice(0,7)))].sort();
+  const monthText=ym=>`${germanMonths[Number(ym.slice(5,7))-1]} ${ym.slice(0,4)}`;
+  let avoidedPeriod='';
+  if(avoidedMonths.length===1){
+    avoidedPeriod=monthText(avoidedMonths[0]);
+  }else if(avoidedMonths.length===2 && avoidedMonths[0].slice(0,4)===avoidedMonths[1].slice(0,4)){
+    avoidedPeriod=`${germanMonths[Number(avoidedMonths[0].slice(5,7))-1]} und ${monthText(avoidedMonths[1])}`;
+  }else if(avoidedMonths.length>1){
+    const start=avoidedMonths[0],end=avoidedMonths[avoidedMonths.length-1];
+    avoidedPeriod=start.slice(0,4)===end.slice(0,4)
+      ?`${germanMonths[Number(start.slice(5,7))-1]} bis ${monthText(end)}`
+      :`${monthText(start)} bis ${monthText(end)}`;
+  }
+  const installmentLabel=chosen.avoided_installments_complete===true
+    ?`${avoidedCount} ${avoidedCount===1?'Rate':'Raten'}`
+    :`mindestens ${avoidedCount} ${avoidedCount===1?'Rate':'Raten'}`;
+  const installmentLine=avoidedCount>0
+    ?`<p class="assistant-single-installments"><span>Entfallende Monatsraten</span><strong>${escapeHtml(installmentLabel)}${avoidedPeriod?' · '+escapeHtml(avoidedPeriod):''}</strong></p>`
+    :'';
+  repayment.innerHTML=`<div class="assistant-single-credit">
+    <div class="assistant-single-top"><strong>${escapeHtml(chosen.name)}</strong>
+      <span class="assistant-status-pill good">Empfohlen</span></div>
+    <div class="assistant-single-numbers">
+      <span><small>Voraussichtliche Ablösung</small><b>${eur(chosen.amount_cents)}</b></span>
+      <span><small>Wegfallende Monatsrate</small><b class="assistant-saving">${eur(savings)}</b></span>
+    </div>
+    ${installmentLine}
+    <p class="assistant-single-status"><strong>Frühester sicherer Tilgungstag: ${earliest}</strong></p>
+    ${Number.isFinite(remainder)?`<p class="assistant-single-foot">Niedrigster verbleibender Dispopuffer bis ${checkedThrough}: ${eur(remainder)}.</p>`:''}
+    <small class="assistant-single-foot">Prognose auf Grundlage der erfassten Buchungen; Ablösebetrag beim Anbieter bestätigen. Feiertage werden nicht gesondert berücksichtigt.${chosen.regular_end?' Reguläres Ende: '+escapeHtml(dateLabel(chosen.regular_end))+'.':''}</small>
+  </div>`;
+}
+
+// The preview shows only actual/potential overdraft breaches, never generic
+// large-payment or reserve warnings. Consecutive confirmed breaches are one
+// period, reducing noise for accounts that remain negative for multiple days.
+function previewOverdraftPeriods(preview, allowedIds){
+  const allowed=new Set(allowedIds);
+  const all=[];
+  const open=new Map();
+  for(const day of [...(preview?.days||[])].sort((a,b)=>a.date.localeCompare(b.date))){
+    const daily=new Map((day.balances||day.accounts||[]).map(a=>[a.id,a]));
+    for(const id of allowed){
+      const a=daily.get(id);
+      const limit=Number(a?.overdraft_limit_cents||0);
+      const closing=a?.projected_balance_cents;
+      const valid=closing!==null&&closing!==undefined&&Number.isFinite(Number(closing))&&limit>0;
+      const overage=valid?Math.max(0,-limit-Number(closing)):0;
+      const continuing=open.get(id);
+      if(overage>0){
+        if(continuing){
+          continuing.end=day.date;
+          continuing.peak=Math.max(continuing.peak,overage);
+        }else{
+          const entry={accountId:id,name:a.name,start:day.date,end:day.date,
+            peak:overage,type:'confirmed'};
+          all.push(entry);open.set(id,entry);
+        }
+      }else if(continuing){open.delete(id);}
+      // Optional, clearly labeled pre-income risk on a day whose closing
+      // balance is still within the limit; incoming payment order is unknown.
+      if(valid&&overage===0){
+        const incoming=(day.movements||[]).filter(e=>e.account_id===id&&
+          e.applied_to_projection!==false&&Number(e.amount_cents)>0)
+          .reduce((sum,e)=>sum+Number(e.amount_cents),0);
+        const potential=Math.max(0,-limit-(Number(closing)-incoming));
+        if(potential>0){all.push({accountId:id,name:a.name,start:day.date,end:day.date,
+          peak:potential,type:'possible'});}
+      }
+    }
+  }
+  return all.sort((a,b)=>a.start.localeCompare(b.start)||
+    (a.type==='confirmed'?-1:1)-(b.type==='confirmed'?-1:1)||a.name.localeCompare(b.name));
+}
+function renderPreviewOverdraft(){
+  const panel=$('#preview-dispo-panel');
+  if(!panel)return;
+  const checked=new Set(assistantPrefs.warningAccounts);
+  const selected=state.previewAccountIds.filter(id=>checked.has(id)&&
+    assistantBankAccounts().some(account=>account.id===id));
+  const periods=previewOverdraftPeriods(state.preview,selected);
+  panel.hidden=periods.length===0;
+  if(!periods.length){$('#preview-dispo-list').innerHTML='';return;}
+  $('#preview-dispo-count').textContent=periods.length===1?'1 Zeitraum':`${periods.length} Zeiträume`;
+  $('#preview-dispo-list').innerHTML=periods.map(p=>{
+    const period=p.start===p.end?dateLabel(p.start):`${dateLabel(p.start)} bis ${dateLabel(p.end)}`;
+    const maybe=p.type==='possible';
+    return `<div class="preview-dispo-event ${maybe?'potential':''}">
+       <strong>${escapeHtml(period)} · ${escapeHtml(p.name)}</strong>
+       <span>${maybe?'Möglicherweise vor einem Geldeingang':'Voraussichtlich über dem Dispolimit'}: <b>${eur(p.peak)}</b></span>
+     </div>`;
+  }).join('');
+}
 function creditLineDashboardCard(account){const limit=Number(account.credit_limit_cents??account.overdraft_limit_cents??0),used=Number(account.credit_used_cents??Math.max(0,-Number(account.projected_balance_cents||0))),available=Number(account.credit_available_cents??Math.max(0,limit-used)),percent=limit>0?Math.min(100,used/limit*100):0,linked=accountById(account.linked_account_id);return `<article class="credit-line-card"><div><span>Rahmenkredit</span><h3>${escapeHtml(account.name)}</h3><small>Verrechnung nur über ${escapeHtml(linked?.name||'verknüpftes Girokonto')}</small></div><strong>${eur(used)} genutzt</strong><div class="credit-line-meter"><i style="width:${percent}%"></i></div><small>${eur(available)} von ${eur(limit)} verfügbar</small></article>`}
 function creditSummaryCard(group){return `<article class="summary-card"><span>${escapeHtml(creditTypeLabels[group.credit_type]||group.credit_type)} · ${group.count}</span><b>${eur(group.balance_cents)}</b><small>offener Gesamtsaldo</small></article>`}
 function categoryBreakdownCard(title,items,kind){const values=[...(items||[])].sort((a,b)=>b.amount_cents-a.amount_cents),max=Math.max(...values.map(item=>item.amount_cents),1),sum=values.reduce((total,item)=>total+Number(item.amount_cents||0),0);return `<article class="breakdown-card"><h3>${title}</h3><div class="filtered-expense-total"><small>Monatssumme</small><strong>${eur(sum)}</strong></div><div class="bar-list">${values.length?values.map(item=>`<div class="bar-row"><span>${escapeHtml(categoryLabels[item.category]||'Sonstiges')}</span><b>${eur(item.amount_cents)}</b><div class="bar ${kind}"><i style="width:${Math.max(4,item.amount_cents/max*100)}%"></i></div></div>`).join(''):'<p class="empty">Keine Werte</p>'}</div></article>`}
@@ -1115,8 +1356,8 @@ function categoryBreakdownCard(title,items,kind){const values=[...(items||[])].s
 function flowRow(item){const account=accountName(item.account_id),kind=item.kind==='income'?'income':'expense',linkedCredit=creditById(item.credit_id),end=item.end_date?` · ${item.credit_id?'Vertragliches Ende':'endet'} ${dateLabel(item.end_date)}`:'',expected=item.credit_id&&linkedCredit?.expected_repayment_date?` · Voraussichtlich getilgt ${dateLabel(linkedCredit.expected_repayment_date)}`:'',credit=item.credit_id?` · ${escapeHtml(creditName(item.credit_id))}`:'',managed=item.managed_by==='energylab',future=kind==='income'&&item.next_version?` · ab ${dateLabel(item.next_version.version_from)}: ${eur(item.next_version.amount_cents)}`:'',changeButton=kind==='income'&&item.recurrence!=='once'?`<button class="link-button" type="button" data-income-change="${escapeHtml(item.id)}">Betrag ändern</button>`:'',action=managed?`<div class="row-actions"><span class="badge">EnergyLab</span><button class="link-button" type="button" data-energy-account-flow="${escapeHtml(item.id)}">Konto &amp; Zahlungstag</button></div>`:`<div class="row-actions">${changeButton}<button class="link-button" type="button" data-edit-flow-kind="${kind}" data-edit-flow="${escapeHtml(item.id)}">Bearbeiten</button></div>`;return `<article class="flow-row ${item.configured_active?'':'inactive'}"><span><b>${escapeHtml(item.name)}</b><small>${escapeHtml(categoryLabels[item.category]||'Sonstiges')} · ${dateLabel(item.due_date)} · ${recurrenceLabels[item.recurrence]||item.recurrence}${end}${expected} · ${escapeHtml(account)}${credit}${state.dashboard.household.mode==='couple'?` · ${escapeHtml(ownerName(item))}`:''}${managed?' · automatisch aus EnergyLab':''}${future}</small></span><strong class="${kind==='expense'?'amount-negative':''}">${kind==='expense'?'− ':'+ '}${eur(item.amount_cents)}</strong>${action}</article>`}
 function lifecycleFilter(filter,activeCount,archiveCount,attribute){return `<button class="credit-filter-button ${filter==='active'?'active':''}" type="button" data-${attribute}="active" aria-pressed="${filter==='active'}">Aktiv <span>${activeCount}</span></button><button class="credit-filter-button ${filter==='archive'?'active':''}" type="button" data-${attribute}="archive" aria-pressed="${filter==='archive'}">Archiv <span>${archiveCount}</span></button>`}
 function renderManage(){const accounts=state.dashboard.household.accounts;$('#manage-account-list').innerHTML=accounts.length?accounts.map(account=>accountRow(account,true)).join(''):'<p class="empty">Lege dein erstes Konto an.</p>'}
-function renderIncomes(){const active=state.incomes.filter(item=>!isArchived(item)),archive=state.incomes.filter(isArchived),visible=state.incomeFilter==='archive'?archive:active;$('#income-list-title').textContent=state.incomeFilter==='archive'?'Archivierte Einnahmen':'Aktive Einnahmen';$('#income-filter').innerHTML=lifecycleFilter(state.incomeFilter,active.length,archive.length,'income-filter');$('#income-list').innerHTML=visible.length?visible.map(flowRow).join(''):`<p class="empty">${state.incomeFilter==='archive'?'Noch keine archivierte Einnahme vorhanden.':'Noch keine aktive Einnahme angelegt.'}</p>`;$('#income-position-total').textContent=`+ ${eur(state.incomes.reduce((sum,item)=>sum+Number(item.amount_cents||0),0))}`}
-function renderExpenses(){const standalone=state.expenses.filter(item=>!(item.credit_id&&item.recurrence==="monthly")),active=standalone.filter(item=>!isArchived(item)),archive=standalone.filter(isArchived),visible=state.expenseFilter==='archive'?archive:active;$('#expense-list-title').textContent=state.expenseFilter==='archive'?'Archivierte Ausgaben':'Aktive Ausgaben';$('#expense-filter').innerHTML=lifecycleFilter(state.expenseFilter,active.length,archive.length,'expense-filter');$('#expense-list').innerHTML=visible.length?visible.map(flowRow).join(''):`<p class="empty">${state.expenseFilter==='archive'?'Noch keine archivierte Ausgabe vorhanden.':'Noch keine aktive Ausgabe angelegt.'}</p>`;$('#expense-position-total').textContent=`− ${eur(state.expenses.reduce((sum,item)=>sum+Number(item.amount_cents||0),0))}`}
+function renderIncomes(){const active=state.incomes.filter(item=>!isArchived(item)),archive=state.incomes.filter(isArchived),visible=state.incomeFilter==='archive'?archive:active;$('#income-list-title').textContent=state.incomeFilter==='archive'?'Archivierte Einnahmen':'Aktive Einnahmen';$('#income-filter').innerHTML=lifecycleFilter(state.incomeFilter,active.length,archive.length,'income-filter');$('#income-list').innerHTML=visible.length?visible.map(flowRow).join(''):`<p class="empty">${state.incomeFilter==='archive'?'Noch keine archivierte Einnahme vorhanden.':'Noch keine aktive Einnahme angelegt.'}</p>`;$('#income-position-total').textContent=`+ ${eur(activePositionTotal(state.incomes))}`}
+function renderExpenses(){const active=state.expenses.filter(item=>!isArchived(item)),archive=state.expenses.filter(isArchived),visible=state.expenseFilter==='archive'?archive:active;$('#expense-list-title').textContent=state.expenseFilter==='archive'?'Archivierte Ausgaben':'Aktive Ausgaben';$('#expense-filter').innerHTML=lifecycleFilter(state.expenseFilter,active.length,archive.length,'expense-filter');$('#expense-list').innerHTML=visible.length?visible.map(flowRow).join(''):`<p class="empty">${state.expenseFilter==='archive'?'Noch keine archivierte Ausgabe vorhanden.':'Noch keine aktive Ausgabe angelegt.'}</p>`;$('#expense-position-total').textContent=`− ${eur(activePositionTotal(state.expenses))}`}
 function renderCredits(){const types=['consumer_credit','credit','borrowed','mortgage'],groups=types.map(type=>{const credits=state.credits.filter(item=>item.credit_type===type);return {credit_type:type,count:credits.length,balance_cents:credits.reduce((sum,item)=>sum+Number(item.remaining_balance_cents||0),0)}}),filters=[['all','Alle'],...types.map(type=>[type,creditTypeLabels[type]])],filtered=state.creditFilter==='all'?state.credits:state.credits.filter(item=>item.credit_type===state.creditFilter),activeLabel=state.creditFilter==='all'?'Alle Kredite':creditTypeLabels[state.creditFilter];$('#credit-page-summary').innerHTML=groups.map(creditSummaryCard).join('');$('#credit-list-title').textContent=activeLabel;$('#credit-filter').innerHTML=filters.map(([value,label])=>{const count=value==='all'?state.credits.length:groups.find(group=>group.credit_type===value).count,active=state.creditFilter===value;return `<button class="credit-filter-button ${active?'active':''}" type="button" data-credit-filter="${value}" aria-pressed="${active}">${escapeHtml(label)} <span>${count}</span></button>`}).join('');$('#credit-list').innerHTML=filtered.length?filtered.map(item=>`<article class="credit-row" data-open-credit="${escapeHtml(item.id)}"><div><span class="credit-type-badge">${escapeHtml(creditTypeLabels[item.credit_type])}</span><h3>${escapeHtml(item.name)}</h3><small>Ausgang ${eur(item.opening_balance_cents)} · getilgt ${eur(item.paid_cents)}</small></div><strong>${eur(item.remaining_balance_cents)}</strong><small>offener Saldo</small><button class="link-button" type="button" data-edit-credit="${escapeHtml(item.id)}">Bearbeiten</button></article>`).join(''):state.credits.length?`<p class="empty">Keine Kredite der Art „${escapeHtml(activeLabel)}“ vorhanden.</p>`:'<p class="empty">Noch kein Kredit angelegt.</p>'}
 function renderTransfers(){const active=state.transfers.filter(item=>!isArchived(item)),archive=state.transfers.filter(isArchived),visible=state.transferFilter==='archive'?archive:active;$('#transfer-list-title').textContent=state.transferFilter==='archive'?'Archivierte Umbuchungen':'Aktive Umbuchungen';$('#transfer-filter').innerHTML=lifecycleFilter(state.transferFilter,active.length,archive.length,'transfer-filter');$('#transfer-list').innerHTML=visible.length?visible.map(item=>{const end=item.end_date?` · Ende ${dateLabel(item.end_date)}`:'',count=item.occurrence_count?` · ${item.occurrence_count} Ausführung${Number(item.occurrence_count)===1?'':'en'}`:'';return `<article class="flow-row ${item.active?'':'inactive'}"><span><b>${escapeHtml(item.name)}</b><small>${dateLabel(item.due_date)} · ${recurrenceLabels[item.recurrence]}${end}${count} · ${escapeHtml(item.source_account_name)} → ${escapeHtml(item.target_account_name)}</small></span><strong>${eur(item.amount_cents)}</strong><button class="link-button" type="button" data-edit-transfer="${escapeHtml(item.id)}">Bearbeiten</button></article>`}).join(''):`<p class="empty">${state.transferFilter==='archive'?'Noch keine archivierte Umbuchung vorhanden.':'Noch keine aktive Umbuchung angelegt.'}</p>`}
 function renderOutlookSettings(){
@@ -1181,17 +1422,18 @@ function renderOutlookSettings(){
 }
 
 
-function renderSettings(){renderOutlookSettings();const persons=state.dashboard.household.persons;$('#person-list').innerHTML=persons.map(person=>`<article class="person-row"><span class="avatar">${escapeHtml(person.display_name.slice(0,1).toUpperCase())}</span><span class="person-display"><b>${escapeHtml(person.display_name)}</b></span><span class="row-actions"><button type="button" class="link-button" data-edit-person="${escapeHtml(person.id)}">Bearbeiten</button></span></article>`).join('');const categoryList=$('#category-settings-list');if(categoryList)categoryList.innerHTML=(state.categories||[]).map(item=>`<article class="person-row ${item.active?'':'inactive'}"><span><b>${escapeHtml(item.name)}</b><small>${item.kind==='income'?'Einnahme':'Ausgabe'} · ${item.is_system?'System-Art':'Eigene Art'}${item.active?'':' · deaktiviert'}</small></span>${item.is_system?'':`<span class="row-actions"><button class="link-button" type="button" data-edit-category="${escapeHtml(item.id)}">Bearbeiten</button><button class="link-button" type="button" data-delete-category="${escapeHtml(item.id)}">Löschen</button></span>`}</article>`).join('');const integration=state.energylab||{},form=$('#energylab-form');form.elements.base_url.value=integration.base_url||'http://energylab:8090';form.elements.enabled.checked=Boolean(integration.enabled);$('#energylab-account').innerHTML='<option value="">Kein Konto zugeordnet</option>'+state.dashboard.household.accounts.map(account=>`<option value="${escapeHtml(account.id)}" ${account.id===integration.account_id?'selected':''}>${escapeHtml(account.name)}</option>`).join('');const status=$('#energylab-status');status.hidden=!integration.last_message;status.className=`notice ${integration.last_status==='error'?'error':''}`;status.textContent=integration.last_message?`${integration.last_status==='ok'?'Zuletzt erfolgreich':'Letzter Versuch fehlgeschlagen'}: ${integration.last_message}`:'';$('#energylab-sync').disabled=state.settingsLoading||!integration.enabled;const diagnostics=state.diagnostics;if(!diagnostics||state.settingsLoadedFor!==state.currentId){$('#diagnostics-as-of').textContent=state.settingsLoading?'wird geladen …':'bei Bedarf';$('#diagnostics-summary').innerHTML='';$('#diagnostics-list').innerHTML='<div class="notice">Datenprüfung wird nur beim Öffnen der Einstellungen geladen. Dadurch bleibt das Dashboard schneller.</div>';return}$('#diagnostics-as-of').textContent=dateLabel(diagnostics.as_of);const s=diagnostics.summary;$('#diagnostics-summary').innerHTML=summaryCard('Betroffene Positionen',s.item_count)+summaryCard('Nicht berücksichtigt',s.not_considered_count)+summaryCard('Fehler',s.error,'negative')+summaryCard('Warnungen',s.warning);$('#diagnostics-list').innerHTML=diagnostics.items.length?diagnostics.items.map(item=>{const managed=flowById(item.kind,item.id)?.managed_by==='energylab';return `<article class="diagnostic-row"><i class="severity ${item.issues.some(issue=>issue.severity==='error')?'error':'warning'}"></i><div><b>${escapeHtml(item.name)}</b><small>${item.kind==='income'?'Einnahme':'Ausgabe'} · ${eur(item.amount_cents)}</small><ul>${item.issues.map(issue=>`<li>${escapeHtml(issue.message)}</li>`).join('')}</ul></div>${managed?'<span class="badge">EnergyLab</span>':`<button class="link-button" type="button" data-edit-flow-kind="${item.kind}" data-edit-flow="${escapeHtml(item.id)}">Bearbeiten</button>`}</article>`}).join(''):'<div class="notice">Alle Einnahmen und Ausgaben können berücksichtigt werden.</div>'}
-async function loadSettingsSupplemental(force=false){if(!state.currentId||!state.dashboard)return;if(!force&&state.settingsLoadedFor===state.currentId)return;if(state.settingsLoading)return;const householdId=state.currentId;state.settingsLoading=true;renderSettings();const managementQuery=`household_id=${encodeURIComponent(householdId)}&as_of=${encodeURIComponent(today())}`;try{const [diagnostics,energylab]=await Promise.all([api(`/api/diagnostics?${managementQuery}`),api(`/api/integrations/energylab?household_id=${encodeURIComponent(householdId)}`)]);if(householdId!==state.currentId)return;state.diagnostics=diagnostics;state.energylab=energylab;state.settingsLoadedFor=householdId}finally{state.settingsLoading=false;if(householdId===state.currentId)renderSettings()}}
+function renderSettings(){renderOutlookSettings();ensureAssistantPrefs();renderAssistantPrefs();const persons=state.dashboard.household.persons;$('#person-list').innerHTML=persons.map(person=>`<article class="person-row"><span class="avatar">${escapeHtml(person.display_name.slice(0,1).toUpperCase())}</span><span class="person-display"><b>${escapeHtml(person.display_name)}</b></span><span class="row-actions"><button type="button" class="link-button" data-edit-person="${escapeHtml(person.id)}">Bearbeiten</button></span></article>`).join('');const categoryList=$('#category-settings-list');if(categoryList)categoryList.innerHTML=(state.categories||[]).map(item=>`<article class="person-row ${item.active?'':'inactive'}"><span><b>${escapeHtml(item.name)}</b><small>${item.kind==='income'?'Einnahme':'Ausgabe'} · ${item.is_system?'System-Art':'Eigene Art'}${item.active?'':' · deaktiviert'}</small></span>${item.is_system?'':`<span class="row-actions"><button class="link-button" type="button" data-edit-category="${escapeHtml(item.id)}">Bearbeiten</button><button class="link-button" type="button" data-delete-category="${escapeHtml(item.id)}">Löschen</button></span>`}</article>`).join('');const integration=state.energylab||{},form=$('#energylab-form');form.elements.base_url.value=integration.base_url||'http://energylab:8090';form.elements.enabled.checked=Boolean(integration.enabled);$('#energylab-account').innerHTML='<option value="">Kein Konto zugeordnet</option>'+state.dashboard.household.accounts.map(account=>`<option value="${escapeHtml(account.id)}" ${account.id===integration.account_id?'selected':''}>${escapeHtml(account.name)}</option>`).join('');const status=$('#energylab-status');status.hidden=!integration.last_message;status.className=`notice ${integration.last_status==='error'?'error':''}`;status.textContent=integration.last_message?`${integration.last_status==='ok'?'Zuletzt erfolgreich':'Letzter Versuch fehlgeschlagen'}: ${integration.last_message}`:'';$('#energylab-sync').disabled=state.settingsLoading||!integration.enabled;const diagnostics=state.diagnostics;if(!diagnostics||state.settingsLoadedFor!==state.currentId){$('#diagnostics-as-of').textContent=state.settingsLoading?'wird geladen …':'bei Bedarf';$('#diagnostics-summary').innerHTML='';$('#diagnostics-list').innerHTML='<div class="notice">Datenprüfung wird nur beim Öffnen der Einstellungen geladen. Dadurch bleibt das Dashboard schneller.</div>';return}$('#diagnostics-as-of').textContent=dateLabel(diagnostics.as_of);const s=diagnostics.summary;$('#diagnostics-summary').innerHTML=summaryCard('Betroffene Positionen',s.item_count)+summaryCard('Nicht berücksichtigt',s.not_considered_count)+summaryCard('Fehler',s.error,'negative')+summaryCard('Warnungen',s.warning);$('#diagnostics-list').innerHTML=diagnostics.items.length?diagnostics.items.map(item=>{const managed=flowById(item.kind,item.id)?.managed_by==='energylab';return `<article class="diagnostic-row"><i class="severity ${item.issues.some(issue=>issue.severity==='error')?'error':'warning'}"></i><div><b>${escapeHtml(item.name)}</b><small>${item.kind==='income'?'Einnahme':'Ausgabe'} · ${eur(item.amount_cents)}</small><ul>${item.issues.map(issue=>`<li>${escapeHtml(issue.message)}</li>`).join('')}</ul></div>${managed?'<span class="badge">EnergyLab</span>':`<button class="link-button" type="button" data-edit-flow-kind="${item.kind}" data-edit-flow="${escapeHtml(item.id)}">Bearbeiten</button>`}</article>`}).join(''):'<div class="notice">Alle Einnahmen und Ausgaben können berücksichtigt werden.</div>'}
+async function loadSettingsSupplemental(force=false){if(!state.currentId||!state.dashboard)return;if(!force&&state.settingsLoadedFor===state.currentId)return;if(state.settingsLoading)return;const householdId=state.currentId;state.settingsLoading=true;renderSettings();const managementQuery=`household_id=${encodeURIComponent(householdId)}&as_of=${encodeURIComponent(today())}`;try{const [diagnostics,energylab,energylabStatus,backups]=await Promise.all([api(`/api/diagnostics?${managementQuery}`),api(`/api/integrations/energylab?household_id=${encodeURIComponent(householdId)}`),api(`/api/integrations/energylab/status?household_id=${encodeURIComponent(householdId)}`),api('/api/backups')]);if(householdId!==state.currentId)return;state.diagnostics=diagnostics;state.energylab=energylab;state.energylabStatus=energylabStatus;state.backups=(backups.items||[]).slice(0,12);state.settingsLoadedFor=householdId}finally{state.settingsLoading=false;if(householdId===state.currentId)renderSettings()}}
 function summaryCard(label,value,style=''){const countLabels=new Set(['Betroffene Positionen','Nicht berücksichtigt','Fehler','Warnungen','Ausgewählte Konten','Bewegungen','Buchungen']);const display=typeof value==='number'&&!countLabels.has(label)?eur(value):value;return `<article class="summary-card ${style}"><span>${escapeHtml(label)}</span><b class="${style==='negative'?'amount-negative':''}">${escapeHtml(display)}</b></article>`}
 
 function renderAccountSelectors(target,selectedIds,mode){const accounts=state.dashboard.household.accounts;target.innerHTML=accounts.length?accounts.map(account=>`<label class="account-choice"><input type="checkbox" data-${mode}-account="${escapeHtml(account.id)}" ${selectedIds.includes(account.id)?'checked':''}> ${escapeHtml(account.name)}</label>`).join(''):'<p class="empty">Noch keine Konten vorhanden.</p>'}
 function renderCreditSelectors(){const target=$('#preview-credit-selectors');target.innerHTML=state.credits.some(credit=>credit.credit_type!=='mortgage')?state.credits.filter(credit=>credit.credit_type!=='mortgage').map(credit=>`<label class="account-choice credit-choice"><input type="checkbox" data-preview-credit="${escapeHtml(credit.id)}" ${state.previewCreditIds.includes(credit.id)?'checked':''}> ${escapeHtml(credit.name)}</label>`).join(''):'<p class="empty">Noch keine Kredite vorhanden.</p>'}
-function movementRow(item){const negative=Number(item.amount_cents)<0,skipped=item.skip_reason==='credit_repaid',residual=Number(item.final_residual_added_cents||0),adjusted=Boolean(item.credit_adjusted)&&!skipped,override=item.amount_overridden?` · Plan ${eur(item.planned_amount_cents)}, tatsächlich ${eur(Math.abs(item.amount_cents))}`:'',status=skipped?' · entfällt – Kredit bereits getilgt':residual>0?` · Restbetrag ${eur(residual)} in Schlussrate enthalten`:adjusted?` · Schlussrate von ${eur(item.planned_amount_cents)} auf ${eur(Math.abs(item.amount_cents))} begrenzt`:item.completed?' · erledigt – nicht eingerechnet':(item.applied_to_projection===false?' · bereits im Kontostand enthalten':'');const amountEdit=item.kind==='expense'&&item.origin==='planned'?`<button class="link-button movement-amount-button" type="button" data-movement-amount="${escapeHtml(item.completion_key)}" data-current-cents="${Math.abs(Number(item.amount_cents))}" data-planned-cents="${Number(item.planned_amount_cents)}">Betrag ändern</button>`:'',completion=item.completion_allowed?`<label class="movement-completion"><input type="checkbox" data-movement-completion="${escapeHtml(item.completion_key)}" ${item.completed?'checked':''}> Vorgang erledigt</label>`:'';return `<article class="movement-row ${item.completed?'completed':''} ${skipped?'skipped':''}"><span class="movement-kind ${escapeHtml(item.kind)}">${escapeHtml(movementLabels[item.kind]||'Buchung')}</span><span><b>${escapeHtml(item.label)}</b><small>${dateLabel(item.date)} · ${escapeHtml(accountName(item.account_id))}${override}${status}</small></span><strong class="${negative?'amount-negative':''}">${skipped?'0,00 €':`${negative?'− ':'+ '}${eur(Math.abs(item.amount_cents))}`}</strong><div class="movement-actions">${amountEdit}${completion}</div></article>`}
+function movementRow(item){const negative=Number(item.amount_cents)<0,skipped=item.skip_reason==='credit_repaid',omitted=Boolean(item.omitted),residual=Number(item.final_residual_added_cents||0),adjusted=Boolean(item.credit_adjusted)&&!skipped&&!omitted,override=item.amount_overridden?` · Plan ${eur(item.planned_amount_cents)}, tatsächlich ${eur(Math.abs(item.amount_cents))}`:'',status=skipped?' · entfällt – Kredit bereits getilgt':omitted?' · entfällt – nicht eingerechnet':residual>0?` · Restbetrag ${eur(residual)} in Schlussrate enthalten`:adjusted?` · Schlussrate von ${eur(item.planned_amount_cents)} auf ${eur(Math.abs(item.amount_cents))} begrenzt`:item.completed?' · erledigt – bereits im Kontostand enthalten':(item.applied_to_projection===false?' · bereits im Kontostand enthalten':'');const amountEdit=item.kind==='expense'&&item.origin==='planned'?`<button class="link-button movement-amount-button" type="button" data-movement-amount="${escapeHtml(item.completion_key)}" data-current-cents="${Math.abs(Number(item.amount_cents))}" data-planned-cents="${Number(item.planned_amount_cents)}">Betrag ändern</button>`:'',completion=item.completion_allowed?`<label class="movement-completion"><input type="checkbox" data-movement-completion="${escapeHtml(item.completion_key)}" ${item.completed?'checked':''}> Vorgang erledigt</label>`:'',omission=item.omission_allowed?`<label class="movement-completion movement-omission"><input type="checkbox" data-movement-omission="${escapeHtml(item.completion_key)}" ${omitted?'checked':''}> Entfällt</label>`:'';return `<article class="movement-row ${item.completed?'completed':''} ${omitted?'omitted':''} ${skipped?'skipped':''}"><span class="movement-kind ${escapeHtml(item.kind)}">${escapeHtml(movementLabels[item.kind]||'Buchung')}</span><span><b>${escapeHtml(item.label)}</b><small>${dateLabel(item.date)} · ${escapeHtml(accountName(item.account_id))}${override}${status}</small></span><strong class="${negative?'amount-negative':''}">${skipped?'0,00 €':`${negative?'− ':'+ '}${eur(Math.abs(item.amount_cents))}`}</strong><div class="movement-actions">${amountEdit}${completion}${omission}</div></article>`}
 async function loadPreview(){
   if(!state.currentId)return;
   const request=++previewRequest;
   const household=state.currentId,month=state.previewMonth;
+  if($('#preview-dispo-panel'))$('#preview-dispo-panel').hidden=true;
   const accounts=[...state.previewAccountIds],credits=[...state.previewCreditIds];
   syncForecastCacheContext();
   const generation=forecastCache.generation;
@@ -1205,7 +1447,7 @@ async function loadPreview(){
   }
 }
 function creditPaymentRow(item){const skipped=item.skip_reason==='credit_repaid',increase=item.source==='manual'&&Number(item.amount_cents)<0,residual=Number(item.final_residual_added_cents||0),adjusted=Boolean(item.adjusted)&&!skipped,parts=item.automatic_calculation?[`Rate ${eur(item.account_amount_cents)}`,`Zins ${eur(item.interest_cents)}`,`Tilgung ${eur(item.effective_reduction_cents)}`,`Rest ${eur(item.remaining_after_cents)}`]:[],status=skipped?' · entfällt – Kredit bereits getilgt':increase?' · Kreditaufstockung':residual>0?` · Restbetrag ${eur(residual)} zugeschlagen`:item.amount_overridden?` · manuell angepasst (geplant ${eur(item.planned_amount_cents)})`:adjusted?` · auf Restschuld begrenzt (geplant ${eur(item.planned_amount_cents)})`:item.future?' · geplant':'',amount=skipped?'0,00 €':increase?`+ ${eur(Math.abs(item.amount_cents))}`:`− ${eur(item.amount_cents)}`;return `<article class="credit-payment-row ${item.future?'future':''} ${skipped?'skipped':''} ${increase?'increase':''}"><span><b>${escapeHtml(item.label)}</b><small>${dateLabel(item.date)} · ${item.source==='expense'?'aus Ausgabe':'manuell'}${status}${parts.length?`<br>${parts.join(' · ')}`:''}</small></span><strong>${amount}</strong>${item.source==='manual'?`<button class="link-button" type="button" data-delete-credit-payment="${escapeHtml(item.id)}">Löschen</button>`:'<span></span>'}</article>`}
-function renderPreview(){renderAccountSelectors($('#preview-account-selectors'),state.previewAccountIds,'preview');renderCreditSelectors();const result=state.preview,t=result.totals,ct=result.credit_totals||{opening_balance_cents:0,closing_balance_cents:0,reduction_cents:0};$('#preview-month-label').textContent=monthLabel(result.month);$('#preview-summary').innerHTML=summaryCard('Konten am Monatsanfang',t.opening_balance_cents)+summaryCard('Einnahmen',t.income_cents)+summaryCard('Ausgaben',t.expense_cents)+summaryCard('Konten am Monatsende',t.closing_balance_cents,t.closing_balance_cents<0?'negative':'');$('#preview-credit-summary').innerHTML=state.previewCreditIds.length?summaryCard('Kredite am Monatsanfang',ct.opening_balance_cents)+summaryCard('Simulierte Tilgung',ct.reduction_cents)+summaryCard('Kredite am Monatsende',ct.closing_balance_cents):'';$('#preview-warnings').innerHTML=warningHtml(result.overdraft_warnings);$('#preview-range').textContent=`${dateLabel(result.from)} – ${dateLabel(result.through)}`;const days=result.days||[];if(!result.accounts.length&&!result.credits.length){$('#preview-day-list').innerHTML='<p class="empty">Wähle mindestens ein Konto oder einen Kredit.</p>';updatePreviewDayNavigation();return}$('#preview-day-list').innerHTML=days.map(day=>{const open=state.previewSelectedDay===day.date,balances=(day.balances||[]).map(account=>`<span class="day-balance ${account.overdraft_exceeded?'warning':''}"><small>${escapeHtml(account.name)}</small><b class="${Number(account.projected_balance_cents)<0?'amount-negative':''}">${moneyOrMissing(account.projected_balance_cents)}</b></span>`).join(''),credits=(day.credits||[]).map(credit=>`<span class="day-balance credit-balance"><small>${escapeHtml(credit.name)} · Kredit</small><b>${eur(credit.remaining_balance_cents)}</b>${credit.reduction_cents?`<em>− ${eur(credit.reduction_cents)} Tilgung</em>`:''}</span>`).join('');const warning=day.overdraft_warning_count?'<div class="day-warning">Disporahmen an diesem Tag überschritten.</div>':'',creditMovements=(day.credits||[]).flatMap(credit=>credit.payments||[]);return `<details class="day-entry ${day.overdraft_warning_count?'has-warning':''}" data-preview-day-entry="${escapeHtml(day.date)}" ${open?'open':''}><summary data-preview-day="${escapeHtml(day.date)}"><span class="day-date"><b>${escapeHtml(weekdayLabel(day.date))}</b><small>${dateLabel(day.date)}</small></span><span class="day-balances">${balances}${credits}</span><span class="day-total"><small>Konten gesamt</small><b class="${day.total_balance_cents<0?'amount-negative':''}">${eur(day.total_balance_cents)}</b><em class="${day.delta_cents<0?'amount-negative':''}">${day.delta_cents===0?'keine Kontobewegung':`${day.delta_cents>0?'+ ':''}${eur(day.delta_cents)}`}</em></span></summary><div class="day-detail">${warning}<div class="movement-list">${day.movements.length?day.movements.map(movementRow).join(''):'<p class="empty">An diesem Tag sind keine Kontobewegungen fällig.</p>'}${creditMovements.length?`<div class="credit-movement-separator"><p class="eyebrow">KREDITVERÄNDERUNGEN · NICHT IN DER KONTENSUMME</p>${creditMovements.map(creditPaymentRow).join('')}</div>`:''}</div></div></details>`}).join('');updatePreviewDayNavigation()}
+function renderPreview(){renderAccountSelectors($('#preview-account-selectors'),state.previewAccountIds,'preview');renderCreditSelectors();const result=state.preview,t=result.totals,ct=result.credit_totals||{opening_balance_cents:0,closing_balance_cents:0,reduction_cents:0};$('#preview-month-label').textContent=monthLabel(result.month);$('#preview-summary').innerHTML=summaryCard('Konten am Monatsanfang',t.opening_balance_cents)+summaryCard('Einnahmen',t.income_cents)+summaryCard('Ausgaben',t.expense_cents)+summaryCard('Konten am Monatsende',t.closing_balance_cents,t.closing_balance_cents<0?'negative':'');$('#preview-credit-summary').innerHTML=state.previewCreditIds.length?summaryCard('Kredite am Monatsanfang',ct.opening_balance_cents)+summaryCard('Simulierte Tilgung',ct.reduction_cents)+summaryCard('Kredite am Monatsende',ct.closing_balance_cents):'';renderPreviewOverdraft();$('#preview-range').textContent=`${dateLabel(result.from)} – ${dateLabel(result.through)}`;const days=result.days||[];if(!result.accounts.length&&!result.credits.length){$('#preview-day-list').innerHTML='<p class="empty">Wähle mindestens ein Konto oder einen Kredit.</p>';updatePreviewDayNavigation();return}$('#preview-day-list').innerHTML=days.map(day=>{const open=state.previewSelectedDay===day.date,balances=(day.balances||[]).map(account=>`<span class="day-balance ${account.overdraft_exceeded?'warning':''}"><small>${escapeHtml(account.name)}</small><b class="${Number(account.projected_balance_cents)<0?'amount-negative':''}">${moneyOrMissing(account.projected_balance_cents)}</b></span>`).join(''),credits=(day.credits||[]).map(credit=>`<span class="day-balance credit-balance"><small>${escapeHtml(credit.name)} · Kredit</small><b>${eur(credit.remaining_balance_cents)}</b>${credit.reduction_cents?`<em>− ${eur(credit.reduction_cents)} Tilgung</em>`:''}</span>`).join('');const warning=day.overdraft_warning_count?'<div class="day-warning">Disporahmen an diesem Tag überschritten.</div>':'',creditMovements=(day.credits||[]).flatMap(credit=>credit.payments||[]);return `<details class="day-entry ${day.overdraft_warning_count?'has-warning':''}" data-preview-day-entry="${escapeHtml(day.date)}" ${open?'open':''}><summary data-preview-day="${escapeHtml(day.date)}"><span class="day-date"><b>${escapeHtml(weekdayLabel(day.date))}</b><small>${dateLabel(day.date)}</small></span><span class="day-balances">${balances}${credits}</span><span class="day-total"><small>Konten gesamt</small><b class="${day.total_balance_cents<0?'amount-negative':''}">${eur(day.total_balance_cents)}</b><em class="${day.delta_cents<0?'amount-negative':''}">${day.delta_cents===0?'keine Kontobewegung':`${day.delta_cents>0?'+ ':''}${eur(day.delta_cents)}`}</em></span></summary><div class="day-detail">${warning}<div class="movement-list">${day.movements.length?day.movements.map(movementRow).join(''):'<p class="empty">An diesem Tag sind keine Kontobewegungen fällig.</p>'}${creditMovements.length?`<div class="credit-movement-separator"><p class="eyebrow">KREDITVERÄNDERUNGEN · NICHT IN DER KONTENSUMME</p>${creditMovements.map(creditPaymentRow).join('')}</div>`:''}</div></div></details>`}).join('');updatePreviewDayNavigation()}
 function updatePreviewDayNavigation(){const navigation=$('#preview-day-navigation');navigation.hidden=!state.previewSelectedDay;$('#preview-selected-day-label').textContent=state.previewSelectedDay?`${weekdayLabel(state.previewSelectedDay)}, ${dateLabel(state.previewSelectedDay)}`:''}
 function selectPreviewDay(value,scroll=true){state.previewSelectedDay=value;$$('[data-preview-day-entry]').forEach(entry=>entry.open=entry.dataset.previewDayEntry===value);updatePreviewDayNavigation();if(scroll)$(`[data-preview-day-entry="${value}"]`)?.scrollIntoView({behavior:'smooth',block:'center'})}
 function movePreviewDay(count){const start=state.previewSelectedDay||(state.previewMonth===monthNow()?today():`${state.previewMonth}-01`),next=shiftDay(start,count);if(next.slice(0,7)!==state.previewMonth){state.previewMonth=next.slice(0,7);state.previewSelectedDay=next;loadPreview()}else selectPreviewDay(next)}
@@ -1268,7 +1510,9 @@ async function loadDashboardMonth(value){
     state.dashboardCredits=dashboardCredits.items||[];
     state.dashboardMonth=requested;
 
+    state.assistant=null;state.assistantError=null;
     renderDashboard();
+    loadRepaymentAssistant(requested);
     renderManage();
     renderSettings();
     updateDashboardMonthControl();
@@ -1312,8 +1556,16 @@ $('#dashboard-month').addEventListener('change',event=>{
 function changePreviewMonth(count){state.previewMonth=shiftMonth(state.previewMonth,count);state.previewSelectedDay=null;loadPreview()}
 $('#preview-minus').addEventListener('click',()=>changePreviewMonth(-1));$('#preview-plus').addEventListener('click',()=>changePreviewMonth(1));$('#preview-plus-two').addEventListener('click',()=>changePreviewMonth(2));$('#preview-current').addEventListener('click',()=>{state.previewMonth=monthNow();state.previewSelectedDay=null;loadPreview()});$('#preview-day-prev').addEventListener('click',()=>movePreviewDay(-1));$('#preview-day-next').addEventListener('click',()=>movePreviewDay(1));
 $('#preview-day-list').addEventListener('click',event=>{const summary=event.target.closest('[data-preview-day]');if(!summary)return;const details=summary.closest('details'),value=summary.dataset.previewDay;setTimeout(()=>{if(details.open)selectPreviewDay(value,false);else if(state.previewSelectedDay===value){state.previewSelectedDay=null;updatePreviewDayNavigation()}$$('[data-preview-day-entry]').forEach(entry=>{if(entry!==details)entry.open=false})},0)});
-$('#preview-day-list').addEventListener('change',async event=>{const input=event.target.closest('[data-movement-completion]');if(!input)return;const completed=input.checked;input.disabled=true;try{await api('/api/movement-completion',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,occurrence_key:input.dataset.movementCompletion,completed})});await loadAll();toast(completed?'Vorgang wurde als erledigt gespeichert.':'Vorgang wird wieder in der Vorschau berücksichtigt.')}catch(err){input.checked=!completed;input.disabled=false;toast(err.message)}});
-$('#preview-day-list').addEventListener('click',async event=>{const button=event.target.closest('[data-movement-amount]');if(!button)return;event.preventDefault();event.stopPropagation();const current=(Number(button.dataset.currentCents)/100).toFixed(2),planned=Number(button.dataset.plannedCents),value=prompt('Tatsächlichen Betrag nur für diesen Termin eingeben. Leer lassen, um wieder den Planbetrag zu verwenden:',current);if(value===null)return;const normalized=value.trim().replace(',','.');if(normalized!==''&&(!Number.isFinite(Number(normalized))||Number(normalized)<0)){toast('Bitte einen gültigen, nicht negativen Betrag eingeben.');return}button.disabled=true;try{await api('/api/movement-amount',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,occurrence_key:button.dataset.movementAmount,amount_cents:normalized===''?null:euroCents(normalized)})});await loadAll();toast(normalized===''?'Für den Termin gilt wieder der Planbetrag.':`Tatsächlicher Betrag gespeichert; der Planbetrag ${eur(planned)} bleibt für künftige Termine bestehen.`)}catch(err){button.disabled=false;toast(err.message)}});
+async function refreshAfterMovementChange(){
+  // Der Server erhöht die Prognose-Revision. Den lokalen Cache zusätzlich sofort
+  // leeren, damit weder Dashboard noch sichtbare Monatsvorschau veraltet bleiben.
+  invalidateForecastCache();
+  await loadAll();
+  await loadPreview();
+}
+$('#preview-day-list').addEventListener('change',async event=>{const input=event.target.closest('[data-movement-completion]');if(!input)return;const completed=input.checked;input.disabled=true;try{await api('/api/movement-completion',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,occurrence_key:input.dataset.movementCompletion,completed})});await refreshAfterMovementChange();toast(completed?'Vorgang wurde als erledigt gespeichert und die Vorschau neu berechnet.':'Vorgang wird wieder eingerechnet und die Vorschau wurde neu berechnet.')}catch(err){input.checked=!completed;input.disabled=false;toast(err.message)}});
+$('#preview-day-list').addEventListener('change',async event=>{const input=event.target.closest('[data-movement-omission]');if(!input)return;const omitted=input.checked;input.disabled=true;try{await api('/api/movement-omission',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,occurrence_key:input.dataset.movementOmission,omitted})});await refreshAfterMovementChange();toast(omitted?'Vorgang entfällt und wurde aus Kontostand und Kennzahlen entfernt.':'Vorgang wird wieder in Kontostand und Kennzahlen eingerechnet.')}catch(err){input.checked=!omitted;input.disabled=false;toast(err.message)}});
+$('#preview-day-list').addEventListener('click',async event=>{const button=event.target.closest('[data-movement-amount]');if(!button)return;event.preventDefault();event.stopPropagation();const current=(Number(button.dataset.currentCents)/100).toFixed(2),planned=Number(button.dataset.plannedCents),value=prompt('Tatsächlichen Betrag nur für diesen Termin eingeben. Leer lassen, um wieder den Planbetrag zu verwenden:',current);if(value===null)return;const normalized=value.trim().replace(',','.');if(normalized!==''&&(!Number.isFinite(Number(normalized))||Number(normalized)<0)){toast('Bitte einen gültigen, nicht negativen Betrag eingeben.');return}button.disabled=true;try{await api('/api/movement-amount',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,occurrence_key:button.dataset.movementAmount,amount_cents:normalized===''?null:euroCents(normalized)})});await refreshAfterMovementChange();toast(normalized===''?'Für den Termin gilt wieder der Planbetrag; die Vorschau wurde neu berechnet.':`Tatsächlicher Betrag gespeichert und Vorschau neu berechnet; der Planbetrag ${eur(planned)} bleibt für künftige Termine bestehen.`)}catch(err){button.disabled=false;toast(err.message)}});
 $('#dashboard-outlook-panel')?.addEventListener(
   'toggle',
   event=>{
@@ -1473,7 +1725,7 @@ $('#account-history').addEventListener('click',async event=>{const button=event.
 function flowById(kind,id){return (kind==='income'?state.incomes:state.expenses).find(item=>item.id===id)}
 function configureFlowRecurrences(kind){const select=$('#cash-flow-form').elements.recurrence,weekly=select.querySelector('option[value="weekly"]'),expense=kind==='expense';weekly.hidden=!expense;weekly.disabled=!expense;if(!expense&&select.value==='weekly')select.value='monthly'}
 function configureFlowEndFields(kind){const expense=kind==='expense';$('#cash-flow-end-date-field').hidden=!expense;$('#cash-flow-duration-field').hidden=!expense;const form=$('#cash-flow-form').elements;form.end_date.disabled=!expense;form.duration_months.disabled=!expense}
-function configureFlowCreditFields(){const form=$('#cash-flow-form').elements,isCredit=state.editingFlowKind==='expense'&&creditCategories.has(form.category.value),field=$('#cash-flow-credit-fields'),current=form.credit_id.value;field.hidden=!isCredit;form.credit_id.disabled=!isCredit;if(!isCredit){form.credit_id.value='';return}const matches=state.credits.filter(credit=>credit.credit_type===form.category.value);$('#cash-flow-credit').innerHTML=matches.length?matches.map(credit=>`<option value="${escapeHtml(credit.id)}">${escapeHtml(credit.name)} · offen ${eur(credit.remaining_balance_cents)}</option>`).join(''):'<option value="">Zuerst passenden Kredit anlegen</option>';form.credit_id.value=matches.some(credit=>credit.id===current)?current:(matches[0]?.id||'')}
+function configureFlowCreditFields(){const form=$('#cash-flow-form').elements,isCredit=state.editingFlowKind==='expense'&&creditCategories.has(form.category.value),field=$('#cash-flow-credit-fields'),current=form.credit_id.value;field.hidden=!isCredit;form.credit_id.disabled=!isCredit;form.credit_payment_type.disabled=!isCredit;if(!isCredit)form.credit_payment_type.value='regular';if(!isCredit){form.credit_id.value='';return}const matches=state.credits.filter(credit=>credit.credit_type===form.category.value);$('#cash-flow-credit').innerHTML=matches.length?matches.map(credit=>`<option value="${escapeHtml(credit.id)}">${escapeHtml(credit.name)} · offen ${eur(credit.remaining_balance_cents)}</option>`).join(''):'<option value="">Zuerst passenden Kredit anlegen</option>';form.credit_id.value=matches.some(credit=>credit.id===current)?current:(matches[0]?.id||'')}
 function syncFlowEndFromDuration(){const form=$('#cash-flow-form').elements,duration=Number(form.duration_months.value);if(state.editingFlowKind==='expense'&&form.due_date.value&&Number.isInteger(duration)&&duration>0)form.end_date.value=expectedTransferEnd(form.due_date.value,form.recurrence.value,duration)}
 function syncFlowDurationFromEnd(){const form=$('#cash-flow-form').elements;if(state.editingFlowKind!=='expense')return;const months=durationBetweenDates(form.due_date.value,form.end_date.value),step={monthly:1,quarterly:3,semiannual:6,yearly:12}[form.recurrence.value];form.duration_months.value=step&&months!==''&&Number(months)%step===0?String(Number(months)/step+1):''}
 function openFlow(kind,item=null){
@@ -1487,7 +1739,7 @@ function openFlow(kind,item=null){
   $('#cash-flow-account').innerHTML='<option value="">Kein Konto zugeordnet</option>'+h.accounts.filter(account=>account.kind!=='credit_line').map(account=>`<option value="${escapeHtml(account.id)}">${escapeHtml(account.name)}${account.is_default?' · Standard':''}</option>`).join('');
   form.elements.owner.value=h.persons[0]?.id||'';form.elements.account_id.value=defaultAccount?.id||'';form.elements.due_date.value=state.asOf;form.elements.recurrence.value='once';form.elements.active.checked=true;
   if(item){form.elements.name.value=item.name;form.elements.category.value=item.category;form.elements.owner.value=ownerValue(item);form.elements.amount.value=(Number(item.amount_cents)/100).toFixed(2);form.elements.recurrence.value=item.recurrence;form.elements.due_date.value=item.due_date;form.elements.end_date.value=item.end_date||'';form.elements.duration_months.value=item.duration_months||'';form.elements.account_id.value=item.account_id||'';form.elements.credit_id.value=item.credit_id||'';form.elements.active.checked=Boolean(item.configured_active)}
-  configureFlowCreditFields();if(item?.credit_id){form.elements.credit_id.value=item.credit_id;configureFlowCreditFields()}
+  configureFlowCreditFields();form.elements.credit_payment_type.value=item?.credit_payment_type==='special'?'special':'regular';if(item?.credit_id){form.elements.credit_id.value=item.credit_id;configureFlowCreditFields()}
   $('#cash-flow-dialog-eyebrow').textContent=item?(kind==='income'?'EINNAHME BEARBEITEN':'AUSGABE BEARBEITEN'):(kind==='income'?'NEUE EINNAHME':'NEUE AUSGABE');
   $('#cash-flow-dialog-title').textContent=item?'Position bearbeiten':(kind==='income'?'Einnahme anlegen':'Ausgabe anlegen');$('#delete-cash-flow').hidden=!item;$('#cash-flow-error').hidden=true;$('#cash-flow-dialog').showModal()
 }
@@ -1499,7 +1751,7 @@ function flowClick(event){const incomeChange=event.target.closest('[data-income-
 $('#income-list').addEventListener('click',flowClick);$('#expense-list').addEventListener('click',flowClick);$('#diagnostics-list').addEventListener('click',flowClick);
 $('#income-filter').addEventListener('click',event=>{const button=event.target.closest('[data-income-filter]');if(!button)return;state.incomeFilter=button.dataset.incomeFilter;renderIncomes()});
 $('#expense-filter').addEventListener('click',event=>{const button=event.target.closest('[data-expense-filter]');if(!button)return;state.expenseFilter=button.dataset.expenseFilter;renderExpenses()});
-$('#cash-flow-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,error=$('#cash-flow-error'),button=event.submitter,isCredit=state.editingFlowKind==='expense'&&creditCategories.has(form.category.value),existing=flowById(state.editingFlowKind,state.editingFlowId);button.disabled=true;error.hidden=true;const payload={household_id:state.currentId,kind:state.editingFlowKind,name:form.name.value,category:form.category.value,amount_cents:euroCents(form.amount.value),recurrence:form.recurrence.value,due_date:form.due_date.value,end_date:state.editingFlowKind==='expense'?form.end_date.value:'',duration_months:state.editingFlowKind==='expense'?form.duration_months.value:'',account_id:form.account_id.value,credit_id:isCredit?form.credit_id.value:'',credit_reduction_cents:isCredit&&existing?.credit_id===form.credit_id.value?existing.credit_reduction_cents:'',owner:form.owner.value,active:form.active.checked};try{await api(state.editingFlowId?`/api/cash-flows/${encodeURIComponent(state.editingFlowId)}`:'/api/cash-flows',{method:state.editingFlowId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const archiveDate=payload.end_date||(payload.recurrence==='once'?payload.due_date:'');if(state.editingFlowKind==='expense')state.expenseFilter=archiveDate&&archiveDate<today()?'archive':'active';else state.incomeFilter=archiveDate&&archiveDate<today()?'archive':'active';$('#cash-flow-dialog').close();state.editingFlowId=null;await loadAll();toast('Position wurde gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
+$('#cash-flow-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,error=$('#cash-flow-error'),button=event.submitter,isCredit=state.editingFlowKind==='expense'&&creditCategories.has(form.category.value),existing=flowById(state.editingFlowKind,state.editingFlowId);button.disabled=true;error.hidden=true;const payload={household_id:state.currentId,kind:state.editingFlowKind,name:form.name.value,category:form.category.value,amount_cents:euroCents(form.amount.value),recurrence:form.recurrence.value,due_date:form.due_date.value,end_date:state.editingFlowKind==='expense'?form.end_date.value:'',duration_months:state.editingFlowKind==='expense'?form.duration_months.value:'',account_id:form.account_id.value,credit_id:isCredit?form.credit_id.value:'',credit_reduction_cents:isCredit&&existing?.credit_id===form.credit_id.value?existing.credit_reduction_cents:'',credit_payment_type:isCredit?form.credit_payment_type.value:'regular',owner:form.owner.value,active:form.active.checked};try{await api(state.editingFlowId?`/api/cash-flows/${encodeURIComponent(state.editingFlowId)}`:'/api/cash-flows',{method:state.editingFlowId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const archiveDate=payload.end_date||(payload.recurrence==='once'?payload.due_date:'');if(state.editingFlowKind==='expense')state.expenseFilter=archiveDate&&archiveDate<today()?'archive':'active';else state.incomeFilter=archiveDate&&archiveDate<today()?'archive':'active';$('#cash-flow-dialog').close();state.editingFlowId=null;await loadAll();toast('Position wurde gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 $('#delete-cash-flow').addEventListener('click',async()=>{const item=flowById(state.editingFlowKind,state.editingFlowId);if(!item||!confirm(`„${item.name}“ wirklich löschen?`))return;try{await api(`/api/cash-flows/${encodeURIComponent(item.id)}?household_id=${encodeURIComponent(state.currentId)}`,{method:'DELETE'});$('#cash-flow-dialog').close();state.editingFlowId=null;await loadAll();toast('Position wurde gelöscht.')}catch(err){toast(err.message)}});
 $('#income-change-form').addEventListener('submit',async event=>{event.preventDefault();const item=flowById('income',state.editingIncomeChangeId),form=event.currentTarget.elements,error=$('#income-change-error'),button=event.submitter;if(!item)return;error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,kind:'income',name:item.name,category:item.category,amount_cents:euroCents(form.amount.value),recurrence:item.recurrence,due_date:item.due_date,effective_from:form.effective_from.value,account_id:item.account_id||'',owner:ownerValue(item),active:Boolean(item.configured_active)};try{await api(`/api/cash-flows/${encodeURIComponent(item.id)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});$('#income-change-dialog').close();state.editingIncomeChangeId=null;await loadAll();toast(`Neuer Betrag gilt ab ${dateLabel(payload.effective_from)}.`)}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 $('#energylab-account-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,error=$('#energylab-account-error'),button=event.submitter;error.hidden=true;button.disabled=true;try{await api(`/api/integrations/energylab/flows/${encodeURIComponent(state.editingEnergyFlowId)}/account`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,account_id:form.account_id.value,payment_day:form.payment_day.value})});$('#energylab-account-dialog').close();state.editingEnergyFlowId=null;await loadAll();toast('Konto und Zahlungstag wurden gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
@@ -1518,7 +1770,7 @@ $('[data-credit-form-tab="data"]').closest('.credit-tabs').addEventListener('cli
 $('#credit-form').elements.credit_type.addEventListener('change',()=>{configureCreditTypeFields();updateCreditPlanCheck()});['fixed_interest_until','plan_first_due'].forEach(name=>$('#credit-form').elements[name].addEventListener('change',configureCreditTypeFields));
 $('#credit-filter').addEventListener('click',event=>{const button=event.target.closest('[data-credit-filter]');if(!button)return;state.creditFilter=button.dataset.creditFilter;renderCredits()});
 $('#credit-list').addEventListener('click',event=>{const edit=event.target.closest('[data-edit-credit]');if(edit){const item=creditById(edit.dataset.editCredit);if(item)openCredit(item);return}const row=event.target.closest('[data-open-credit]');if(row){const item=creditById(row.dataset.openCredit);if(item)openCredit(item)}});
-$('#credit-edit-payment-submit').addEventListener('click',async event=>{const creditId=state.editingCreditId;if(!creditId)return;const area=$('#credit-edit-payment-form'),dateInput=area.querySelector('[name="payment_date"]'),amountInput=area.querySelector('[name="amount"]'),error=$('#credit-edit-payment-error'),button=event.currentTarget;if(!dateInput.value||!amountInput.value){error.textContent='Bitte Datum und Betrag angeben.';error.hidden=false;return}const amount=euroCents(amountInput.value);error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,payment_date:dateInput.value,amount_cents:amount,note:''};try{await api(`/api/credits/${encodeURIComponent(creditId)}/payments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await loadAll();const updated=creditById(creditId);$('#credit-edit-payment-list').innerHTML=updated&&updated.payments.length?updated.payments.map(creditPaymentRow).join(''):'<p class="empty">Noch keine Tilgungen vorhanden.</p>';amountInput.value='';dateInput.value=today();toast(amount<0?'Kreditaufstockung wurde gespeichert.':'Tilgung wurde gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
+$('#credit-edit-payment-submit').addEventListener('click',async event=>{const creditId=state.editingCreditId;if(!creditId)return;const area=$('#credit-edit-payment-form'),dateInput=area.querySelector('[name="payment_date"]'),amountInput=area.querySelector('[name="amount"]'),error=$('#credit-edit-payment-error'),button=event.currentTarget;if(!dateInput.value||!amountInput.value){error.textContent='Bitte Datum und Betrag angeben.';error.hidden=false;return}const amount=euroCents(amountInput.value);error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,payment_date:dateInput.value,amount_cents:amount,note:''};try{await api(`/api/credits/${encodeURIComponent(creditId)}/payments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await loadAll();const updated=await api(`/api/credits/${encodeURIComponent(creditId)}?household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(today())}`);state.editingCreditSnapshot=updated;$('#credit-edit-payment-list').innerHTML=(updated.payments||[]).length?updated.payments.map(creditPaymentRow).join(''):'<p class="empty">Noch keine Tilgungen vorhanden.</p>';amountInput.value='';dateInput.value=today();toast(amount<0?'Kreditaufstockung wurde gespeichert.':'Tilgung wurde gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 $('#credit-form').addEventListener('submit',async event=>{if(window.finanzLabCreditSubmitV15)return;event.preventDefault();const form=event.currentTarget.elements,error=$('#credit-error'),button=event.submitter,creditId=state.editingCreditId,current=creditById(creditId),plan={amount_cents:euroCents(form.plan_amount.value),first_due_date:form.plan_first_due.value,occurrence_count:form.plan_count.value,account_id:form.plan_account.value,owner:'A',flow_id:current?.payment_plan?.flow_id,effective_from:form.plan_change_from.value||today()};if(!form.name.value||!form.opening_balance.value){error.textContent="Bitte die Kreditdaten vollständig ausfüllen.";error.hidden=false;selectCreditFormTab("data");return}if(!form.plan_amount.value||!form.plan_first_due.value||!form.plan_count.value||!form.plan_account.value){error.textContent="Bitte die Zahlungsdaten vollständig ausfüllen.";error.hidden=false;selectCreditFormTab("plan");return}error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,name:form.name.value,credit_type:form.credit_type.value,opening_balance_cents:euroCents(form.opening_balance.value),interest_rate:form.interest_rate.value,automatic_interest:form.automatic_interest.checked,note:form.note?.value||'',balloon_payment_cents:euroCents(form.balloon_payment.value||0),payment_plan:plan,...mortgagePayload(form)};try{await api(creditId?`/api/credits/${encodeURIComponent(creditId)}`:'/api/credits',{method:creditId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(creditId){const flowPayload={household_id:state.currentId,kind:'expense',name:payload.name,category:payload.credit_type,amount_cents:plan.amount_cents,recurrence:'monthly',due_date:plan.first_due_date,duration_months:plan.occurrence_count,account_id:plan.account_id,credit_id:creditId,credit_reduction_cents:current?.payment_plan?'':'',owner:'A',active:true,effective_from:form.plan_change_from.value||today()};await api(current?.payment_plan?.flow_id?`/api/cash-flows/${encodeURIComponent(current.payment_plan.flow_id)}`:'/api/cash-flows',{method:current?.payment_plan?.flow_id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(flowPayload)});await api(`/api/credits/${encodeURIComponent(creditId)}/archive`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,archived:form.archived.checked})})}state.creditFilter=creditId&&form.archived.checked?'archive':payload.credit_type;$('#credit-dialog').close();state.editingCreditId=null;await loadAll();toast(creditId&&form.archived.checked?'Kredit wurde gespeichert und archiviert.':'Kredit und Zahlungsplan wurden gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 $('#delete-credit').addEventListener('click',async()=>{const item=creditById(state.editingCreditId);if(!item||!confirm(`„${item.name}“ mit seiner Zahlungshistorie wirklich löschen? Verknüpfte Ausgaben bleiben als normale Ausgaben erhalten.`))return;try{await api(`/api/credits/${encodeURIComponent(item.id)}?household_id=${encodeURIComponent(state.currentId)}`,{method:'DELETE'});$('#credit-dialog').close();state.editingCreditId=null;state.previewCreditIds=state.previewCreditIds.filter(id=>id!==item.id);await loadAll();toast('Kredit wurde gelöscht.')}catch(err){toast(err.message)}});
 $('#credit-payment-form').addEventListener('submit',async event=>{event.preventDefault();if(!state.currentCreditId)return;const form=event.currentTarget.elements,error=$('#credit-payment-error'),button=event.submitter,amount=euroCents(form.amount.value);error.hidden=true;button.disabled=true;const payload={household_id:state.currentId,payment_date:form.payment_date.value,amount_cents:amount,note:form.note?.value||''};try{await api(`/api/credits/${encodeURIComponent(state.currentCreditId)}/payments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await loadAll();await openCreditDetail(state.currentCreditId);toast(amount<0?'Kreditaufstockung wurde gespeichert.':'Tilgung wurde gespeichert.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
@@ -1700,7 +1952,7 @@ $('#delete-transfer').addEventListener('click',async()=>{const item=state.transf
 
 $('#category-form')?.addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,error=$('#category-error'),button=event.submitter;error.hidden=true;button.disabled=true;try{await api('/api/categories',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,kind:form.kind.value,name:form.name.value})});form.name.value='';await loadAll();toast('Art wurde hinzugefügt.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 $('#category-settings-list')?.addEventListener('click',async event=>{const edit=event.target.closest('[data-edit-category]'),del=event.target.closest('[data-delete-category]'),id=edit?.dataset.editCategory||del?.dataset.deleteCategory;if(!id)return;const item=state.categories.find(entry=>entry.id===id);if(!item)return;if(edit){const name=prompt('Bezeichnung der Art:',item.name);if(name===null)return;const active=confirm('OK = aktiv lassen/aktivieren. Abbrechen = deaktivieren.');try{await api(`/api/categories/${encodeURIComponent(id)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,name,active})});await loadAll();toast('Art wurde gespeichert.')}catch(err){toast(err.message)}}else if(del&&confirm(`Eigene Art „${item.name}“ wirklich löschen?`)){try{await api(`/api/categories/${encodeURIComponent(id)}?household_id=${encodeURIComponent(state.currentId)}`,{method:'DELETE'});await loadAll();toast('Art wurde gelöscht.')}catch(err){toast(err.message)}}});
-$('#household-select').addEventListener('change',async event=>{state.currentId=event.target.value;state.dashboardCredits=[];state.previewAccountIds=[];state.previewCreditIds=[];state.outlookAccountIds=[];state.outlookSelectionFor=null;state.outlookAvailableAccountIds=[];state.outlookAvailabilityFor=null;state.outlookManagerOpen=false;state.outlook=null;state.outlookBaseMonth=null;state.incomeFilter='active';state.expenseFilter='active';state.transferFilter='active';state.creditFilter='all';state.diagnostics=null;state.energylab=null;state.settingsLoadedFor=null;await loadAll()});
+$('#household-select').addEventListener('change',async event=>{state.currentId=event.target.value;state.dashboardCredits=[];state.archivedCredits=[];state.previewAccountIds=[];state.previewCreditIds=[];state.outlookAccountIds=[];state.outlookSelectionFor=null;state.outlookAvailableAccountIds=[];state.outlookAvailabilityFor=null;state.outlookManagerOpen=false;state.outlook=null;state.outlookBaseMonth=null;state.incomeFilter='active';state.expenseFilter='active';state.transferFilter='active';state.creditFilter='all';state.diagnostics=null;state.energylab=null;state.energylabStatus=null;state.backups=[];state.settingsLoadedFor=null;if(typeof resetInterestCache==='function')resetInterestCache();await loadAll()});
 $('#delete-household').addEventListener('click',async()=>{const current=state.households.find(h=>h.id===state.currentId);if(!current||!confirm(`Haushalt „${current.name}“ einschließlich aller Daten endgültig löschen?`))return;try{await api(`/api/households/${encodeURIComponent(current.id)}`,{method:'DELETE'});state.households=(await api('/api/households')).items;state.currentId=state.households[0]?.id||null;if(state.currentId)await loadAll();else openSetup(true);toast('Haushalt wurde gelöscht.')}catch(err){toast(err.message)}});
 
 $('#energylab-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,button=event.submitter,status=$('#energylab-status');button.disabled=true;status.hidden=true;try{state.energylab=await api('/api/integrations/energylab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,base_url:form.base_url.value,account_id:form.account_id.value,callback_token:form.callback_token.value,enabled:form.enabled.checked})});renderSettings();toast('EnergyLab-Verbindung wurde gespeichert.')}catch(err){status.textContent=err.message;status.className='notice error';status.hidden=false}finally{button.disabled=false}});
@@ -1965,21 +2217,19 @@ else bindCreditPlanHelper1612();
 function hideLegacyFinancingError1613(){
   const legacy='Monatsrate, Zahlungsanzahl und Schlussrate passen nicht zum Finanzierungspreis.';
   const replacement='Hinweis: Finanzierungspreis und Zahlungsplan werden getrennt behandelt.';
+  const target=document.querySelector('#credit-plan-check');
+  if(!target)return;
 
   const clean=()=>{
-    document.querySelectorAll('*').forEach(el=>{
-      if(el.childElementCount)return;
-      if((el.textContent||'').trim()===legacy){
-        el.textContent=replacement;
-        el.classList.remove('error');
-        el.classList.add('suggestion');
-        el.style.display='none';
-      }
-    });
+    if((target.textContent||'').trim()!==legacy)return;
+    target.textContent=replacement;
+    target.classList.remove('error');
+    target.classList.add('suggestion');
+    target.style.display='none';
   };
 
   const observer=new MutationObserver(()=>clean());
-  observer.observe(document.body,{childList:true,subtree:true,characterData:true});
+  observer.observe(target,{childList:true,subtree:true,characterData:true});
   clean();
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',hideLegacyFinancingError1613);
