@@ -28,8 +28,7 @@ jobs:
           python -m unittest discover -s tests -v
           node --check app/static/app.js
           node --check app/static/credit-archive.js
-          node tests/test_credit_plan_frontend_243.cjs
-          node --test tests/test_startup_v241.cjs
+          node --test tests/*.cjs
       - name: Release-Quellcode archivieren
         run: |
           mkdir -p dist

@@ -1,6 +1,9 @@
 import json
+import os
 import urllib.error
 import urllib.request
+
+from app.infrastructure.repository import APP_VERSION
 
 
 class EnergyLabService:
@@ -8,12 +11,14 @@ class EnergyLabService:
         self.repository = repository
 
     def fetch_payload(self, household_id):
+        if os.getenv('FINANZLAB_TEST_MODE') == '1':
+            raise ValueError('EnergyLab ist im TESTSYSTEM dauerhaft deaktiviert.')
         config = self.repository.energylab_integration(household_id)
         if not config.get("enabled"):
             raise ValueError("Die EnergyLab-Verbindung ist nicht aktiviert.")
         request = urllib.request.Request(
             config["base_url"].rstrip("/") + "/api/personallab",
-            headers={"Accept": "application/json", "User-Agent": "FinanzLab/1.8.1"},
+            headers={"Accept": "application/json", "User-Agent": f"FinanzLab/{APP_VERSION}"},
         )
         try:
             with urllib.request.urlopen(request, timeout=10) as response:

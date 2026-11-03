@@ -679,3 +679,14 @@ main{max-width:1240px;margin:auto;padding:8px 28px 48px;min-height:calc(100vh - 
 .dashboard-month-picker select:focus{
   outline:0;
 }
+
+/* Ein bewusst ausgelassener Termin bleibt nachvollziehbar sichtbar. */
+.movement-row.omitted{opacity:.62}
+.movement-row.omitted>span:nth-child(2) b,
+.movement-row.omitted>strong{text-decoration:line-through}
+.movement-omission{color:var(--red)}
+
+@media(max-width:720px){
+  .movement-actions{grid-column:1/-1;width:100%;justify-items:end}
+  .movement-actions .movement-completion{grid-column:auto}
+}

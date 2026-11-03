@@ -52,3 +52,151 @@
 .history-month{margin-left:12px;border-top:1px solid var(--line)}
 .history-month>summary small{font-weight:400;color:var(--muted)}
 .history-month .history-row:last-child{border-bottom:0}
+/* FinanzLab 2.5.7-testsystem: dauerhafte Testkennzeichnung */
+.finanzlab-test-banner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    width: 100%;
+    padding: 12px 18px;
+    border-radius: 12px;
+    background: #a52a2a;
+    border: 2px solid #802020;
+    color: #fff;
+    text-align: center;
+}
+.finanzlab-test-banner strong {
+    font-size: clamp(24px, 4vw, 36px);
+    font-weight: 900;
+    letter-spacing: .13em;
+    line-height: 1.15;
+}
+.finanzlab-test-banner span {
+    font-size: 12px;
+    font-weight: 650;
+}
+
+
+/* FinanzLab 2.5.7-testsystem: Liquiditätssicherheit und Sondertilgung */
+.repayment-assistant-panel{margin-top:20px}
+.repayment-indicators{display:flex;gap:16px;flex-wrap:wrap;margin:12px 0}
+.repayment-indicators>div{padding:12px 16px;border-radius:10px;background:var(--surface-2,#f1f4f7);min-width:170px;flex:1}
+.repayment-indicators small{display:block;opacity:.76;margin-bottom:4px}
+.repayment-indicators strong{font-size:18px}
+.repayment-warning-list{list-style:none;padding:0;margin:12px 0}
+.repayment-warning-list li{margin:7px 0;padding:10px;border-left:4px solid #b15618;background:rgba(222,147,52,.09);border-radius:5px}
+.repayment-warning-list li.danger{border-color:#a52a2a;background:rgba(210,45,45,.08)}
+.repayment-suggestion{border-top:1px solid var(--line,#ccd3d9);padding:12px 0;display:flex;align-items:flex-start;justify-content:space-between;gap:15px}
+.repayment-suggestion strong{display:block}
+.repayment-suggestion small{display:block;opacity:.7;margin-top:5px}
+.repayment-suggestion>span{text-align:right;white-space:nowrap}
+.repayment-explanation{font-size:13px;opacity:.75;margin-top:10px}
+
+/* 2.5.6-testsystem: anpassbare Warnkonten und Tilgungspuffer */
+.assistant-settings{border:1px solid var(--line,#ddd);border-radius:10px;padding:10px 14px;margin:12px 0}
+.assistant-settings>summary{cursor:pointer;font-weight:650}
+.assistant-settings-body{display:flex;flex-wrap:wrap;gap:18px;margin:14px 0 4px;align-items:flex-start}
+.assistant-settings-body>div{flex:2;min-width:240px}
+.assistant-settings-body>label{flex:1;min-width:210px}
+.assistant-account-options{display:flex;gap:8px 18px;flex-wrap:wrap;margin-top:8px}
+.assistant-account-options label{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-weight:normal}
+.assistant-account-options input{width:auto}
+.assistant-settings select,.assistant-reserve-control select{display:block;padding:8px;margin-top:5px;max-width:100%;background:var(--surface,#fff);color:inherit;border:1px solid #bbb;border-radius:7px}
+.assistant-reserve-control{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0}
+.assistant-reserve-control label{font-weight:600}
+.assistant-reserve-control small{font-size:12px;opacity:.8;flex-basis:100%}
+.repayment-more{margin:12px 0;padding:8px 12px;border:1px solid #ddd;border-radius:8px}
+.repayment-more summary{cursor:pointer;font-weight:600}
+.repayment-warning-summary{font-weight:600;margin:12px 0 4px}
+
+.assistant-prefs-panel .assistant-settings-body{padding:8px 0;border-top:1px solid var(--line,#ddd)}
+.assistant-prefs-panel{grid-column:1 / -1}
+.assistant-prefs-panel input[type="number"]{display:block;width:100%;max-width:250px;padding:10px;border:1px solid #bbb;border-radius:8px;color:inherit;background:var(--surface,#fff)}
+.assistant-prefs-panel .assistant-account-options{display:flex;flex-wrap:wrap;gap:12px 18px;margin:14px 0 4px}
+.assistant-urgent{display:inline-block;margin-left:12px;padding:2px 8px;background:#fbdfaa;color:#763900;border-radius:10px;font-size:11px;font-weight:700}
+.assistant-result-title{font-size:1rem;margin:22px 0 5px}
+.assistant-block-reason{color:var(--danger,#b53b2d)!important;font-weight:650}
+
+
+/* 2.5.6-testsystem – kompakte Finanzassistenz im Dashboard. */
+.repayment-assistant-panel{margin-top:14px;padding-top:20px;padding-bottom:22px}
+.repayment-assistant-panel .section-heading{margin-bottom:8px}
+.repayment-assistant-panel .section-heading h2{font-size:clamp(22px,2.4vw,28px)}
+.repayment-assistant-panel .section-heading .badge{white-space:nowrap}
+.repayment-assistant-panel .hint{margin:4px 0 10px}
+.assistant-mini-summary{font-size:12px;color:var(--muted);font-weight:650;margin:8px 0}
+.assistant-alert{border-left:3px solid var(--amber,#a86c29);border-radius:9px;background:#faf4e9;padding:11px 15px;display:grid;gap:4px}
+.assistant-alert.danger{border-color:var(--red,#b13d34);background:#f9e9e5}
+.assistant-alert.featured{padding:14px 16px}
+.assistant-alert-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:13px}
+.assistant-alert-main{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.assistant-alert-main>span{font-size:13px}
+.assistant-alert-main>strong{font:700 20px Georgia,serif;font-variant-numeric:tabular-nums}
+.assistant-alert p{font-size:12px;margin:0;line-height:1.4}
+.assistant-alert>small{font-size:11px;color:var(--muted);line-height:1.35}
+.assistant-disclosure{margin-top:10px;border:1px solid var(--line,#ded9cf);border-radius:10px;background:transparent}
+.assistant-disclosure>summary{padding:10px 13px;cursor:pointer;list-style-position:inside;font-size:13px;font-weight:700}
+.assistant-disclosure[open]>summary{border-bottom:1px solid var(--line,#ded9cf)}
+.assistant-disclosure-list{display:grid;gap:6px;padding:8px 12px 12px}
+.assistant-disclosure-list .assistant-alert{padding:10px 12px}
+.assistant-quiet{padding:16px 0;color:var(--muted);font-size:13px;line-height:1.5;margin:0}
+.assistant-compact-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0 14px}
+.assistant-mini-metric{background:var(--surface-2,#f0f2f5);padding:13px 15px;border-radius:11px;min-width:0}
+.assistant-mini-metric small{display:block;font-size:12px;color:var(--muted)}
+.assistant-mini-metric strong{display:block;margin-top:5px;font:700 clamp(19px,2.5vw,25px) Georgia,serif;font-variant-numeric:tabular-nums}
+.assistant-mini-metric.good strong{color:var(--green,#27684f)}
+.assistant-featured-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:7px 0 5px}
+.assistant-featured-heading>strong{font-size:14px}
+.assistant-status-pill{font-size:11px;font-weight:750;color:var(--muted);background:#eaece8;border-radius:99px;padding:3px 9px}
+.assistant-status-pill.good{color:var(--green,#27684f);background:#e1efe8}
+.assistant-credit{padding:9px 0;border-bottom:1px solid var(--line,#ded9cf)}
+.assistant-credit.featured{padding:11px 0}
+.assistant-credit-identity{display:flex;align-items:start;justify-content:space-between;gap:12px}
+.assistant-credit-identity>div:first-child{min-width:0}
+.assistant-credit-identity>div:first-child>strong{display:block;font-size:15px;line-height:1.3}
+.assistant-credit-identity>div:first-child>small{display:block;font-size:12px;color:var(--muted);margin-top:5px}
+.assistant-credit-saving{text-align:right;flex-shrink:0}
+.assistant-credit-saving>strong{color:var(--green,#27684f);font:700 19px Georgia,serif;white-space:nowrap}
+.assistant-credit-saving>small{display:block;font-size:11px;color:var(--muted)}
+.assistant-credit-status{margin:10px 0 0;font-size:12px;color:var(--muted);line-height:1.45}
+.assistant-credit-status.safe{color:var(--green,#27684f)}
+.assistant-credit-foot{display:block;font-size:11px;color:var(--muted);margin-top:9px}
+.assistant-muted{font-size:12px;color:var(--muted);margin:11px 0 0}
+.assistant-notes{margin-top:12px}
+.assistant-note-body{padding:0 14px 12px;font-size:12px;line-height:1.5;color:var(--muted)}
+.assistant-note-body p{margin:9px 0 0}
+@media(max-width:620px){
+ .assistant-alert-main{display:block}.assistant-alert-main>strong{display:block;margin-top:3px}
+ .assistant-credit-identity{flex-wrap:wrap}.assistant-credit-saving{text-align:left}
+ .assistant-mini-metric{padding:11px 12px}
+ .assistant-mini-metric strong{font-size:18px}
+}
+
+/* FinanzLab 2.5.6: one repayment tile, overdraft-only warnings on preview. */
+.assistant-single-credit{padding:9px 0 2px}
+.assistant-single-top{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.assistant-single-top>strong{font:700 clamp(20px,2.4vw,25px) Georgia,serif;color:var(--ink)}
+.assistant-single-numbers{display:flex;gap:20px;flex-wrap:wrap}
+.assistant-single-numbers>span{min-width:180px;flex:1;display:grid;gap:5px}
+.assistant-single-numbers small{font-size:12px;color:var(--muted)}
+.assistant-single-numbers b{font:700 20px Georgia,serif}
+.assistant-single-numbers .assistant-saving{color:var(--green,#27684f)}
+.assistant-single-installments{font-size:13px;display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline;margin:14px 0 4px;color:var(--ink)}
+.assistant-single-installments>span{color:var(--muted)}
+.assistant-single-installments>strong{font-weight:700}
+.assistant-single-status{font-size:13px;margin:14px 0 6px;line-height:1.5}
+.assistant-single-foot{font-size:11px;color:var(--muted);display:block}
+#preview-dispo-panel[hidden]{display:none!important}
+.preview-dispo-panel{padding:17px 23px;margin-bottom:14px;border-left:4px solid var(--red,#b13d34)}
+.preview-dispo-panel .section-heading{margin-bottom:10px}
+.preview-dispo-panel .section-heading h2{font-size:clamp(18px,2vw,24px)}
+.preview-dispo-event{display:flex;justify-content:space-between;gap:8px 20px;flex-wrap:wrap;padding:9px 0;border-top:1px solid var(--line,#ded9cf);font-size:13px}
+.preview-dispo-event:first-child{border-top:0}
+.preview-dispo-event>span{color:var(--red,#b13d34)}
+.preview-dispo-event.potential>span{color:var(--amber,#a86c29)}
+@media(max-width:680px){.preview-dispo-event{display:grid;gap:3px}.assistant-single-numbers{display:grid;gap:12px}}
+
+/* Hide the entire optional card when no safely payable loan is available. */
+#dashboard-repayment-panel[hidden] { display: none !important; }

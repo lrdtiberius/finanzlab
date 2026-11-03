@@ -19,16 +19,6 @@ renderCredits=function(){
   $('#credit-list').innerHTML=filtered.length?filtered.map(item=>{const isMortgage=item.credit_type==='mortgage',payoff=isMortgage?(item.fixed_interest_until?`Zinsbindung bis ${dateLabel(item.fixed_interest_until)} · Sondertilgung ${item.special_repayment_percent||0} % p. a.`:'Darlehen ohne hinterlegte Zinsbindung'):Number(item.balloon_payment_cents||0)>0&&item.contractual_end_date?`Ratenplan bis ${dateLabel(item.contractual_end_date)} · vertragliche Restschuld ${eur(item.balloon_payment_cents)}`:item.expected_repayment_date?`Voraussichtlich getilgt ${dateLabel(item.expected_repayment_date)}`:'Voraussichtliche Tilgung noch nicht berechenbar',meta=isMortgage?`Ursprünglich ${eur(item.original_principal_cents)} · Restschuld Stand ${dateLabel(item.balance_as_of)}`:`Ausgang ${eur(item.opening_balance_cents)} · getilgt ${eur(item.paid_cents)}`;return `<article class="credit-row ${item.archived?'inactive':''}" data-open-credit="${escapeHtml(item.id)}"><div><span class="credit-type-badge">${escapeHtml(creditTypeLabels[item.credit_type])}</span><h3>${escapeHtml(item.name)}</h3><small>${meta}${item.archived?` · archiviert${item.archive_reason==='paid'?' (abbezahlt)':' (manuell)'}`:''}<br><b class="credit-payoff-date">${escapeHtml(payoff)}</b></small></div><strong>${eur(item.remaining_balance_cents)}</strong><small>${item.archived?'Saldo bei Archivierung':'offener Saldo'}</small><button class="link-button" type="button" data-edit-credit="${escapeHtml(item.id)}">Bearbeiten</button></article>`}).join(''):`<p class="empty">${state.creditFilter==='archive'?'Noch keine archivierten Kredite vorhanden.':state.creditFilter==='all'?'Noch kein aktiver Kredit angelegt.':`Keine aktiven Kredite der Art „${escapeHtml(activeLabel)}“ vorhanden.`}</p>`;
 };
 
-loadAll=async function(){
-  const query=`household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(today())}`,managementQuery=query;
-  const [dashboardBundle,incomes,expenses,transfers,credits,diagnostics,energylab,energylabStatus,backups,categories]=await Promise.all([forecastDashboard(state.currentId,state.dashboardMonth||monthNow()),api(`/api/cash-flows?${managementQuery}&kind=income`),api(`/api/cash-flows?${managementQuery}&kind=expense`),api(`/api/transfers?household_id=${encodeURIComponent(state.currentId)}`),api(`/api/credits?household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(today())}`),api(`/api/diagnostics?${query}`),api(`/api/integrations/energylab?household_id=${encodeURIComponent(state.currentId)}`),api(`/api/integrations/energylab/status?household_id=${encodeURIComponent(state.currentId)}`),api('/api/backups'),api(`/api/categories?household_id=${encodeURIComponent(state.currentId)}`)]);
-  const [dashboard,dashboardCredits]=dashboardBundle;
-  state.dashboardCredits=dashboardCredits.items||[];
-  state.dashboard=dashboard;state.incomes=incomes.items;state.expenses=expenses.items;state.transfers=transfers.items;state.credits=credits.items||[];state.archivedCredits=credits.archived_items||[];state.diagnostics=diagnostics;state.energylab=energylab;state.energylabStatus=energylabStatus;state.backups=backups.items||[];state.categories=categories.items||[];if(typeof syncCategoryState==='function')syncCategoryState();ensureSelections();renderAll();saveStartupCache();
-  if(location.hash==='#preview')loadPreview();
-  scheduleForecastWarmup();
-};
-
 ensureSelections=function(){
   const ids=state.dashboard.household.accounts.map(account=>account.id),valid=new Set(ids);state.previewAccountIds=state.previewAccountIds.filter(id=>valid.has(id));if(!state.previewAccountIds.length)state.previewAccountIds=[...ids];
   const creditIds=(state.credits||[]).filter(item=>!item.archived&&item.credit_type!=='mortgage').map(credit=>credit.id),validCredits=new Set(creditIds);state.previewCreditIds=state.previewCreditIds.filter(id=>validCredits.has(id));
@@ -50,7 +40,7 @@ renderSettings=function(){
   details.className='notice';
   details.innerHTML=sync.connected?`<b>Synchronisationsstand:</b> ${Number(sync.contract_count||0)} Verträge · ${Number(sync.confirmed_payment_count||0)} bestätigte Ist-Zahlungen · ${Number(sync.pending_review_count||0)} zur Prüfung${latest?`<br><small>Letztes Prüfprotokoll: ${escapeHtml(latest.finished_at)} · ${escapeHtml(latest.status)}</small>`:''}`:'';
   $('#energylab-preview').disabled=!integration.enabled;
-  const backups=state.backups||[],target=$('#backup-list');
+  const backups=(state.backups||[]).slice(0,12),target=$('#backup-list');
   target.innerHTML=backups.length?backups.map(item=>`<article class="diagnostic-row"><i class="severity ${item.available?'warning':'error'}"></i><div><b>${escapeHtml(item.file_name)}</b><small>${escapeHtml(item.reason||'Sicherung')} · ${escapeHtml(item.created_at)} · ${(Number(item.size_bytes||0)/1048576).toFixed(1)} MB${item.restored_at?` · wiederhergestellt ${escapeHtml(item.restored_at)}`:''}</small></div>${item.available?`<button class="link-button" type="button" data-restore-backup="${escapeHtml(item.id)}">Wiederherstellen</button>`:'<span class="badge">Datei fehlt</span>'}</article>`).join(''):'<p class="empty">Noch keine Sicherung vorhanden.</p>';
 };
 
@@ -63,7 +53,7 @@ $('#energylab-preview').addEventListener('click',async event=>{
 
 $('#create-backup').addEventListener('click',async event=>{
   const button=event.currentTarget;button.disabled=true;
-  try{await api('/api/backups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:'manuell über Einstellungen'})});await loadAll();toast('Sicherung wurde erstellt.')}
+  try{await api('/api/backups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:'manuell über Einstellungen'})});await loadSettingsSupplemental(true);toast('Sicherung wurde erstellt.')}
   catch(err){toast(err.message)}finally{button.disabled=false}
 });
 
@@ -79,31 +69,53 @@ state.interest={items:[],bookings:[],totals:{}};
 if(!$('#credit-form').elements.note){const hidden=document.createElement('input');hidden.type='hidden';hidden.name='note';$('#credit-form').append(hidden)}
 if(!$('#credit-payment-form').elements.note){const hidden=document.createElement('input');hidden.type='hidden';hidden.name='note';$('#credit-payment-form').append(hidden)}
 const providerSelectV15=$('#credit-form').elements.provider;if(providerSelectV15&&providerSelectV15.tagName==='SELECT'){const providerInput=document.createElement('input');providerInput.name='provider';providerInput.setAttribute('list','provider-options');providerInput.placeholder='z. B. PayPal';const providerList=document.createElement('datalist');providerList.id='provider-options';['PayPal','Klarna'].forEach(value=>{const option=document.createElement('option');option.value=value;providerList.append(option)});providerSelectV15.replaceWith(providerInput);providerInput.after(providerList)}
-const originalLoadAllV15=loadAll;
 let interestRequestId=0;
-async function loadInterest(){
+let interestLoadedBaseKey=null;
+let interestLoadedRevision=null;
+let interestPending=null;
+function resetInterestCache(){
+  interestRequestId+=1;
+  interestLoadedBaseKey=null;
+  interestLoadedRevision=null;
+  interestPending=null;
+  state.interest={items:[],bookings:[],totals:{}};
+}
+async function loadInterest(force=false){
   if(!state.currentId)return;
-  const householdId=state.currentId,request=++interestRequestId;
+  const householdId=state.currentId;
+  const key=`${householdId}:${today()}`;
+  const revision=forecastCache.revision;
+  if(!force&&interestLoadedBaseKey===key&&state.interest?.as_of&&(interestLoadedRevision===revision||interestLoadedRevision===null)){interestLoadedRevision=revision;renderInterest();return state.interest}
+  if(!force&&interestPending?.key===key&&(interestPending.revision===revision||interestPending.revision===null))return interestPending.promise;
+  const request=++interestRequestId;
   const target=$('#interest-list');
   if(target&&!state.interest?.as_of)target.innerHTML='<p class="empty">Zinsen werden geladen …</p>';
-  try{
-    const result=await api(`/api/interest?household_id=${encodeURIComponent(householdId)}&as_of=${encodeURIComponent(today())}`);
-    if(request!==interestRequestId||householdId!==state.currentId)return;
-    state.interest=result;
-    renderInterest();
-  }catch(error){
-    if(request!==interestRequestId||householdId!==state.currentId)return;
-    // Keine Null-Zinsen vortäuschen, wenn die API nicht erreichbar ist.
-    state.interest=null;
-    $('#interest-summary').innerHTML='';
-    $('#interest-list').innerHTML=`<p class="notice error" role="alert">Zinsen konnten nicht geladen werden: ${escapeHtml(error.message)}</p>`;
-    $('#interest-booking-list').innerHTML='';
-  }
+  const promise=(async()=>{
+    try{
+      const result=await api(`/api/interest?household_id=${encodeURIComponent(householdId)}&as_of=${encodeURIComponent(today())}`);
+      if(request!==interestRequestId||householdId!==state.currentId)return;
+      state.interest=result;
+      interestLoadedBaseKey=key;
+      interestLoadedRevision=forecastCache.revision;
+      renderInterest();
+      return result;
+    }catch(error){
+      if(request!==interestRequestId||householdId!==state.currentId)return;
+      // Keine Null-Zinsen vortäuschen, wenn die API nicht erreichbar ist.
+      interestLoadedBaseKey=null;
+      interestLoadedRevision=null;
+      state.interest=null;
+      $('#interest-summary').innerHTML='';
+      $('#interest-list').innerHTML=`<p class="notice error" role="alert">Zinsen konnten nicht geladen werden: ${escapeHtml(error.message)}</p>`;
+      $('#interest-booking-list').innerHTML='';
+    }
+  })().finally(()=>{if(interestPending?.promise===promise)interestPending=null});
+  interestPending={key,revision,promise};
+  return promise;
 }
-loadAll=async function(){await originalLoadAllV15();await loadInterest()};
 const originalOpenCreditV15=openCredit;
 function syncConsumerFieldsV15(options={}){const form=$('#credit-form').elements,consumer=form.credit_type.value==='consumer_credit',fields=$('#consumer-credit-fields'),label=$('#credit-name-label'),hint=$('#consumer-price-hint'),autofill=options.autofill??!state.editingCreditId;fields.hidden=!consumer;label.firstChild.nodeValue=consumer?'Produkt':'Bezeichnung';if(hint)hint.textContent=state.editingCreditId?'Beim Bearbeiten bleiben alle eingegebenen Vertragswerte unverändert.':'Mindestens zwei Preisangaben genügen; die dritte wird vorgeschlagen.';if(consumer&&autofill){let product=euroCents(form.product_price.value),financing=euroCents(form.financing_price.value),surcharge=euroCents(form.installment_surcharge.value);const count=Number(form.plan_count.value),rate=euroCents(form.plan_amount.value),balloon=euroCents(form.balloon_payment.value||0);if(!financing&&rate&&count){financing=rate*count+balloon;form.financing_price.value=(financing/100).toFixed(2)}if(product&&financing&&!surcharge){surcharge=Math.max(0,financing-product);form.installment_surcharge.value=(surcharge/100).toFixed(2)}else if(product&&surcharge&&!financing){financing=product+surcharge;form.financing_price.value=(financing/100).toFixed(2)}else if(financing&&surcharge&&!product){product=Math.max(0,financing-surcharge);form.product_price.value=(product/100).toFixed(2)}if(!form.opening_balance.value&&(product||financing))form.opening_balance.value=((product||financing)/100).toFixed(2);if(financing&&count>0&&!rate)form.plan_amount.value=(Math.max(0,financing-balloon)/count/100).toFixed(2);if(financing&&rate>0&&!count)form.plan_count.value=String(Math.ceil(Math.max(0,financing-balloon)/rate))}updateCreditPlanCheck()}
-openCredit=async function(item=null){if(item?.id){try{item=await api(`/api/credits/${encodeURIComponent(item.id)}?household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(today())}`)}catch(error){}}originalOpenCreditV15(item);const form=$('#credit-form').elements;form.provider.value=item?.provider||'';form.product_price.value=item?.product_price_cents!=null?(Number(item.product_price_cents)/100).toFixed(2):'';form.financing_price.value=item?.financing_price_cents!=null?(Number(item.financing_price_cents)/100).toFixed(2):'';form.installment_surcharge.value=item?.installment_surcharge_cents!=null?(Number(item.installment_surcharge_cents)/100).toFixed(2):'';syncConsumerFieldsV15();if(item?.calculated_interest_rate!=null&&!form.interest_rate.value){form.interest_rate.placeholder=Number(item.calculated_interest_rate).toFixed(4);form.interest_rate.dataset.calculated=String(item.calculated_interest_rate);$('#credit-interest-hint').textContent=`Vorschlag aus Zahlungsplan: ${Number(item.calculated_interest_rate).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:4})} % p. a.`}};
+openCredit=async function(item=null){if(item?.id){try{item=await api(`/api/credits/${encodeURIComponent(item.id)}?household_id=${encodeURIComponent(state.currentId)}&as_of=${encodeURIComponent(today())}`)}catch(error){toast(`Kreditdetails konnten nicht geladen werden: ${error.message}`);return}}originalOpenCreditV15(item);const form=$('#credit-form').elements;form.free_special_repayment.checked=Boolean(Number(item?.free_special_repayment||0));form.provider.value=item?.provider||'';form.product_price.value=item?.product_price_cents!=null?(Number(item.product_price_cents)/100).toFixed(2):'';form.financing_price.value=item?.financing_price_cents!=null?(Number(item.financing_price_cents)/100).toFixed(2):'';form.installment_surcharge.value=item?.installment_surcharge_cents!=null?(Number(item.installment_surcharge_cents)/100).toFixed(2):'';syncConsumerFieldsV15();if(item?.calculated_interest_rate!=null&&!form.interest_rate.value){form.interest_rate.placeholder=Number(item.calculated_interest_rate).toFixed(4);form.interest_rate.dataset.calculated=String(item.calculated_interest_rate);$('#credit-interest-hint').textContent=`Vorschlag aus Zahlungsplan: ${Number(item.calculated_interest_rate).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:4})} % p. a.`}};
 $('#credit-form').elements.credit_type.addEventListener('change',syncConsumerFieldsV15);
 ['product_price','financing_price','installment_surcharge'].forEach(name=>$('#credit-form').elements[name].addEventListener('input',syncConsumerFieldsV15));
 ['plan_amount','plan_count'].forEach(name=>$('#credit-form').elements[name].addEventListener('input',syncConsumerFieldsV15));
@@ -119,4 +131,4 @@ renderAll=function(){originalRenderAllV15();renderInterest();document.querySelec
 setTimeout(()=>{if(location.hash.replace('#','')==='interest')showView('interest')},0);
 
 // Replace the original save handler so product/provider fields are persisted too.
-$('#credit-form').addEventListener('submit',async event=>{event.preventDefault();event.stopImmediatePropagation();const form=event.currentTarget.elements,error=$('#credit-error'),button=event.submitter,creditId=state.editingCreditId,current=creditById(creditId);syncConsumerFieldsV15({autofill:false});const plan={amount_cents:euroCents(form.plan_amount.value),first_due_date:form.plan_first_due.value,occurrence_count:form.plan_count.value,account_id:form.plan_account.value,owner:'A',flow_id:current?.payment_plan?.flow_id,effective_from:form.plan_change_from.value||today()};if(!form.name.value||!form.opening_balance.value){error.textContent='Bitte die Kreditdaten vollständig ausfüllen.';error.hidden=false;selectCreditFormTab('data');return}if(!form.plan_amount.value||!form.plan_first_due.value||!form.plan_count.value||!form.plan_account.value){error.textContent='Bitte die Zahlungsdaten vollständig ausfüllen.';error.hidden=false;selectCreditFormTab('plan');return}button.disabled=true;error.hidden=true;const payload={household_id:state.currentId,name:form.name.value,credit_type:form.credit_type.value,opening_balance_cents:euroCents(form.opening_balance.value),interest_rate:form.interest_rate.value,automatic_interest:form.automatic_interest.checked,balloon_payment_cents:euroCents(form.balloon_payment.value||0),provider:form.provider.value,product_price_cents:euroCents(form.product_price.value||0)||null,financing_price_cents:euroCents(form.financing_price.value||0)||null,installment_surcharge_cents:euroCents(form.installment_surcharge.value||0)||null,payment_plan:plan,...(typeof mortgagePayload==='function'?mortgagePayload(form):{})};try{const saved=await api(creditId?`/api/credits/${encodeURIComponent(creditId)}`:'/api/credits',{method:creditId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(Number(saved?.payment_plan?.occurrence_count)!==Number(plan.occurrence_count))throw new Error(`Die Zahlungsanzahl wurde nicht übernommen (erwartet: ${plan.occurrence_count}, gespeichert: ${saved?.payment_plan?.occurrence_count??'–'}).`);if(creditId)await api(`/api/credits/${encodeURIComponent(creditId)}/archive`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,archived:form.archived.checked})});state.creditFilter=creditId&&form.archived.checked?'archive':payload.credit_type;$('#credit-dialog').close();state.editingCreditId=null;await loadAll();toast(`Kredit und ${plan.occurrence_count} Zahlungen wurden gespeichert.`)}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}},true);
+$('#credit-form').addEventListener('submit',async event=>{event.preventDefault();event.stopImmediatePropagation();const form=event.currentTarget.elements,error=$('#credit-error'),button=event.submitter,creditId=state.editingCreditId,current=creditById(creditId);syncConsumerFieldsV15({autofill:false});const plan={amount_cents:euroCents(form.plan_amount.value),first_due_date:form.plan_first_due.value,occurrence_count:form.plan_count.value,account_id:form.plan_account.value,owner:'A',flow_id:current?.payment_plan?.flow_id,effective_from:form.plan_change_from.value||today()};if(!form.name.value||!form.opening_balance.value){error.textContent='Bitte die Kreditdaten vollständig ausfüllen.';error.hidden=false;selectCreditFormTab('data');return}if(!form.plan_amount.value||!form.plan_first_due.value||!form.plan_count.value||!form.plan_account.value){error.textContent='Bitte die Zahlungsdaten vollständig ausfüllen.';error.hidden=false;selectCreditFormTab('plan');return}button.disabled=true;error.hidden=true;const payload={household_id:state.currentId,name:form.name.value,credit_type:form.credit_type.value,opening_balance_cents:euroCents(form.opening_balance.value),interest_rate:form.interest_rate.value,automatic_interest:form.automatic_interest.checked,free_special_repayment:form.free_special_repayment.checked,balloon_payment_cents:euroCents(form.balloon_payment.value||0),provider:form.provider.value,product_price_cents:euroCents(form.product_price.value||0)||null,financing_price_cents:euroCents(form.financing_price.value||0)||null,installment_surcharge_cents:euroCents(form.installment_surcharge.value||0)||null,payment_plan:plan,...(typeof mortgagePayload==='function'?mortgagePayload(form):{})};try{const saved=await api(creditId?`/api/credits/${encodeURIComponent(creditId)}`:'/api/credits',{method:creditId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(Number(saved?.payment_plan?.occurrence_count)!==Number(plan.occurrence_count))throw new Error(`Die Zahlungsanzahl wurde nicht übernommen (erwartet: ${plan.occurrence_count}, gespeichert: ${saved?.payment_plan?.occurrence_count??'–'}).`);if(creditId)await api(`/api/credits/${encodeURIComponent(creditId)}/archive`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,archived:form.archived.checked})});state.creditFilter=creditId&&form.archived.checked?'archive':payload.credit_type;$('#credit-dialog').close();state.editingCreditId=null;await loadAll();toast(`Kredit und ${plan.occurrence_count} Zahlungen wurden gespeichert.`)}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}},true);

@@ -1,3 +1,4 @@
+import gzip
 import json
 import mimetypes
 import os
@@ -10,8 +11,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from app.application.excel_export import build_forecast_workbook
+from app.application.repayment_assistant import build_dashboard_assistant
 from app.application.energylab_service import EnergyLabService
-from app.infrastructure.repository import Repository
+from app.infrastructure.repository import APP_VERSION, Repository
 
 ROOT = Path(__file__).resolve().parent
 REPOSITORY = None
@@ -19,14 +21,25 @@ ENERGYLAB = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FinanzLab/2.4.4"
+    server_version = f"FinanzLab/{APP_VERSION}"
+    protocol_version = "HTTP/1.1"
+
+    def encoded_body(self, body, compressible=True):
+        accepted = self.headers.get("Accept-Encoding", "").lower()
+        if compressible and len(body) >= 1024 and "gzip" in accepted:
+            return gzip.compress(body, compresslevel=6), "gzip"
+        return body, None
 
     def json_response(self, data, status=HTTPStatus.OK):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        body, encoding = self.encoded_body(body)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Vary", "Accept-Encoding")
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
         self.end_headers()
         self.wfile.write(body)
 
@@ -50,12 +63,22 @@ class Handler(BaseHTTPRequestHandler):
         path, query = parsed.path, parse_qs(parsed.query)
         try:
             if path == "/health":
-                return self.json_response({"status": "ok", "version": "2.4.4"})
+                return self.json_response({"status": "ok", "version": APP_VERSION})
+            if path == "/api/forecast-revision":
+                hid = (query.get("household_id") or [""])[0]
+                return self.json_response(REPOSITORY.forecast_revision(hid))
             if path == "/api/households":
                 return self.json_response({"items": REPOSITORY.list_households()})
             if path == "/api/categories":
                 hid = (query.get("household_id") or [""])[0]
                 return self.json_response(REPOSITORY.list_categories(hid))
+            if path == "/api/dashboard/assistant":
+                hid = (query.get("household_id") or [""])[0]
+                month = (query.get("month") or [None])[0]
+                return self.json_response(build_dashboard_assistant(
+                    REPOSITORY, hid, month,
+                    reserve_cents=(query.get('reserve_cents') or ['10000'])[0],
+                    large_debit_cents=(query.get('large_debit_cents') or ['40000'])[0]))
             if path == "/api/dashboard":
                 hid = (query.get("household_id") or [""])[0]
                 as_of = (query.get("as_of") or [None])[0]
@@ -162,9 +185,38 @@ class Handler(BaseHTTPRequestHandler):
             if file_path.is_file() and static_root in file_path.parents:
                 data = file_path.read_bytes()
                 mime = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+                if file_path.name == "index.html":
+                    test_mode = os.getenv("FINANZLAB_TEST_MODE") == "1"
+                    banner = (
+                        '<div class="finanzlab-test-banner" role="status">'
+                        '<strong>TESTSYSTEM</strong>'
+                        f'<span>Version {APP_VERSION} · Änderungen nur in der Testumgebung</span>'
+                        '</div>'
+                        if test_mode else ""
+                    )
+                    data = data.decode("utf-8").replace(
+                        "{{ENV_TITLE_PREFIX}}", "TESTSYSTEM | " if test_mode else ""
+                    ).replace(
+                        "{{TEST_BANNER}}", banner
+                    ).replace(
+                        "{{APP_VERSION}}", APP_VERSION
+                    ).encode("utf-8")
+                compressible = mime.startswith("text/") or mime in (
+                    "application/javascript", "application/json",
+                    "application/manifest+json",
+                )
+                data, encoding = self.encoded_body(data, compressible)
                 self.send_response(200)
                 self.send_header("Content-Type", f"{mime}; charset=utf-8" if mime.startswith(("text/", "application/javascript")) else mime)
-                self.send_header("Cache-Control", "no-store")
+                self.send_header(
+                    "Cache-Control",
+                    "public, max-age=31536000, immutable"
+                    if "v" in query else "no-cache",
+                )
+                if compressible:
+                    self.send_header("Vary", "Accept-Encoding")
+                if encoding:
+                    self.send_header("Content-Encoding", encoding)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 return self.wfile.write(data)
@@ -256,6 +308,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/movement-completion":
                 return self.json_response(REPOSITORY.set_movement_completion(self.read_json()))
+            if path == "/api/movement-omission":
+                return self.json_response(REPOSITORY.set_movement_omission(self.read_json()))
             if path == "/api/movement-amount":
                 return self.json_response(REPOSITORY.set_movement_amount(self.read_json()))
             if path.startswith("/api/integrations/energylab/flows/") and path.endswith("/account"):
@@ -375,6 +429,13 @@ def run(port=8798):
     global REPOSITORY, ENERGYLAB
     REPOSITORY = Repository()
     ENERGYLAB = EnergyLabService(REPOSITORY)
-    threading.Thread(target=energylab_scheduler, daemon=True, name="energylab-sync").start()
+    if os.getenv('FINANZLAB_TEST_MODE') == '1':
+        # Fail-safe: copy may originate from production with EnergyLab enabled.
+        # No automatic network sync may run in this image.
+        with REPOSITORY.lock, REPOSITORY.connect() as con:
+            con.execute("""UPDATE energylab_integrations
+                SET enabled=0, base_url='http://127.0.0.1:9', callback_token=''""")
+    else:
+        threading.Thread(target=energylab_scheduler, daemon=True, name="energylab-sync").start()
     print(f"Haushaltsplaner läuft auf http://0.0.0.0:{port}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

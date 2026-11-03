@@ -1,4 +1,12 @@
-## Upgrade-Hinweise für FinanzLab 2.4.4
+## Upgrade-Hinweise für FinanzLab 2.6.3
+
+Vor dem Update eine **konsistente SQLite-Sicherung** erstellen und zusätzlich außerhalb des laufenden Volumes verwahren. Beim Upgrade in Portainer oder Docker Compose dasselbe `/data`-Volume und dieselben Zugriffsrechte beibehalten; alte und neue Version dürfen nicht gleichzeitig auf dieselbe Datenbank zugreifen.
+
+FinanzLab legt beim Versionswechsel weiterhin automatisch eine interne Sicherung an. Ab 2.6.3 werden im internen Sicherungsordner höchstens zwölf Sicherungen aufbewahrt. Diese Aufbewahrung ersetzt kein externes Volume-Backup.
+
+Nach dem Update im Fußbereich **Version 2.6.3**, den Health-Status sowie Dashboard und Monatsvorschau kontrollieren. Änderungen an **Vorgang erledigt**, **Betrag ändern** und **Entfällt** müssen die sichtbaren Werte unmittelbar aktualisieren.
+
+## Historische Upgrade-Hinweise für FinanzLab 2.4.4
 
 Vor dem Update eine **konsistente SQLite-Sicherung mit der SQLite-Backup-API** erstellen und außerhalb des laufenden Volumes verwahren. Beim Upgrade in Portainer **dasselbe** `/data`-Volume verwenden; keine zweite Anwendung gleichzeitig auf dieselbe Datenbank zugreifen lassen. Die öffentliche `Dockerfile` baut vollständig aus dem Quellcode auf `python:3.13-slim`; sie benötigt **kein** lokal vorgebautes FinanzLab-Image. Das Release-Image kann mit Portainer oder Docker Compose eingebunden werden.
 
@@ -8,13 +16,13 @@ Einmalzahlungen und vorhandene Teiltilgungen nicht erneut erfassen. Bereits exis
 
 Vor einem Upgrade eine **konsistente** SQLite-Sicherung anlegen (SQLite-Backup-API) und außerhalb des Docker-Volumes aufbewahren. 2.4.0 führt beim ersten Start bei Bedarf eine Datenbankmigration für die flexible Personenverwaltung durch. Beim Wechsel in Portainer oder Docker Compose muss **derselbe** `/data`-Mount erhalten bleiben. Alte und neue Anwendung nicht gleichzeitig gegen dieselbe Datenbank betreiben. Ein Downgrade auf 2.3.0 erfordert gegebenenfalls die vor der Migration erstellte Sicherung.
 
-Das öffentliche Image `finanzlab:2.4.0` steht nach lokalem Build (`docker compose build`) oder nach Erstellung eines entsprechenden GitHub-Releases zur Verfügung. Das **Quellcode-ZIP** ist kein mit Portainer → Images → Import ladbares Docker-Image.
+Das damalige öffentliche Image `finanzlab:2.4.0` stand nach lokalem Build (`docker compose build`) oder nach Erstellung eines entsprechenden GitHub-Releases zur Verfügung. Das **Quellcode-ZIP** ist kein mit Portainer → Images → Import ladbares Docker-Image.
 
 # Installation und Ersteinrichtung
 
 Diese Anleitung beschreibt die vollständige Installation und Ersteinrichtung des **Haushaltsplaners / FinanzLab**.
 
-Gültig für Version **2.4.0**.
+Gültig für Version **2.6.3**.
 
 Die Anwendung ist für den lokalen Betrieb vorgesehen und speichert ihre Daten ausschließlich lokal in einer SQLite-Datenbank im Docker-Volume beziehungsweise unter dem konfigurierten `DATA_DIR`.
 
@@ -235,7 +243,7 @@ finanzlab-image-v<VERSION>-amd64.tar.gz
 Beispiel:
 
 ```text
-finanzlab-image-v2.4.0-amd64.tar.gz
+finanzlab-image-v2.6.3-amd64.tar.gz
 ```
 
 Dieses Image wurde mit `docker save` erzeugt und anschließend komprimiert.
@@ -244,23 +252,23 @@ Dieses Image wurde mit `docker save` erzeugt und anschließend komprimiert.
 
 Auf der GitHub-Seite [Releases](https://github.com/lrdtiberius/finanzlab/releases/latest) den gewünschten Release öffnen und das Docker-Image herunterladen.
 
-Für Version 2.4.0 werden für die Portainer-Installation diese Dateien angeboten:
+Für Version 2.6.3 werden für die Portainer-Installation diese Dateien angeboten:
 
 ```text
-finanzlab-image-v2.4.0-amd64.tar.gz
-finanzlab-image-v2.4.0-amd64.tar.gz.sha256
+finanzlab-image-v2.6.3-amd64.tar.gz
+finanzlab-image-v2.6.3-amd64.tar.gz.sha256
 ```
 
-Die Datei `finanzlab-v2.4.0.tar.gz` enthält dagegen den Quellcode und ist **kein importierbares Docker-Image**.
+Die Datei `finanzlab-v2.6.3.tar.gz` enthält dagegen den Quellcode und ist **kein importierbares Docker-Image**.
 
 Optional kann die Prüfsumme vor dem Import kontrolliert werden:
 
 ```bash
 # Linux
-sha256sum finanzlab-image-v2.4.0-amd64.tar.gz
+sha256sum finanzlab-image-v2.6.3-amd64.tar.gz
 
 # macOS
-shasum -a 256 finanzlab-image-v2.4.0-amd64.tar.gz
+shasum -a 256 finanzlab-image-v2.6.3-amd64.tar.gz
 ```
 
 Der ausgegebene Wert muss mit dem Wert in der heruntergeladenen `.sha256`-Datei übereinstimmen.
@@ -272,13 +280,13 @@ Einige Portainer-Versionen akzeptieren die komprimierte `.tar.gz`-Datei direkt. 
 Linux/macOS:
 
 ```bash
-gunzip finanzlab-image-v2.4.0-amd64.tar.gz
+gunzip finanzlab-image-v2.6.3-amd64.tar.gz
 ```
 
 Danach liegt vor:
 
 ```text
-finanzlab-image-v2.4.0-amd64.tar
+finanzlab-image-v2.6.3-amd64.tar
 ```
 
 #### Schritt 3: Image in Portainer importieren
@@ -289,20 +297,20 @@ In Portainer:
 2. **Import** wählen.
 3. die Image-TAR auswählen.
 4. Import starten.
-5. anschließend kontrollieren, ob `finanzlab:2.4.0` in der Image-Liste vorhanden ist.
+5. anschließend kontrollieren, ob `finanzlab:2.6.3` in der Image-Liste vorhanden ist.
 
 > **Nicht verwechseln:** Ein Docker-Image-TAR gehört zu **Images → Import**. Ein Quell-/Build-TAR mit Dockerfile gehört dagegen zu **Images → Build image → Upload**.
 
-Die Seite **Build a new image** darf für `finanzlab-image-v2.4.0-amd64.tar` nicht verwendet werden. Dort sucht Portainer nach einem Dockerfile und meldet deshalb bei einer Image-TAR `Cannot locate Dockerfile`.
+Die Seite **Build a new image** darf für `finanzlab-image-v2.6.3-amd64.tar` nicht verwendet werden. Dort sucht Portainer nach einem Dockerfile und meldet deshalb bei einer Image-TAR `Cannot locate Dockerfile`.
 
 ### 5.2 Portainer-Stack für ein bereits vorhandenes Image
 
-Nachdem das Image `finanzlab:2.4.0` vorhanden ist, kann die fertige Datei **[`portainer-stack.yaml`](portainer-stack.yaml)** verwendet werden. Sie enthält folgenden Stack:
+Nachdem das Image `finanzlab:2.6.3` vorhanden ist, kann die fertige Datei **[`portainer-stack.yaml`](portainer-stack.yaml)** verwendet werden. Sie enthält folgenden Stack:
 
 ```yaml
 services:
   haushaltsplaner:
-    image: finanzlab:2.4.0
+    image: finanzlab:2.6.3
     container_name: finanzlab
     ports:
       - "8798:8798"
@@ -366,7 +374,7 @@ app/
 Beim Build:
 
 ```text
-Name: finanzlab:2.4.0
+Name: finanzlab:2.6.3
 Dockerfile path: Dockerfile
 ```
 
@@ -381,7 +389,7 @@ Nach erfolgreichem Build kann derselbe Stack aus Abschnitt 5.2 verwendet werden.
 Wer das Image ohne Docker Compose erzeugen möchte, kann direkt im geklonten Repository bauen.
 
 ```bash
-docker build -t finanzlab:2.4.0 .
+docker build -t finanzlab:2.6.3 .
 ```
 
 Danach kann ein Container manuell gestartet werden:
@@ -396,7 +404,7 @@ docker run -d \
   -e DATA_DIR=/data \
   -e PORT=8798 \
   -v finanzlab_data:/data \
-  finanzlab:2.4.0
+  finanzlab:2.6.3
 ```
 
 Status prüfen:
@@ -676,7 +684,7 @@ Das vorhandene Volume `finanzlab_data` wird erneut eingebunden. Die Nutzdaten bl
 ### 11.2 Portainer mit neuem fertigem Image
 
 1. neues Image importieren,
-2. prüfen, ob das neue Tag vorhanden ist, zum Beispiel `finanzlab:2.4.0`,
+2. prüfen, ob das neue Tag vorhanden ist, zum Beispiel `finanzlab:2.6.3`,
 3. den **bestehenden Stack unter demselben Namen** öffnen,
 4. im Stack die `image:`-Zeile auf die neue Version ändern,
 5. bei einem lokal importierten Image eine Portainer-Option zum erneuten Abrufen des Images nicht aktivieren,
@@ -873,7 +881,7 @@ Bei einem selbst gebauten Image sicherstellen, dass wirklich das neue Tag verwen
 Beispiel:
 
 ```text
-finanzlab:2.4.0
+finanzlab:2.6.3
 ```
 
 In Portainer anschließend den Stack ausdrücklich neu deployen. Nur das Erstellen eines neuen Images ersetzt keinen bereits laufenden Container automatisch.
@@ -933,7 +941,7 @@ Danach sind die Daten aus `finanzlab_data` gelöscht.
 Optional kann das Image entfernt werden:
 
 ```bash
-docker image rm finanzlab:2.4.0
+docker image rm finanzlab:2.6.3
 ```
 
 ### Portainer
