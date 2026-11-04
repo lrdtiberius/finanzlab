@@ -1,6 +1,6 @@
 services:
   haushaltsplaner:
-    image: finanzlab:2.6.3
+    image: finanzlab:2.6.4
     container_name: finanzlab
     ports:
       - "8798:8798"

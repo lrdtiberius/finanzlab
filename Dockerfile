@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     FINANZLAB_TEST_MODE=0
 
 LABEL org.opencontainers.image.title="FinanzLab" \
-      org.opencontainers.image.version="2.6.3" \
+      org.opencontainers.image.version="2.6.4" \
       org.opencontainers.image.description="Optimiertes gemeinsames Produktiv- und Test-Image"
 
 RUN groupadd --system --gid 10001 appuser && \

@@ -1,4 +1,4 @@
-# FinanzLab 2.6.3
+# FinanzLab 2.6.4
 
 **FinanzLab** ist eine selbstgehostete Anwendung zur tagesgenauen Haushalts- und Liquiditätsplanung mit SQLite. Konten, Einnahmen, Ausgaben, Kredite und Umbuchungen werden historisiert und für die Vorschau und den Excel-Export ausgewertet.
 
@@ -8,6 +8,7 @@
 
 ## Was ist neu?
 
+- **2.6.4:** Im grünen Dashboard-Kopf können bis zu vier ausgewählte Bankkonten mit ihrem bis heute berechneten Kontostand angezeigt werden. Die haushaltsbezogene Auswahl steht direkt unter dem weiterhin obersten Excel-Export in den Einstellungen.
 - **2.6.3:** Kompaktere Einstellungen mit Finanzassistent über die ganze Breite, Haushalt und Personen nebeneinander sowie einer auf die zwölf neuesten oder zuletzt wiederhergestellten Datenbanksicherungen begrenzten 3×4-Ansicht.
 - **2.6.2:** Einzelne Vorschau-Vorgänge können als **Entfällt** markiert werden. Sie bleiben sichtbar, werden aber aus Kontostand, Einnahmen/Ausgaben, Operativ frei und Liquiditätsänderung herausgerechnet.
 - **2.6.1:** Änderungen an **Vorgang erledigt** und **Betrag ändern** aktualisieren Dashboard und bereits geöffnete Monatsvorschau unmittelbar.
@@ -19,7 +20,7 @@
 
 ## Funktionen
 
-- Kontostands- und Liquiditätsvorschau sowie sechsmonatige Kontostandsübersicht
+- Auswählbare heutige Kontostände im Dashboard-Kopf, Kontostands- und Liquiditätsvorschau sowie sechsmonatige Kontostandsübersicht
 - Finanzassistent für Dispowarnungen und Sondertilgungsvorschläge
 - Berechnungen für zwölf Monate vorbereitet; darüber hinaus auf Abruf
 - Historisierte Kontostände, Einnahmen, Ausgaben und Umbuchungen
@@ -37,7 +38,7 @@ docker compose up --build -d
 
 Lokal ist die Anwendung unter `http://localhost:8798` erreichbar. Das Datenverzeichnis `/data` muss persistent sein. **Für bestehende Installationen vor jedem Update ein konsistentes SQLite-Backup anlegen und das bisherige Datenvolume beibehalten.** Keine alte und neue FinanzLab-Version gleichzeitig auf derselben Datenbank betreiben.
 
-Siehe [Installationsanleitung](INSTALLATION.md), [Portainer-Stack](portainer-stack.yaml), [Benutzerhandbuch](HANDBUCH.md), [Neuerungen 2.6.0–2.6.3](docs/NEUERUNGEN_2.6.0_BIS_2.6.3.md), [Ergänzungen 2.4.2–2.4.4](docs/NEUERUNGEN_2.4.2_BIS_2.4.4.md), [technische Dokumentation (Basisstand 2.3.0)](docs/TECHNISCHE_DOKUMENTATION.md) und [Changelog](CHANGELOG.md).
+Siehe [Installationsanleitung](INSTALLATION.md), [Portainer-Stack](portainer-stack.yaml), [Benutzerhandbuch](HANDBUCH.md), [Neuerungen 2.6.4](docs/NEUERUNGEN_2.6.4.md), [Neuerungen 2.6.0–2.6.3](docs/NEUERUNGEN_2.6.0_BIS_2.6.3.md), [Ergänzungen 2.4.2–2.4.4](docs/NEUERUNGEN_2.4.2_BIS_2.4.4.md), [technische Dokumentation (Basisstand 2.3.0)](docs/TECHNISCHE_DOKUMENTATION.md) und [Changelog](CHANGELOG.md).
 
 ## Tests
 

@@ -1,4 +1,8 @@
-## Ergänzung: FinanzLab 2.6.3
+## Ergänzung: FinanzLab 2.6.4
+
+Im grünen Dashboard-Kopf können bis zu vier normale Bankkonten mit ihrem bis heute berechneten Kontostand angezeigt werden. Die Auswahl steht in den **Einstellungen** direkt unter dem weiterhin obersten **Excel-Export** und gilt je Haushalt im verwendeten Browser. Details stehen in [Neuerungen 2.6.4](docs/NEUERUNGEN_2.6.4.md).
+
+## Frühere Ergänzung: FinanzLab 2.6.3
 
 Die Änderungen von 2.6.0 bis 2.6.3 sind in [Neuerungen 2.6.0–2.6.3](docs/NEUERUNGEN_2.6.0_BIS_2.6.3.md) zusammengefasst. Vorschau-Vorgänge werden nach Änderungen unmittelbar neu berechnet und können mit **Entfällt** vollständig aus Kontostand, Monatswerten, **Operativ frei** und **Liquiditätsänderung** herausgenommen werden. Die Einstellungen sind kompakter angeordnet; FinanzLab bewahrt höchstens zwölf interne Datenbanksicherungen auf.
 
@@ -8,7 +12,7 @@ Die aktuellen Regeln für „Geliehen“, Einzelraten, Zinsanzeige und Prognosec
 
 # Handbuch zum Haushaltsplaner
 
-Gültig für Version **2.6.3**
+Gültig für Version **2.6.4**
 
 Der Haushaltsplaner ist eine lokal betriebene Webanwendung für die tagesgenaue Liquiditätsplanung. Er verbindet historisierte Kontostände mit geplanten Einnahmen, Ausgaben und Umbuchungen. Zusätzlich verwaltet er Kredite mit eigener Zahlungshistorie. Daraus entstehen Tages- und Monatsvorschauen für Konten sowie eine davon getrennte Kreditsimulation.
 
@@ -82,13 +86,13 @@ Für eine Portainer-Installation wird das fertig gebaute Docker-Image aus dem Gi
 
 Vorgehen:
 
-1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v2.6.3-amd64.tar.gz` importieren,
+1. unter **Images → Import** das GitHub-Release-Archiv `finanzlab-image-v2.6.4-amd64.tar.gz` importieren,
 2. unter **Stacks → Add stack** einen Stack mit dem Inhalt aus [`portainer-stack.yaml`](portainer-stack.yaml) anlegen,
 3. den Stack bereitstellen,
 4. den Zustand des Containers `finanzlab` kontrollieren,
 5. Port `8798` im Browser öffnen.
 
-Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:2.6.3` für `linux/amd64`. Das Quellarchiv `finanzlab-v2.6.3.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
+Die Image-TAR enthält das direkt ladbare Docker-Image `finanzlab:2.6.4` für `linux/amd64`. Das Quellarchiv `finanzlab-v2.6.4.tar.gz` ist kein Docker-Image und darf nicht unter **Images → Import** verwendet werden. Ebenso darf das Image nicht auf der Portainer-Seite **Build a new image** hochgeladen werden.
 
 Das Volume wird im Container unter `/data` eingebunden. Dort liegt insbesondere die Datenbankdatei `planner.db`.
 
@@ -582,7 +586,7 @@ docker compose up --build -d
 
 Die Anwendung führt notwendige Schemaanpassungen beim Start aus. Das persistente Daten-Volume darf beim Update nicht gelöscht werden.
 
-Bei Portainer wird das neue Image zuerst unter **Images → Import** eingespielt. Anschließend im bestehenden Stack die Zeile `image: finanzlab:2.6.3` setzen und den Stack neu bereitstellen. Der bestehende Stackname und das Volume müssen erhalten bleiben. Eine ausführliche Schrittfolge einschließlich Sicherung und Wiederherstellung steht in [INSTALLATION.md](INSTALLATION.md#11-aktualisieren-auf-eine-neue-version).
+Bei Portainer wird das neue Image zuerst unter **Images → Import** eingespielt. Anschließend im bestehenden Stack die Zeile `image: finanzlab:2.6.4` setzen und den Stack neu bereitstellen. Der bestehende Stackname und das Volume müssen erhalten bleiben. Eine ausführliche Schrittfolge einschließlich Sicherung und Wiederherstellung steht in [INSTALLATION.md](INSTALLATION.md#11-aktualisieren-auf-eine-neue-version).
 
 ## 17. Fehlerbehebung
 

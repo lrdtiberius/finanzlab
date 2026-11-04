@@ -1,6 +1,6 @@
 const $=selector=>document.querySelector(selector);
 const $$=selector=>[...document.querySelectorAll(selector)];
-const state={assistant:null,assistantError:null,households:[],currentId:null,asOf:null,dashboard:null,incomes:[],expenses:[],transfers:[],credits:[],archivedCredits:[],dashboardCredits:[],energylab:null,energylabStatus:null,backups:[],incomeFilter:'active',expenseFilter:'active',dashboardExpenseCategory:'all',dashboardMonth:null,transferFilter:'active',creditFilter:'all',diagnostics:null,settingsLoadedFor:null,settingsLoading:false,preview:null,previewMonth:null,previewAccountIds:[],previewCreditIds:[],previewSelectedDay:null,editingFlowId:null,editingFlowKind:null,editingIncomeChangeId:null,editingEnergyFlowId:null,editingAccountId:null,editingAccountHistory:[],editingTransferId:null,editingCreditId:null,currentCreditId:null,categories:[],outlook:null,outlookBaseMonth:null,outlookRequest:0,outlookAccountIds:[],outlookSelectionFor:null,outlookLoadingKey:null,outlookAvailableAccountIds:[],outlookAvailabilityFor:null,outlookManagerOpen:false};
+const state={assistant:null,assistantError:null,households:[],currentId:null,asOf:null,dashboard:null,incomes:[],expenses:[],transfers:[],credits:[],archivedCredits:[],dashboardCredits:[],energylab:null,energylabStatus:null,backups:[],incomeFilter:'active',expenseFilter:'active',dashboardExpenseCategory:'all',dashboardMonth:null,transferFilter:'active',creditFilter:'all',diagnostics:null,settingsLoadedFor:null,settingsLoading:false,preview:null,previewMonth:null,previewAccountIds:[],previewCreditIds:[],previewSelectedDay:null,editingFlowId:null,editingFlowKind:null,editingIncomeChangeId:null,editingEnergyFlowId:null,editingAccountId:null,editingAccountHistory:[],editingTransferId:null,editingCreditId:null,currentCreditId:null,categories:[],outlook:null,outlookBaseMonth:null,outlookRequest:0,outlookAccountIds:[],outlookSelectionFor:null,outlookLoadingKey:null,outlookAvailableAccountIds:[],outlookAvailabilityFor:null,outlookManagerOpen:false,todayBalances:null,todayBalanceAccountIds:[],todayBalanceSelectionFor:null,todayBalancesRequest:0,todayBalancesLoadingKey:null,todayBalancesError:null};
 const recurrenceLabels={weekly:'wöchentlich',monthly:'monatlich',quarterly:'vierteljährlich',semiannual:'halbjährlich',yearly:'jährlich',once:'einmalig'};
 const categoryLabels={salary:'Gehalt',pension:'Rente',benefit:'Leistung',family:'Familie',other_income:'Sonstige Einnahme',housing:'Wohnen',energy:'Energie',insurance:'Versicherung',food:'Lebensmittel',mobility:'Mobilität',consumer_credit:'Konsumkredit',credit:'Kredit',borrowed:'Geliehen',mortgage:'Darlehen',interest:'Zinsen',leisure:'Freizeit',other_expense:'Sonstige Ausgabe',other:'Sonstiges'};
 const creditTypeLabels={consumer_credit:'Konsumkredit',credit:'Kredit',borrowed:'Geliehen',mortgage:'Darlehen'};
@@ -237,6 +237,8 @@ function startupLoader(show,message='FinanzLab lädt …'){
 const STARTUP_CACHE_PREFIX='finanzlab-ui-cache-v1:';
 const OUTLOOK_ACCOUNT_SELECTION_PREFIX='finanzlab-outlook-accounts-v1:';
 const OUTLOOK_ACCOUNT_AVAILABILITY_PREFIX='finanzlab-outlook-available-v1:';
+const TODAY_BALANCE_SELECTION_PREFIX='finanzlab-dashboard-today-balances-v1:';
+const TODAY_BALANCE_ACCOUNT_LIMIT=4;
 
 function startupCacheKey(){
   return state.currentId
@@ -254,6 +256,12 @@ function liquidDashboardAccounts(){
   return (state.dashboard?.household?.accounts||[]).filter(
     account=>account.kind!=='credit_line'
   );
+}
+
+function todayBalanceSelectionKey(){
+  return state.currentId
+    ? `${TODAY_BALANCE_SELECTION_PREFIX}${state.currentId}`
+    : null;
 }
 
 // finanzlab-2.2-dynamic-outlook
@@ -283,6 +291,51 @@ function storedIdList(key){
     return Array.isArray(value)?value:null;
   }catch(error){
     return null;
+  }
+}
+
+function ensureTodayBalanceSelection(){
+  const validIds=liquidDashboardAccounts().map(account=>account.id);
+  const valid=new Set(validIds);
+
+  if(state.todayBalanceSelectionFor!==state.currentId){
+    const saved=storedIdList(todayBalanceSelectionKey());
+    const source=saved===null
+      ? validIds.slice(0,TODAY_BALANCE_ACCOUNT_LIMIT)
+      : saved;
+    const selected=new Set(
+      source.filter(id=>valid.has(id)).slice(0,TODAY_BALANCE_ACCOUNT_LIMIT)
+    );
+    state.todayBalanceAccountIds=validIds.filter(id=>selected.has(id));
+    state.todayBalanceSelectionFor=state.currentId;
+  }else{
+    const selected=new Set(
+      state.todayBalanceAccountIds
+        .filter(id=>valid.has(id))
+        .slice(0,TODAY_BALANCE_ACCOUNT_LIMIT)
+    );
+    state.todayBalanceAccountIds=validIds.filter(id=>selected.has(id));
+  }
+
+  // Wenn das einzige ausgewählte Konto gelöscht wurde, wieder ein
+  // vorhandenes Bankkonto anzeigen statt den Kopfbereich leer zu lassen.
+  if(!state.todayBalanceAccountIds.length&&validIds.length){
+    state.todayBalanceAccountIds=[validIds[0]];
+  }
+
+  saveTodayBalanceSelection();
+}
+
+function saveTodayBalanceSelection(){
+  const key=todayBalanceSelectionKey();
+  if(!key)return;
+  try{
+    window.localStorage.setItem(
+      key,
+      JSON.stringify(state.todayBalanceAccountIds)
+    );
+  }catch(error){
+    // Die Tageskacheln funktionieren auch ohne Browser-Speicher.
   }
 }
 
@@ -433,7 +486,9 @@ function saveStartupCache(){
       categories:state.categories,
       outlook:state.outlook,
       outlookBaseMonth:state.outlookBaseMonth,
-      outlookAccountIds:state.outlookAccountIds
+      outlookAccountIds:state.outlookAccountIds,
+      todayBalances:state.todayBalances,
+      todayBalanceAccountIds:state.todayBalanceAccountIds
     }));
   }catch(error){
     // Komfortfunktion: Cachefehler dürfen FinanzLab nicht blockieren.
@@ -476,6 +531,21 @@ function restoreStartupCache(){
     state.categories=Array.isArray(cached.categories)?cached.categories:[];
     syncCategoryState();
     ensureSelections();
+
+    const cachedTodayIds=Array.isArray(cached.todayBalanceAccountIds)
+      ? cached.todayBalanceAccountIds
+      : [];
+    const sameTodaySelection=
+      cachedTodayIds.length===state.todayBalanceAccountIds.length &&
+      cachedTodayIds.every(
+        (id,index)=>id===state.todayBalanceAccountIds[index]
+      );
+    state.todayBalances=
+      sameTodaySelection &&
+      cached.todayBalances?.as_of===today()
+        ? cached.todayBalances
+        : null;
+    state.todayBalancesError=null;
 
     const cachedAccountIds=Array.isArray(cached.outlookAccountIds)
       ? cached.outlookAccountIds
@@ -610,6 +680,7 @@ async function loadAll(){
   ensureSelections();
   renderAll();
   saveStartupCache();
+  loadTodayBalances();
   loadRepaymentAssistant(state.dashboardMonth||monthNow());
   // Die 6-Monats-Prognose wird nur bei geöffneter
   // Dashboard-Kachel berechnet.
@@ -630,7 +701,7 @@ async function loadAll(){
   }
 }
 
-function ensureSelections(){const ids=state.dashboard.household.accounts.map(account=>account.id),valid=new Set(ids);state.previewAccountIds=state.previewAccountIds.filter(id=>valid.has(id));if(!state.previewAccountIds.length)state.previewAccountIds=[...ids];const creditIds=state.credits.filter(credit=>credit.credit_type!=='mortgage').map(credit=>credit.id),validCredits=new Set(creditIds);state.previewCreditIds=state.previewCreditIds.filter(id=>validCredits.has(id));ensureOutlookAccountSelection()}
+function ensureSelections(){const ids=state.dashboard.household.accounts.map(account=>account.id),valid=new Set(ids);state.previewAccountIds=state.previewAccountIds.filter(id=>valid.has(id));if(!state.previewAccountIds.length)state.previewAccountIds=[...ids];const creditIds=state.credits.filter(credit=>credit.credit_type!=='mortgage').map(credit=>credit.id),validCredits=new Set(creditIds);state.previewCreditIds=state.previewCreditIds.filter(id=>validCredits.has(id));ensureOutlookAccountSelection();ensureTodayBalanceSelection()}
 function dashboardMonthOptions(selected){
   const current=monthNow();
 
@@ -994,6 +1065,119 @@ async function loadDashboardOutlook(
   }
 }
 
+function renderTodayBalances(){
+  const target=$('#dashboard-today-balance-list');
+  const dateTarget=$('#dashboard-today-balance-date');
+  if(!target||!dateTarget)return;
+
+  dateTarget.textContent=`Stand ${dateLabel(today())}`;
+
+  const accounts=liquidDashboardAccounts();
+  const selectedIds=state.todayBalanceAccountIds.filter(
+    id=>accounts.some(account=>account.id===id)
+  );
+
+  if(!accounts.length){
+    target.removeAttribute('aria-busy');
+    target.innerHTML=
+      '<p class="today-balance-message">Noch kein Bankkonto vorhanden.</p>';
+    return;
+  }
+
+  const resultAccounts=state.todayBalances?.accounts||[];
+  const resultIds=resultAccounts.map(account=>account.id);
+  const resultMatches=
+    state.todayBalances?.as_of===today() &&
+    resultIds.length===selectedIds.length &&
+    resultIds.every((id,index)=>id===selectedIds[index]);
+
+  if(!resultMatches){
+    target.setAttribute('aria-busy','true');
+    target.innerHTML=state.todayBalancesError
+      ? `<p class="today-balance-message error">${escapeHtml(state.todayBalancesError)}</p>`
+      : '<p class="today-balance-message">Kontostände werden berechnet …</p>';
+    return;
+  }
+
+  target.removeAttribute('aria-busy');
+  target.innerHTML=resultAccounts.map(account=>{
+    const available=Boolean(account.available);
+    const balance=available?Number(account.projected_balance_cents):null;
+    const negative=balance!==null&&balance<0;
+    return `<article class="today-balance-card ${available?'':'unavailable'}">
+      <span>${escapeHtml(account.name)}</span>
+      <strong class="${negative?'negative':''}">${moneyOrMissing(balance)}</strong>
+      <small>${available?'inkl. Fälligkeiten bis heute':'Noch kein Kontostand hinterlegt'}</small>
+    </article>`;
+  }).join('');
+}
+
+async function loadTodayBalances(){
+  if(!state.currentId||!state.dashboard)return;
+
+  ensureTodayBalanceSelection();
+
+  const householdId=state.currentId;
+  const asOf=today();
+  const accountIds=[...state.todayBalanceAccountIds];
+  const selectionKey=accountIds.join(',');
+  const requestId=++state.todayBalancesRequest;
+
+  if(!accountIds.length){
+    state.todayBalances=null;
+    state.todayBalancesError=null;
+    state.todayBalancesLoadingKey=null;
+    renderTodayBalances();
+    return;
+  }
+
+  const loadingKey=`${householdId}:${asOf}:${selectionKey}`;
+  state.todayBalancesLoadingKey=loadingKey;
+  state.todayBalancesError=null;
+  renderTodayBalances();
+
+  try{
+    const result=await forecastMemo(
+      `today-balances:${loadingKey}`,
+      ()=>api('/api/dashboard/simulation',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          household_id:householdId,
+          as_of:asOf,
+          account_ids:accountIds,
+          excluded_cash_flow_ids:[]
+        })
+      })
+    );
+
+    if(
+      requestId!==state.todayBalancesRequest ||
+      householdId!==state.currentId ||
+      asOf!==today() ||
+      selectionKey!==state.todayBalanceAccountIds.join(',')
+    )return;
+
+    state.todayBalances=result;
+    state.todayBalancesError=null;
+    saveStartupCache();
+  }catch(error){
+    if(
+      requestId===state.todayBalancesRequest &&
+      householdId===state.currentId &&
+      selectionKey===state.todayBalanceAccountIds.join(',')
+    ){
+      state.todayBalancesError=
+        `Heutige Kontostände konnten nicht geladen werden: ${error.message}`;
+    }
+  }finally{
+    if(requestId===state.todayBalancesRequest){
+      state.todayBalancesLoadingKey=null;
+      renderTodayBalances();
+    }
+  }
+}
+
 function renderDashboard(){
   const m=state.dashboard.metrics;
 
@@ -1033,6 +1217,8 @@ function renderDashboard(){
       ? `Monatsende ${dateLabel(state.dashboard.as_of)} · `+
         `Finanzierungen separat`
       : 'Noch kein Bankkonto hinterlegt';
+
+  renderTodayBalances();
 
   $('#dashboard-income').textContent=eur(m.income_cents);
   $('#dashboard-expenses').textContent=eur(m.expenses_cents);
@@ -1360,6 +1546,33 @@ function renderIncomes(){const active=state.incomes.filter(item=>!isArchived(ite
 function renderExpenses(){const active=state.expenses.filter(item=>!isArchived(item)),archive=state.expenses.filter(isArchived),visible=state.expenseFilter==='archive'?archive:active;$('#expense-list-title').textContent=state.expenseFilter==='archive'?'Archivierte Ausgaben':'Aktive Ausgaben';$('#expense-filter').innerHTML=lifecycleFilter(state.expenseFilter,active.length,archive.length,'expense-filter');$('#expense-list').innerHTML=visible.length?visible.map(flowRow).join(''):`<p class="empty">${state.expenseFilter==='archive'?'Noch keine archivierte Ausgabe vorhanden.':'Noch keine aktive Ausgabe angelegt.'}</p>`;$('#expense-position-total').textContent=`− ${eur(activePositionTotal(state.expenses))}`}
 function renderCredits(){const types=['consumer_credit','credit','borrowed','mortgage'],groups=types.map(type=>{const credits=state.credits.filter(item=>item.credit_type===type);return {credit_type:type,count:credits.length,balance_cents:credits.reduce((sum,item)=>sum+Number(item.remaining_balance_cents||0),0)}}),filters=[['all','Alle'],...types.map(type=>[type,creditTypeLabels[type]])],filtered=state.creditFilter==='all'?state.credits:state.credits.filter(item=>item.credit_type===state.creditFilter),activeLabel=state.creditFilter==='all'?'Alle Kredite':creditTypeLabels[state.creditFilter];$('#credit-page-summary').innerHTML=groups.map(creditSummaryCard).join('');$('#credit-list-title').textContent=activeLabel;$('#credit-filter').innerHTML=filters.map(([value,label])=>{const count=value==='all'?state.credits.length:groups.find(group=>group.credit_type===value).count,active=state.creditFilter===value;return `<button class="credit-filter-button ${active?'active':''}" type="button" data-credit-filter="${value}" aria-pressed="${active}">${escapeHtml(label)} <span>${count}</span></button>`}).join('');$('#credit-list').innerHTML=filtered.length?filtered.map(item=>`<article class="credit-row" data-open-credit="${escapeHtml(item.id)}"><div><span class="credit-type-badge">${escapeHtml(creditTypeLabels[item.credit_type])}</span><h3>${escapeHtml(item.name)}</h3><small>Ausgang ${eur(item.opening_balance_cents)} · getilgt ${eur(item.paid_cents)}</small></div><strong>${eur(item.remaining_balance_cents)}</strong><small>offener Saldo</small><button class="link-button" type="button" data-edit-credit="${escapeHtml(item.id)}">Bearbeiten</button></article>`).join(''):state.credits.length?`<p class="empty">Keine Kredite der Art „${escapeHtml(activeLabel)}“ vorhanden.</p>`:'<p class="empty">Noch kein Kredit angelegt.</p>'}
 function renderTransfers(){const active=state.transfers.filter(item=>!isArchived(item)),archive=state.transfers.filter(isArchived),visible=state.transferFilter==='archive'?archive:active;$('#transfer-list-title').textContent=state.transferFilter==='archive'?'Archivierte Umbuchungen':'Aktive Umbuchungen';$('#transfer-filter').innerHTML=lifecycleFilter(state.transferFilter,active.length,archive.length,'transfer-filter');$('#transfer-list').innerHTML=visible.length?visible.map(item=>{const end=item.end_date?` · Ende ${dateLabel(item.end_date)}`:'',count=item.occurrence_count?` · ${item.occurrence_count} Ausführung${Number(item.occurrence_count)===1?'':'en'}`:'';return `<article class="flow-row ${item.active?'':'inactive'}"><span><b>${escapeHtml(item.name)}</b><small>${dateLabel(item.due_date)} · ${recurrenceLabels[item.recurrence]}${end}${count} · ${escapeHtml(item.source_account_name)} → ${escapeHtml(item.target_account_name)}</small></span><strong>${eur(item.amount_cents)}</strong><button class="link-button" type="button" data-edit-transfer="${escapeHtml(item.id)}">Bearbeiten</button></article>`}).join(''):`<p class="empty">${state.transferFilter==='archive'?'Noch keine archivierte Umbuchung vorhanden.':'Noch keine aktive Umbuchung angelegt.'}</p>`}
+function renderTodayBalanceSettings(){
+  const target=$('#settings-today-balance-accounts');
+  const count=$('#today-balance-selection-count');
+  if(!target||!count||!state.dashboard)return;
+
+  ensureTodayBalanceSelection();
+
+  const accounts=liquidDashboardAccounts();
+  const selected=new Set(state.todayBalanceAccountIds);
+  const atLimit=selected.size>=TODAY_BALANCE_ACCOUNT_LIMIT;
+
+  count.textContent=
+    `${selected.size} von ${TODAY_BALANCE_ACCOUNT_LIMIT} ausgewählt`;
+
+  target.innerHTML=accounts.length
+    ? accounts.map(account=>{
+        const checked=selected.has(account.id);
+        return `<label class="account-choice">
+          <input type="checkbox"
+            data-today-balance-account="${escapeHtml(account.id)}"
+            ${checked?'checked':''}
+            ${!checked&&atLimit?'disabled':''}>
+          ${escapeHtml(account.name)}
+        </label>`;
+      }).join('')
+    : '<p class="empty">Noch kein normales Bankkonto vorhanden.</p>';
+}
 function renderOutlookSettings(){
   if(!state.dashboard)return;
 
@@ -1422,7 +1635,7 @@ function renderOutlookSettings(){
 }
 
 
-function renderSettings(){renderOutlookSettings();ensureAssistantPrefs();renderAssistantPrefs();const persons=state.dashboard.household.persons;$('#person-list').innerHTML=persons.map(person=>`<article class="person-row"><span class="avatar">${escapeHtml(person.display_name.slice(0,1).toUpperCase())}</span><span class="person-display"><b>${escapeHtml(person.display_name)}</b></span><span class="row-actions"><button type="button" class="link-button" data-edit-person="${escapeHtml(person.id)}">Bearbeiten</button></span></article>`).join('');const categoryList=$('#category-settings-list');if(categoryList)categoryList.innerHTML=(state.categories||[]).map(item=>`<article class="person-row ${item.active?'':'inactive'}"><span><b>${escapeHtml(item.name)}</b><small>${item.kind==='income'?'Einnahme':'Ausgabe'} · ${item.is_system?'System-Art':'Eigene Art'}${item.active?'':' · deaktiviert'}</small></span>${item.is_system?'':`<span class="row-actions"><button class="link-button" type="button" data-edit-category="${escapeHtml(item.id)}">Bearbeiten</button><button class="link-button" type="button" data-delete-category="${escapeHtml(item.id)}">Löschen</button></span>`}</article>`).join('');const integration=state.energylab||{},form=$('#energylab-form');form.elements.base_url.value=integration.base_url||'http://energylab:8090';form.elements.enabled.checked=Boolean(integration.enabled);$('#energylab-account').innerHTML='<option value="">Kein Konto zugeordnet</option>'+state.dashboard.household.accounts.map(account=>`<option value="${escapeHtml(account.id)}" ${account.id===integration.account_id?'selected':''}>${escapeHtml(account.name)}</option>`).join('');const status=$('#energylab-status');status.hidden=!integration.last_message;status.className=`notice ${integration.last_status==='error'?'error':''}`;status.textContent=integration.last_message?`${integration.last_status==='ok'?'Zuletzt erfolgreich':'Letzter Versuch fehlgeschlagen'}: ${integration.last_message}`:'';$('#energylab-sync').disabled=state.settingsLoading||!integration.enabled;const diagnostics=state.diagnostics;if(!diagnostics||state.settingsLoadedFor!==state.currentId){$('#diagnostics-as-of').textContent=state.settingsLoading?'wird geladen …':'bei Bedarf';$('#diagnostics-summary').innerHTML='';$('#diagnostics-list').innerHTML='<div class="notice">Datenprüfung wird nur beim Öffnen der Einstellungen geladen. Dadurch bleibt das Dashboard schneller.</div>';return}$('#diagnostics-as-of').textContent=dateLabel(diagnostics.as_of);const s=diagnostics.summary;$('#diagnostics-summary').innerHTML=summaryCard('Betroffene Positionen',s.item_count)+summaryCard('Nicht berücksichtigt',s.not_considered_count)+summaryCard('Fehler',s.error,'negative')+summaryCard('Warnungen',s.warning);$('#diagnostics-list').innerHTML=diagnostics.items.length?diagnostics.items.map(item=>{const managed=flowById(item.kind,item.id)?.managed_by==='energylab';return `<article class="diagnostic-row"><i class="severity ${item.issues.some(issue=>issue.severity==='error')?'error':'warning'}"></i><div><b>${escapeHtml(item.name)}</b><small>${item.kind==='income'?'Einnahme':'Ausgabe'} · ${eur(item.amount_cents)}</small><ul>${item.issues.map(issue=>`<li>${escapeHtml(issue.message)}</li>`).join('')}</ul></div>${managed?'<span class="badge">EnergyLab</span>':`<button class="link-button" type="button" data-edit-flow-kind="${item.kind}" data-edit-flow="${escapeHtml(item.id)}">Bearbeiten</button>`}</article>`}).join(''):'<div class="notice">Alle Einnahmen und Ausgaben können berücksichtigt werden.</div>'}
+function renderSettings(){renderOutlookSettings();renderTodayBalanceSettings();ensureAssistantPrefs();renderAssistantPrefs();const persons=state.dashboard.household.persons;$('#person-list').innerHTML=persons.map(person=>`<article class="person-row"><span class="avatar">${escapeHtml(person.display_name.slice(0,1).toUpperCase())}</span><span class="person-display"><b>${escapeHtml(person.display_name)}</b></span><span class="row-actions"><button type="button" class="link-button" data-edit-person="${escapeHtml(person.id)}">Bearbeiten</button></span></article>`).join('');const categoryList=$('#category-settings-list');if(categoryList)categoryList.innerHTML=(state.categories||[]).map(item=>`<article class="person-row ${item.active?'':'inactive'}"><span><b>${escapeHtml(item.name)}</b><small>${item.kind==='income'?'Einnahme':'Ausgabe'} · ${item.is_system?'System-Art':'Eigene Art'}${item.active?'':' · deaktiviert'}</small></span>${item.is_system?'':`<span class="row-actions"><button class="link-button" type="button" data-edit-category="${escapeHtml(item.id)}">Bearbeiten</button><button class="link-button" type="button" data-delete-category="${escapeHtml(item.id)}">Löschen</button></span>`}</article>`).join('');const integration=state.energylab||{},form=$('#energylab-form');form.elements.base_url.value=integration.base_url||'http://energylab:8090';form.elements.enabled.checked=Boolean(integration.enabled);$('#energylab-account').innerHTML='<option value="">Kein Konto zugeordnet</option>'+state.dashboard.household.accounts.map(account=>`<option value="${escapeHtml(account.id)}" ${account.id===integration.account_id?'selected':''}>${escapeHtml(account.name)}</option>`).join('');const status=$('#energylab-status');status.hidden=!integration.last_message;status.className=`notice ${integration.last_status==='error'?'error':''}`;status.textContent=integration.last_message?`${integration.last_status==='ok'?'Zuletzt erfolgreich':'Letzter Versuch fehlgeschlagen'}: ${integration.last_message}`:'';$('#energylab-sync').disabled=state.settingsLoading||!integration.enabled;const diagnostics=state.diagnostics;if(!diagnostics||state.settingsLoadedFor!==state.currentId){$('#diagnostics-as-of').textContent=state.settingsLoading?'wird geladen …':'bei Bedarf';$('#diagnostics-summary').innerHTML='';$('#diagnostics-list').innerHTML='<div class="notice">Datenprüfung wird nur beim Öffnen der Einstellungen geladen. Dadurch bleibt das Dashboard schneller.</div>';return}$('#diagnostics-as-of').textContent=dateLabel(diagnostics.as_of);const s=diagnostics.summary;$('#diagnostics-summary').innerHTML=summaryCard('Betroffene Positionen',s.item_count)+summaryCard('Nicht berücksichtigt',s.not_considered_count)+summaryCard('Fehler',s.error,'negative')+summaryCard('Warnungen',s.warning);$('#diagnostics-list').innerHTML=diagnostics.items.length?diagnostics.items.map(item=>{const managed=flowById(item.kind,item.id)?.managed_by==='energylab';return `<article class="diagnostic-row"><i class="severity ${item.issues.some(issue=>issue.severity==='error')?'error':'warning'}"></i><div><b>${escapeHtml(item.name)}</b><small>${item.kind==='income'?'Einnahme':'Ausgabe'} · ${eur(item.amount_cents)}</small><ul>${item.issues.map(issue=>`<li>${escapeHtml(issue.message)}</li>`).join('')}</ul></div>${managed?'<span class="badge">EnergyLab</span>':`<button class="link-button" type="button" data-edit-flow-kind="${item.kind}" data-edit-flow="${escapeHtml(item.id)}">Bearbeiten</button>`}</article>`}).join(''):'<div class="notice">Alle Einnahmen und Ausgaben können berücksichtigt werden.</div>'}
 async function loadSettingsSupplemental(force=false){if(!state.currentId||!state.dashboard)return;if(!force&&state.settingsLoadedFor===state.currentId)return;if(state.settingsLoading)return;const householdId=state.currentId;state.settingsLoading=true;renderSettings();const managementQuery=`household_id=${encodeURIComponent(householdId)}&as_of=${encodeURIComponent(today())}`;try{const [diagnostics,energylab,energylabStatus,backups]=await Promise.all([api(`/api/diagnostics?${managementQuery}`),api(`/api/integrations/energylab?household_id=${encodeURIComponent(householdId)}`),api(`/api/integrations/energylab/status?household_id=${encodeURIComponent(householdId)}`),api('/api/backups')]);if(householdId!==state.currentId)return;state.diagnostics=diagnostics;state.energylab=energylab;state.energylabStatus=energylabStatus;state.backups=(backups.items||[]).slice(0,12);state.settingsLoadedFor=householdId}finally{state.settingsLoading=false;if(householdId===state.currentId)renderSettings()}}
 function summaryCard(label,value,style=''){const countLabels=new Set(['Betroffene Positionen','Nicht berücksichtigt','Fehler','Warnungen','Ausgewählte Konten','Bewegungen','Buchungen']);const display=typeof value==='number'&&!countLabels.has(label)?eur(value):value;return `<article class="summary-card ${style}"><span>${escapeHtml(label)}</span><b class="${style==='negative'?'amount-negative':''}">${escapeHtml(display)}</b></article>`}
 
@@ -1693,6 +1906,51 @@ $('#settings-view').addEventListener(
   }
 );
 
+$('#settings-today-balance-accounts').addEventListener(
+  'change',
+  event=>{
+    const input=event.target.closest('[data-today-balance-account]');
+    if(!input)return;
+
+    ensureTodayBalanceSelection();
+
+    const accountId=input.dataset.todayBalanceAccount;
+    const selected=new Set(state.todayBalanceAccountIds);
+
+    if(input.checked){
+      if(
+        !selected.has(accountId) &&
+        selected.size>=TODAY_BALANCE_ACCOUNT_LIMIT
+      ){
+        input.checked=false;
+        toast('Es können höchstens vier Kontostände angezeigt werden.');
+        return;
+      }
+      selected.add(accountId);
+    }else{
+      if(selected.size<=1){
+        input.checked=true;
+        toast('Mindestens ein Kontostand muss ausgewählt bleiben.');
+        return;
+      }
+      selected.delete(accountId);
+    }
+
+    state.todayBalanceAccountIds=liquidDashboardAccounts()
+      .map(account=>account.id)
+      .filter(id=>selected.has(id))
+      .slice(0,TODAY_BALANCE_ACCOUNT_LIMIT);
+
+    saveTodayBalanceSelection();
+    state.todayBalances=null;
+    state.todayBalancesError=null;
+
+    renderTodayBalanceSettings();
+    renderTodayBalances();
+    loadTodayBalances();
+  }
+);
+
 
 $('#preview-account-selectors').addEventListener('change',event=>{const input=event.target.closest('[data-preview-account]');if(!input)return;const id=input.dataset.previewAccount;state.previewAccountIds=input.checked?[...state.previewAccountIds,id]:state.previewAccountIds.filter(value=>value!==id);loadPreview()});
 $('#preview-credit-selectors').addEventListener('change',event=>{const input=event.target.closest('[data-preview-credit]');if(!input)return;const id=input.dataset.previewCredit;state.previewCreditIds=input.checked?[...state.previewCreditIds,id]:state.previewCreditIds.filter(value=>value!==id);loadPreview()});
@@ -1952,7 +2210,7 @@ $('#delete-transfer').addEventListener('click',async()=>{const item=state.transf
 
 $('#category-form')?.addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,error=$('#category-error'),button=event.submitter;error.hidden=true;button.disabled=true;try{await api('/api/categories',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,kind:form.kind.value,name:form.name.value})});form.name.value='';await loadAll();toast('Art wurde hinzugefügt.')}catch(err){error.textContent=err.message;error.hidden=false}finally{button.disabled=false}});
 $('#category-settings-list')?.addEventListener('click',async event=>{const edit=event.target.closest('[data-edit-category]'),del=event.target.closest('[data-delete-category]'),id=edit?.dataset.editCategory||del?.dataset.deleteCategory;if(!id)return;const item=state.categories.find(entry=>entry.id===id);if(!item)return;if(edit){const name=prompt('Bezeichnung der Art:',item.name);if(name===null)return;const active=confirm('OK = aktiv lassen/aktivieren. Abbrechen = deaktivieren.');try{await api(`/api/categories/${encodeURIComponent(id)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,name,active})});await loadAll();toast('Art wurde gespeichert.')}catch(err){toast(err.message)}}else if(del&&confirm(`Eigene Art „${item.name}“ wirklich löschen?`)){try{await api(`/api/categories/${encodeURIComponent(id)}?household_id=${encodeURIComponent(state.currentId)}`,{method:'DELETE'});await loadAll();toast('Art wurde gelöscht.')}catch(err){toast(err.message)}}});
-$('#household-select').addEventListener('change',async event=>{state.currentId=event.target.value;state.dashboardCredits=[];state.archivedCredits=[];state.previewAccountIds=[];state.previewCreditIds=[];state.outlookAccountIds=[];state.outlookSelectionFor=null;state.outlookAvailableAccountIds=[];state.outlookAvailabilityFor=null;state.outlookManagerOpen=false;state.outlook=null;state.outlookBaseMonth=null;state.incomeFilter='active';state.expenseFilter='active';state.transferFilter='active';state.creditFilter='all';state.diagnostics=null;state.energylab=null;state.energylabStatus=null;state.backups=[];state.settingsLoadedFor=null;if(typeof resetInterestCache==='function')resetInterestCache();await loadAll()});
+$('#household-select').addEventListener('change',async event=>{state.currentId=event.target.value;state.dashboardCredits=[];state.archivedCredits=[];state.previewAccountIds=[];state.previewCreditIds=[];state.outlookAccountIds=[];state.outlookSelectionFor=null;state.outlookAvailableAccountIds=[];state.outlookAvailabilityFor=null;state.outlookManagerOpen=false;state.outlook=null;state.outlookBaseMonth=null;state.todayBalances=null;state.todayBalanceAccountIds=[];state.todayBalanceSelectionFor=null;state.todayBalancesLoadingKey=null;state.todayBalancesError=null;state.incomeFilter='active';state.expenseFilter='active';state.transferFilter='active';state.creditFilter='all';state.diagnostics=null;state.energylab=null;state.energylabStatus=null;state.backups=[];state.settingsLoadedFor=null;if(typeof resetInterestCache==='function')resetInterestCache();await loadAll()});
 $('#delete-household').addEventListener('click',async()=>{const current=state.households.find(h=>h.id===state.currentId);if(!current||!confirm(`Haushalt „${current.name}“ einschließlich aller Daten endgültig löschen?`))return;try{await api(`/api/households/${encodeURIComponent(current.id)}`,{method:'DELETE'});state.households=(await api('/api/households')).items;state.currentId=state.households[0]?.id||null;if(state.currentId)await loadAll();else openSetup(true);toast('Haushalt wurde gelöscht.')}catch(err){toast(err.message)}});
 
 $('#energylab-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget.elements,button=event.submitter,status=$('#energylab-status');button.disabled=true;status.hidden=true;try{state.energylab=await api('/api/integrations/energylab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({household_id:state.currentId,base_url:form.base_url.value,account_id:form.account_id.value,callback_token:form.callback_token.value,enabled:form.enabled.checked})});renderSettings();toast('EnergyLab-Verbindung wurde gespeichert.')}catch(err){status.textContent=err.message;status.className='notice error';status.hidden=false}finally{button.disabled=false}});

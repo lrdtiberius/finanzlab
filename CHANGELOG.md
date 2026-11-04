@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.6.4 – 04.11.2026
+- Bis zu vier auswählbare normale Bankkonten zeigen ihren berechneten heutigen Kontostand direkt im grünen Dashboard-Kopf.
+- Die Tagesstände verwenden dieselbe serverseitige Prognose wie Vorschau und Kontoberechnung; erledigte, geänderte oder entfallene Vorgänge werden dadurch konsistent berücksichtigt.
+- Die haushaltsbezogene Auswahl wird im Browser gespeichert und steht in den Einstellungen direkt unter dem weiterhin obersten Excel-Export.
+- Rahmenkredite bleiben aus den Tageskacheln ausgeschlossen und werden unverändert separat dargestellt.
+
 ## 2.6.3 – 03.11.2026
 - Finanzassistent in den Einstellungen über die gesamte Breite angeordnet; Haushalt und Personen stehen darunter nebeneinander.
 - Sicherungsansicht und Datenhaltung auf die zwölf neuesten oder zuletzt wiederhergestellten Sicherungen begrenzt.

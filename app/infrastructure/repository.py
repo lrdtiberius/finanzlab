@@ -21,7 +21,7 @@ from app.domain.recurrence import (
     recurrence_dates,
 )
 
-BASE_VERSION = "2.6.3"
+BASE_VERSION = "2.6.4"
 APP_VERSION = (
     f"{BASE_VERSION}-testsystem"
     if os.getenv("FINANZLAB_TEST_MODE") == "1"

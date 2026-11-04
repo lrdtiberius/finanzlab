@@ -690,3 +690,150 @@ main{max-width:1240px;margin:auto;padding:8px 28px 48px;min-height:calc(100vh - 
   .movement-actions{grid-column:1/-1;width:100%;justify-items:end}
   .movement-actions .movement-completion{grid-column:auto}
 }
+
+/* FinanzLab 2.6.4 – heutige Kontostände im Dashboard-Kopf */
+.hero{
+  display:grid;
+  grid-template-columns:minmax(260px,.9fr) minmax(340px,1.15fr) minmax(320px,1fr);
+  align-items:end;
+}
+
+.dashboard-hero-copy{
+  min-width:0;
+}
+
+.dashboard-hero-copy #dashboard-balance{
+  font-size:clamp(38px,3.6vw,52px);
+  white-space:nowrap;
+}
+
+.dashboard-today-balances{
+  align-self:stretch;
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+}
+
+.dashboard-today-balances-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:8px;
+}
+
+.dashboard-today-balances-head .eyebrow{
+  margin:0;
+}
+
+.dashboard-today-balances-head small{
+  color:#c6d4d0;
+  font-size:10px;
+  white-space:nowrap;
+}
+
+.dashboard-today-balance-list{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:8px;
+}
+
+.today-balance-card{
+  min-width:0;
+  padding:10px 12px;
+  border:1px solid rgba(255,255,255,.16);
+  border-radius:12px;
+  background:rgba(255,255,255,.08);
+  display:grid;
+  gap:2px;
+}
+
+.today-balance-card span,
+.today-balance-card small{
+  overflow:hidden;
+  color:#c6d4d0;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.today-balance-card span{
+  font-size:11px;
+  font-weight:800;
+}
+
+.today-balance-card strong{
+  overflow:hidden;
+  color:#fff;
+  font:700 20px/1.2 Georgia,serif;
+  font-variant-numeric:tabular-nums;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.today-balance-card strong.negative{
+  color:#ff9b8f;
+}
+
+.today-balance-card small{
+  font-size:9px;
+}
+
+.today-balance-card.unavailable{
+  opacity:.68;
+}
+
+.today-balance-message{
+  grid-column:1/-1;
+  min-height:62px;
+  margin:0;
+  padding:12px;
+  border:1px dashed rgba(255,255,255,.2);
+  border-radius:12px;
+  display:grid;
+  place-items:center;
+  color:#c6d4d0;
+  text-align:center;
+  font-size:11px;
+}
+
+.today-balance-message.error{
+  color:#ffb3a9;
+}
+
+.today-balances-settings-panel{
+  grid-column:1/-1;
+}
+
+.today-balances-settings-panel>.hint{
+  margin:12px 0 0;
+}
+
+@media(max-width:1120px){
+  .hero{
+    grid-template-columns:minmax(240px,.8fr) minmax(360px,1.2fr);
+  }
+
+  .hero .dashboard-month-control{
+    grid-column:1/-1;
+    justify-self:end;
+  }
+}
+
+@media(max-width:760px){
+  .hero{
+    grid-template-columns:1fr;
+    align-items:stretch;
+  }
+
+  .hero .dashboard-month-control{
+    grid-column:auto;
+    justify-self:stretch;
+  }
+}
+
+@media(max-width:440px){
+  .dashboard-today-balance-list{
+    grid-template-columns:1fr;
+  }
+}

@@ -40,6 +40,15 @@
       <section id="dashboard-view" class="view">
         <div class="hero">
           <div class="dashboard-hero-copy"><p class="eyebrow">PROGNOSTIZIERTE KONTEN GESAMT</p><h1 id="dashboard-balance">0,00 €</h1><p id="dashboard-balance-note">Noch kein Kontostand hinterlegt</p><div class="dashboard-quick-actions" aria-label="Schnellerfassung"><button id="dashboard-new-expense" class="button" type="button">+ Ausgabe hinzufügen</button><button id="dashboard-new-income" class="button secondary" type="button">+ Einnahme hinzufügen</button></div></div>
+          <section class="dashboard-today-balances" aria-labelledby="dashboard-today-balance-title">
+            <div class="dashboard-today-balances-head">
+              <p id="dashboard-today-balance-title" class="eyebrow">HEUTIGE KONTOSTÄNDE</p>
+              <small id="dashboard-today-balance-date">Stand heute</small>
+            </div>
+            <div id="dashboard-today-balance-list" class="dashboard-today-balance-list" aria-live="polite">
+              <p class="today-balance-message">Kontostände werden berechnet …</p>
+            </div>
+          </section>
           <div class="month-control dashboard-month-control"><span class="month-control-caption">Monat</span><button id="dashboard-prev" class="month-arrow" type="button" aria-label="Einen Monat zurück">←</button><label class="dashboard-month-picker" aria-label="Monat auswählen"><select id="dashboard-month" aria-label="Monat auswählen"></select></label><button id="dashboard-next" class="month-arrow" type="button" aria-label="Einen Monat vor">→</button><button id="dashboard-current" class="secondary" type="button">Aktueller Monat</button></div>
         </div>
         <section id="dashboard-repayment-panel" class="panel repayment-assistant-panel" aria-label="Empfohlene Konsumkredit-Sondertilgung" hidden>
@@ -173,6 +182,19 @@
             <div class="section-actions left export-actions">
               <button id="open-excel-export" class="button" type="button">Excel erstellen</button>
             </div>
+          </section>
+
+          <section class="panel today-balances-settings-panel" aria-labelledby="today-balances-settings-title">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">DASHBOARD</p>
+                <h2 id="today-balances-settings-title">Heutige Kontostände im Kopfbereich</h2>
+              </div>
+              <span id="today-balance-selection-count" class="badge">0 von 4 ausgewählt</span>
+            </div>
+            <p class="panel-copy">Wähle bis zu vier normale Bankkonten für die grünen Kacheln oben im Dashboard. Angezeigt wird jeweils der bis heute berechnete Kontostand; Rahmenkredite bleiben separat.</p>
+            <div id="settings-today-balance-accounts" class="choice-grid" role="group" aria-label="Konten für die heutigen Kontostände"></div>
+            <p class="hint">Die Auswahl gilt für diesen Haushalt in diesem Browser.</p>
           </section>
 
           <section class="panel assistant-prefs-panel" aria-label="Einstellungen für Warnungen und Sondertilgungen">
